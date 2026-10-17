@@ -37,6 +37,7 @@
 #include "Engine/Source/Tempest/CMath.h"
 #include "WoW/Source/DB/DBClient/DBClient.h"
 #include "WoW/Source/Object/ObjectClient/Types.h"
+#include "Engine/Source/WXL/Hooks.h"
 
 // STATIC: 0x00A45570
 static const uint32_t s_ribbonBlendModes[] = { 0, 1, 2, 10, 3, 4, 5 };
@@ -2484,6 +2485,9 @@ void M2AnimateTrack<M2CompQuat, C4Quaternion>(CM2Model* model, M2ModelBone* bone
 // VERIFY: 4a40646d manual
 // OFFSET: 0x00828A00
 void CM2Model::AnimateST() {
+    // WXL: OnM2PerFrameUpdate (orig 0x00828A00), fires after the native body on every return path.
+    wxl::events::EmitOnExit<wxl::events::M2PerFrameUpdateArgs> wxlHook(wxl::events::Event::OnM2PerFrameUpdate, { this });
+
     if (!(this->m_fFlags & 1)) {
         return;
     }
@@ -5031,6 +5035,9 @@ void CM2Model::GetCollisionFacets(const CAaBox& box, const C44Matrix& transform,
 // VERIFY: d48ec2da manual
 // OFFSET: 0x0082F0F0
 void CM2Model::AnimateMT(const C44Matrix* view, const C3Vector& diffuse, const C3Vector& emissive, float alpha, float alpha2) {
+    // WXL: OnBuildBonePalette (orig 0x0082F0F0), fires after the engine has written the bone palette.
+    wxl::events::EmitOnExit<wxl::events::BuildBonePaletteArgs> wxlHook(wxl::events::Event::OnBuildBonePalette, { this });
+
     uint32_t flags = this->m_fFlags;
 
     if (!(flags & 1) || this->m_frameStamp == this->m_scene->m_frameStamp) {

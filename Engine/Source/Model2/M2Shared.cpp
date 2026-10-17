@@ -24,6 +24,7 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/CImVector.h"
 #include "Engine/Source/Os/OsMemory.h"
+#include "Engine/Source/WXL/Hooks.h"
 
 // STATIC: 0x00A45644
 static const uint32_t s_skinProfileBoneCounts[4] = { 256, 64, 53, 21 };
@@ -1131,6 +1132,9 @@ void CM2Shared::SubstituteSpecializedShaders() {
 // VERIFY: 6736c39f manual
 // OFFSET: 0x00837A40
 int32_t CM2Shared::InitializeSkinProfile() {
+    // WXL: OnM2SkinFinalize (orig 0x00837A40), fires before the batch blocks are sized from the skin.
+    wxl::events::EmitIfAny(wxl::events::Event::OnM2SkinFinalize, wxl::events::M2SkinFinalizeArgs{ this });
+
     M2SkinProfile* skinData = this->m_skinData;
 
     this->m_maxInstances = skinData->m_indices.m_count ? 0x10000 / skinData->m_indices.m_count : 1;
@@ -1727,6 +1731,10 @@ int32_t CM2Shared::Initialize() {
 
 // INLINED
 int32_t CM2Shared::FinishLoading() {
+    // WXL: OnModelLoadPre before the raw bytes are parsed, OnModelLoad after (orig 0x0083CF00).
+    wxl::events::EmitIfAny(wxl::events::Event::OnModelLoadPre, wxl::events::ModelLoadArgs{ this });
+    wxl::events::EmitOnExit<wxl::events::ModelLoadArgs> wxlHook(wxl::events::Event::OnModelLoad, { this });
+
     if (this->m_flags & 1) {
         return 1;
     }

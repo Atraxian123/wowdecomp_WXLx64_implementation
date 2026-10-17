@@ -7,6 +7,8 @@
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Storm/H/stpl.h"
 #include "Engine/Source/Tempest/C2iVector.h"
+#include <vector>
+#include "Engine/Source/WXL/Blp.h"
 
 // STATIC: 0x00AD90B0
 uint8_t CBLPFile::s_eightBitAlphaLookup[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
@@ -917,6 +919,13 @@ int32_t CBLPFile::Open(const char* fileName, int32_t flags) {
     uint32_t bytesRead;
     SFileReadFile(file, s_blpFileLoadBuffer.Ptr(), s_blpFileLoadBuffer.Count(), &bytesRead, nullptr, 0);
     SFileCloseFile(file);
+
+    // WXL: offer the file to the BLP pipeline (palettizes DXT character components).
+    std::vector<uint8_t> wxlBlp;
+    if (wxl::blp::TransformForLoad(fileName, s_blpFileLoadBuffer.Ptr(), wxlBlp)) {
+        s_blpFileLoadBuffer.SetCount(static_cast<uint32_t>(wxlBlp.size()));
+        memcpy(s_blpFileLoadBuffer.Ptr(), wxlBlp.data(), wxlBlp.size());
+    }
 
     return this->Source(s_blpFileLoadBuffer.Ptr());
 }

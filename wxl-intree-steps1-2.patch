@@ -1,0 +1,725 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 468c8c4..feb27f6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -84,6 +84,7 @@ add_subdirectory(Engine/Source/SoundEngine)
+ add_subdirectory(Engine/Source/SteelseriesMouse)
+ add_subdirectory(Engine/Source/Storm)
+ add_subdirectory(Engine/Source/Tempest)
++add_subdirectory(Engine/Source/WXL)
+ add_subdirectory(WoW/Common)
+ add_subdirectory(WoW/Source/Battlenet)
+ add_subdirectory(WoW/Source/Console)
+diff --git a/Engine/Source/Model2/CMakeLists.txt b/Engine/Source/Model2/CMakeLists.txt
+index df12704..2249a48 100644
+--- a/Engine/Source/Model2/CMakeLists.txt
++++ b/Engine/Source/Model2/CMakeLists.txt
+@@ -8,3 +8,5 @@ target_include_directories(Model2
+     PUBLIC
+         ${CMAKE_SOURCE_DIR}
+ )
++
++target_link_libraries(Model2 PUBLIC WXLCore)
+diff --git a/Engine/Source/Model2/M2Model.cpp b/Engine/Source/Model2/M2Model.cpp
+index 5928223..5f2aaf7 100644
+--- a/Engine/Source/Model2/M2Model.cpp
++++ b/Engine/Source/Model2/M2Model.cpp
+@@ -37,6 +37,7 @@
+ #include "Engine/Source/Tempest/CMath.h"
+ #include "WoW/Source/DB/DBClient/DBClient.h"
+ #include "WoW/Source/Object/ObjectClient/Types.h"
++#include "Engine/Source/WXL/Hooks.h"
+ 
+ // STATIC: 0x00A45570
+ static const uint32_t s_ribbonBlendModes[] = { 0, 1, 2, 10, 3, 4, 5 };
+@@ -2484,6 +2485,9 @@ void M2AnimateTrack<M2CompQuat, C4Quaternion>(CM2Model* model, M2ModelBone* bone
+ // VERIFY: 4a40646d manual
+ // OFFSET: 0x00828A00
+ void CM2Model::AnimateST() {
++    // WXL: OnM2PerFrameUpdate (orig 0x00828A00), fires after the native body on every return path.
++    wxl::events::EmitOnExit<wxl::events::M2PerFrameUpdateArgs> wxlHook(wxl::events::Event::OnM2PerFrameUpdate, { this });
++
+     if (!(this->m_fFlags & 1)) {
+         return;
+     }
+@@ -5031,6 +5035,9 @@ void CM2Model::GetCollisionFacets(const CAaBox& box, const C44Matrix& transform,
+ // VERIFY: d48ec2da manual
+ // OFFSET: 0x0082F0F0
+ void CM2Model::AnimateMT(const C44Matrix* view, const C3Vector& diffuse, const C3Vector& emissive, float alpha, float alpha2) {
++    // WXL: OnBuildBonePalette (orig 0x0082F0F0), fires after the engine has written the bone palette.
++    wxl::events::EmitOnExit<wxl::events::BuildBonePaletteArgs> wxlHook(wxl::events::Event::OnBuildBonePalette, { this });
++
+     uint32_t flags = this->m_fFlags;
+ 
+     if (!(flags & 1) || this->m_frameStamp == this->m_scene->m_frameStamp) {
+diff --git a/Engine/Source/Model2/M2Shared.cpp b/Engine/Source/Model2/M2Shared.cpp
+index a75e3d8..780fe8c 100644
+--- a/Engine/Source/Model2/M2Shared.cpp
++++ b/Engine/Source/Model2/M2Shared.cpp
+@@ -24,6 +24,7 @@
+ #include "Engine/Source/Storm/H/storm.h"
+ #include "Engine/Source/Tempest/CImVector.h"
+ #include "Engine/Source/Os/OsMemory.h"
++#include "Engine/Source/WXL/Hooks.h"
+ 
+ // STATIC: 0x00A45644
+ static const uint32_t s_skinProfileBoneCounts[4] = { 256, 64, 53, 21 };
+@@ -1131,6 +1132,9 @@ void CM2Shared::SubstituteSpecializedShaders() {
+ // VERIFY: 6736c39f manual
+ // OFFSET: 0x00837A40
+ int32_t CM2Shared::InitializeSkinProfile() {
++    // WXL: OnM2SkinFinalize (orig 0x00837A40), fires before the batch blocks are sized from the skin.
++    wxl::events::EmitIfAny(wxl::events::Event::OnM2SkinFinalize, wxl::events::M2SkinFinalizeArgs{ this });
++
+     M2SkinProfile* skinData = this->m_skinData;
+ 
+     this->m_maxInstances = skinData->m_indices.m_count ? 0x10000 / skinData->m_indices.m_count : 1;
+@@ -1727,6 +1731,10 @@ int32_t CM2Shared::Initialize() {
+ 
+ // INLINED
+ int32_t CM2Shared::FinishLoading() {
++    // WXL: OnModelLoadPre before the raw bytes are parsed, OnModelLoad after (orig 0x0083CF00).
++    wxl::events::EmitIfAny(wxl::events::Event::OnModelLoadPre, wxl::events::ModelLoadArgs{ this });
++    wxl::events::EmitOnExit<wxl::events::ModelLoadArgs> wxlHook(wxl::events::Event::OnModelLoad, { this });
++
+     if (this->m_flags & 1) {
+         return 1;
+     }
+diff --git a/Engine/Source/WXL/CMakeLists.txt b/Engine/Source/WXL/CMakeLists.txt
+new file mode 100644
+index 0000000..0d240ec
+--- /dev/null
++++ b/Engine/Source/WXL/CMakeLists.txt
+@@ -0,0 +1,13 @@
++# WarcraftXL, in-tree. The event bus and the extension base class, compiled straight into the client.
++# No detours and no offsets: a hook point is an ev::Emit() call placed in the decompiled function.
++# The target is named WXLCore because an unrelated "Event" target already exists in this tree.
++file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
++
++add_library(WXLCore STATIC
++    ${PRIVATE_SOURCES}
++)
++
++target_include_directories(WXLCore
++    PUBLIC
++        ${CMAKE_SOURCE_DIR}
++)
+diff --git a/Engine/Source/WXL/Event.cpp b/Engine/Source/WXL/Event.cpp
+new file mode 100644
+index 0000000..e8648a3
+--- /dev/null
++++ b/Engine/Source/WXL/Event.cpp
+@@ -0,0 +1,71 @@
++// Event bus: subscriber storage + dispatch.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#include "Engine/Source/WXL/Event.h"
++
++#include <vector>
++
++namespace
++{
++    /// One subscriber: a handler function pointer and its opaque user pointer.
++    struct Sub { wxl::events::Handler fn; void* user; };
++
++    /**
++     * @brief Returns the subscriber vector for an event, built on first use.
++     * @param e  event whose bucket is requested.
++     * @return reference to the event's subscriber vector.
++     */
++    std::vector<Sub>& Bucket(wxl::events::Event e)
++    {
++        static std::vector<Sub> buckets[static_cast<size_t>(wxl::events::Event::Count)];
++        return buckets[static_cast<size_t>(e)];
++    }
++}
++
++namespace wxl::events
++{
++    /**
++     * @brief Appends a handler to an event's subscriber list.
++     * @param e        event to subscribe to.
++     * @param handler  function pointer invoked on Emit.
++     * @param user     opaque pointer passed back to the handler.
++     */
++    void Subscribe(Event e, Handler handler, void* user)
++    {
++        if (e < Event::Count) Bucket(e).push_back({ handler, user });
++    }
++
++    /**
++     * @brief Invokes every subscriber of an event in subscription order.
++     * @param e     event to publish.
++     * @param args  typed args struct for the event, passed by const pointer.
++     */
++    void Emit(Event e, const void* args)
++    {
++        if (e >= Event::Count) return;
++        for (const Sub& s : Bucket(e)) s.fn(s.user, args);
++    }
++
++    /**
++     * @brief Reports whether an event has at least one subscriber.
++     * @param e  event to test.
++     * @return true when Emit(e, ...) would invoke at least one handler.
++     */
++    bool Any(Event e)
++    {
++        return e < Event::Count && !Bucket(e).empty();
++    }
++}
+diff --git a/Engine/Source/WXL/Event.h b/Engine/Source/WXL/Event.h
+new file mode 100644
+index 0000000..6abaf26
+--- /dev/null
++++ b/Engine/Source/WXL/Event.h
+@@ -0,0 +1,313 @@
++// Event bus: the readable hook surface modules subscribe to. The core owns the detours.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#pragma once
++
++#include <cstdint>
++
++/// Event bus: the core installs the detours and republishes them as named events. A module
++/// Subscribe()s and never sees an address. A subscriber is a plain function pointer plus an opaque
++/// user, so Emit() walks a flat vector with no std::function or vtable on the path. Each event
++/// carries a typed POD args struct by const pointer.
++namespace wxl::events
++{
++    /// Named events a module may subscribe to; each carries the args struct noted alongside it.
++    enum class Event : uint32_t
++    {
++        OnModelLoadPre,  // a model's raw bytes are read, before parse (ModelLoadArgs)
++        OnModelLoad,     // a model finished loading and is parsed     (ModelLoadArgs)
++        OnM2SkinFinalize,// a model's skin profile is being finalized  (M2SkinFinalizeArgs)
++        OnM2PerFrameUpdate, // per-render-ctx scene-graph update tick  (M2PerFrameUpdateArgs)
++        OnBuildBonePalette, // bone-palette fill for one instance, post-engine (BuildBonePaletteArgs)
++        OnFrame,         // per-frame Present                          (FrameArgs)
++        OnEndScene,      // end of the frame, before present           (EndSceneArgs)
++        OnDeviceLost,    // before IDirect3DDevice9::Reset frees DEFAULT resources (DeviceResetArgs)
++        OnDeviceReset,   // after a successful IDirect3DDevice9::Reset  (DeviceResetArgs)
++        OnUpdate,        // once-per-frame logic tick, with delta time (UpdateArgs)
++        OnWorldRender,   // per-frame world draw pass                  (WorldRenderArgs)
++        OnWorldRenderEnd,// world -> UI boundary, the post-fx slot     (WorldRenderEndArgs)
++        OnLiquidRender,  // a liquid render pass is about to draw       (LiquidRenderArgs)
++        OnM2BatchDraw,   // one M2 triangle batch is drawing           (M2BatchDrawArgs)
++        OnM2SetupBatchAlpha, // an M2 batch's alpha/material is set up (M2SetupBatchAlphaArgs)
++        OnRibbonDraw,    // a ribbon emitter is about to draw          (RibbonDrawArgs)
++        OnInput,         // window input message (swallowable)         (InputArgs)
++        OnWorldClick,    // a world click resolved to a point/object   (WorldClickArgs)
++        OnAdtChunkBuild, // an ADT map chunk is being built            (AdtChunkArgs)
++        OnWmoRootLoad,   // a WMO root buffer is read, before the walk (WmoRootLoadArgs)
++        OnWmoGroupLoad,  // a WMO group buffer is read, before the walk(WmoGroupLoadArgs)
++        OnTextureUpload, // a texture is about to upload to the device (TextureUploadArgs)
++        OnBlpLoad,       // a BLP texture was requested by name           (BlpLoadArgs)
++        OnObjectUpdate,  // a server object create/update batch parsed     (ObjectUpdateArgs)
++        OnObjectDestroy, // an object is about to despawn                  (ObjectDestroyArgs)
++        OnTargetChanged, // the player's target was set via the API        (TargetChangedArgs)
++        OnSoundPlay,     // a UI/world sound is about to play              (SoundPlayArgs)
++        OnDoodadSpawn,   // a placed map doodad (CMapDoodad) was built (DoodadSpawnArgs)
++        OnItemSlotChange,// a character model slot received an item    (ItemSlotChangeArgs)
++        OnItemSlotClear, // a character model equipment slot was cleared(ItemSlotClearArgs)
++        OnWeaponVisualChange, // a unit's mainhand/offhand/ranged visible-item entry field was written
++                              // (WeaponVisualChangeArgs)
++        OnItemDisplayLookup, // a native ItemDisplayInfo row lookup by id just succeeded
++                              // (ItemDisplayLookupArgs)
++        OnCreatureDisplayChange, // UNIT_FIELD_DISPLAYID was committed for some object
++                              // (CreatureDisplayChangeArgs)
++        OnCreatureModelResolve, // a CreatureModelData row was resolved while rebuilding a creature's
++                              // visible model (CreatureModelResolveArgs)
++        OnWorldEnter,    // the world/map finished loading, in-world   (WorldEnterArgs)
++        OnWorldLeave,    // the world/map is being torn down           (WorldLeaveArgs)
++        OnBeforeHostLaunch, // the DLL is about to launch the asset host (HostLaunchArgs)
++        Count
++    };
++
++    // Typed args, passed by const void* and reinterpreted by the subscriber for its event.
++
++    /** @brief Args for OnModelLoadPre and OnModelLoad. */
++    struct ModelLoadArgs      { void* model; };
++    /**
++     * @brief Args for OnM2SkinFinalize, fired before the native finalize sizes its parallel batch
++     *        blocks; the window to rebuild a material/texunit contract a modern skin omits (read the
++     *        header and skin via wxl::game::m2::Header / Skin). The header arrays are raw pointers here.
++     */
++    struct M2SkinFinalizeArgs { void* model; };
++    /** @brief Args for OnFrame. */
++    struct FrameArgs          { void* device; };
++    /** @brief Args for OnUpdate, fired once per frame with the frame delta and timestamp. */
++    struct UpdateArgs         { float dt; uint32_t timeMs; };
++    /** @brief Args for OnEndScene. */
++    struct EndSceneArgs       { void* device; };
++    /**
++     * @brief Args for OnDeviceLost (fired before the engine resets the D3D9 device -- e.g. a window resize --
++     *        while every D3DPOOL_DEFAULT resource must be released) and OnDeviceReset (fired after a successful
++     *        reset, so a subscriber recreates them). params is the D3DPRESENT_PARAMETERS* the reset (re)creates with.
++     */
++    struct DeviceResetArgs    { void* device; void* params; };
++    /** @brief Args for OnWorldRender. */
++    struct WorldRenderArgs    { void* device; };
++    /**
++     * @brief Args for OnWorldRenderEnd. When supersampling is active, superSampleSource is the factor-sized
++     *        offscreen world surface (IDirect3DSurface9*) the world rendered into and ssaaFactor is its scale
++     *        relative to the native backbuffer; a subscriber downsamples that surface into the native
++     *        backbuffer. superSampleSource is null (and ssaaFactor 1.0) when supersampling is off. depthSource
++     *        is the readable (INTZ) world depth surface (IDirect3DSurface9*) for depth-using effects, or null
++     *        when no readable depth was bound this frame. proj is an optional row-major float[16] projection
++     *        override (same layout as the in-world camera projection global) for depth-using effects: the world
++     *        boundary leaves it null (the subscriber reads the live world camera), while the glue boundary
++     *        passes the glue scene's projection, whose camera is not in the world camera globals.
++     */
++    struct WorldRenderEndArgs { void* device; void* superSampleSource; float ssaaFactor; void* depthSource; const float* proj; };
++    /**
++     * @brief Args for OnLiquidRender, fired before the native liquid pass draws. passType is 0 for the
++     *        main pass, 1 for the secondary; instanceCount is the visible liquid instances in this pass;
++     *        transform is the shared liquid transform forwarded to each instance. Read-only.
++     */
++    struct LiquidRenderArgs  { void* bank; void* transform; int passType; uint32_t instanceCount; };
++    /**
++     * @brief Args for OnM2BatchDraw, fired just after the native draw with the same draw parameters,
++     *        so a subscriber can re-issue the draw while the vertex/index buffers are still bound.
++     */
++    struct M2BatchDrawArgs
++    {
++        void*    device;
++        void*    model;
++        int      primType;
++        int      baseVertex;
++        uint32_t minIndex;
++        uint32_t numVerts;
++        uint32_t startIndex;
++        uint32_t primCount;
++    };
++    /**
++     * @brief Args for OnM2SetupBatchAlpha, fired just after the native setter chose the alpha-test
++     *        reference from the blend mode; a subscriber may re-push the reference
++     *        (wxl::game::m2::PushAlphaRef) for the model and blend mode it recognizes. blendMode 1 is
++     *        alpha key. model may be null, in which case the subscriber skips.
++     */
++    struct M2SetupBatchAlphaArgs { void* model; uint16_t blendMode; };
++    /**
++     * @brief Args for OnRibbonDraw, fired before the native draw; a subscriber sets *useMultiTexture
++     *        true to request the single-pass multi-texture combine for a ribbon of >= 3 layers (the
++     *        core binds the extra layers and folds the passes into one). useMultiTexture is never null
++     *        and starts false.
++     */
++    struct RibbonDrawArgs { void* emitter; uint32_t layerCount; bool* useMultiTexture; };
++    /**
++     * @brief Args for OnInput; a subscriber that consumes the message sets *handled true, which makes
++     *        the core swallow it so the game does not also react. handled is never null. Args are
++     *        otherwise read-only.
++     */
++    struct InputArgs         { uint32_t message; uintptr_t wparam; uintptr_t lparam; bool* handled; };
++    /**
++     * @brief Args for OnWorldClick, fired on a mouse button when the cursor ray hits the world (not when
++     *        the click was consumed by a UI subscriber). hitType is 2 for an M2/doodad, 3 for terrain or
++     *        WMO; x/y/z is the world hit point; objLo/objHi is the engine object handle (zero for terrain).
++     */
++    struct WorldClickArgs    { uint32_t message; int hitType; float x; float y; float z; void* objLo; void* objHi; };
++    /** @brief Args for OnAdtChunkBuild. */
++    struct AdtChunkArgs      { void* chunk; uint32_t layerCount; };
++    /**
++     * @brief Args for OnWmoRootLoad, fired after the WMO root buffer is read and before the native chunk
++     *        walk; the window to reshape the root in place (read/replace the buffer via wxl::game::wmo).
++     */
++    struct WmoRootLoadArgs   { void* root; };
++    /**
++     * @brief Args for OnWmoGroupLoad, fired after a WMO group buffer is read and before the native
++     *        sub-chunk walk; the window to reshape the group in place (read/replace via wxl::game::wmo).
++     */
++    struct WmoGroupLoadArgs  { void* group; };
++    /** @brief Args for OnTextureUpload. */
++    struct TextureUploadArgs { void* texture; uint32_t width; uint32_t height; };
++    /**
++     * @brief Args for OnBlpLoad, fired after a by-name texture request resolves. name is the full virtual
++     *        path requested (match case-insensitively, slash-normalized); handle is the resolved texture
++     *        handle (may be null on failure). Fires on every reference, cached or not. Read-only.
++     */
++    struct BlpLoadArgs       { const char* name; void* handle; };
++    /**
++     * @brief Args for OnObjectUpdate, fired after a server update message is parsed (a batch of objects
++     *        created or field-updated). packet is the inbound message reader (cursor already consumed);
++     *        opcode is the message opcode. Read-only.
++     */
++    struct ObjectUpdateArgs  { void* packet; int opcode; };
++    /**
++     * @brief Args for OnObjectDestroy, fired before an object despawns while it is still resident. packet
++     *        holds the object GUID and an on-death flag; opcode is the message opcode. Read-only.
++     */
++    struct ObjectDestroyArgs { void* packet; int opcode; };
++    /**
++     * @brief Args for OnTargetChanged, fired after the target-set API applied a new target. scriptState is
++     *        the script state the call ran on; read the applied target GUID via wxl::game (kTargetGuid).
++     */
++    struct TargetChangedArgs { void* scriptState; };
++    /**
++     * @brief Args for OnSoundPlay, fired before a UI/world sound plays. scriptState is the script state
++     *        the call ran on; the sound id/name is on its stack. Read-only.
++     */
++    struct SoundPlayArgs     { void* scriptState; };
++    /** @brief Args for OnDoodadSpawn; read the transform via wxl::game::doodad. */
++    struct DoodadSpawnArgs   { void* doodad; };
++    /** @brief Args for OnItemSlotChange; charModelObj is the CharModelObject, modelSlot is the internal
++     *         model slot index (maps to an equipment category), itemDataPtr points to the item data block. */
++    struct ItemSlotChangeArgs { void* charModelObj; uint32_t modelSlot; void* itemDataPtr; };
++    /** @brief Args for OnItemSlotClear; charModelObj is the CharModelObject, equipSlotWow is the
++     *         WoW equipment slot index (EQUIPMENT_SLOT_* constants, 0-18). */
++    struct ItemSlotClearArgs  { void* charModelObj; uint32_t equipSlotWow; };
++    /**
++     * @brief Args for OnWeaponVisualChange. Fires for EVERY object in range whose visible-item entry
++     *        field is written, including the initial full-sync when a unit enters view (not only live
++     *        equip changes) -- this is when the client itself learns the value, not a semantic "just
++     *        equipped" event.
++     *        unit is the owning object pointer, or null if kUnitFieldArrayOffset (offsets/game/Unit.hpp)
++     *        has not been set yet.
++     *        slot is 0 = mainhand, 1 = offhand, 2 = ranged.
++     *        itemEntry is the new item entry ID now in that slot (0 = slot cleared).
++     */
++    struct WeaponVisualChangeArgs { void* unit; uint32_t slot; uint32_t itemEntry; };
++    /**
++     * @brief Args for OnItemDisplayLookup; fires after a native ItemDisplayInfo row-by-id lookup
++     *        (db2::itemdisplayinfo::kLookup) succeeds, for every caller of that lookup -- the
++     *        client's own model loader included, not just this module's own resolution calls (which
++     *        go through wxl::runtime::game::ItemDisplayInfoLookupNative() instead and never reach
++     *        here -- see that function's doc comment). displayId is the id that was looked up;
++     *        record points at the just-filled row buffer (db2::itemdisplayinfo::kRecordSize bytes,
++     *        field offsets are the kOff* constants in offsets/game/DB2.hpp). A subscriber may
++     *        overwrite fields in place -- e.g. swap a Model1/Model2 string pointer for a virtual
++     *        path -- before the lookup's original caller reads them.
++     */
++    struct ItemDisplayLookupArgs { uint32_t displayId; void* record; };
++    /**
++     * @brief Args for OnCreatureDisplayChange; fires when UNIT_FIELD_DISPLAYID or
++     *        UNIT_FIELD_NATIVEDISPLAYID is committed for any unit (see unit::kFieldUnitDisplayId /
++     *        kFieldUnitNativeDisplayId in offsets/game/Unit.hpp) -- covers `.creature transform`,
++     *        any other server-driven display change, and (unconfirmed) possibly players too, since
++     *        these are generic per-object fields, not creature-specific at the engine level. unit
++     *        is the object whose field array the write landed in (unit_ptr = fieldArrayBase -
++     *        kUnitFieldArrayOffset, same derivation as WeaponVisualChangeArgs); displayId is the
++     *        newly committed value; native is true when this came from NATIVEDISPLAYID rather than
++     *        the rendered DISPLAYID field -- a subscriber only interested in what's actually drawn
++     *        should ignore native==true events.
++     */
++    struct CreatureDisplayChangeArgs { void* unit; uint32_t displayId; bool native; };
++    /**
++     * @brief Args for OnCreatureModelResolve; fires whenever the client resolves a CreatureModelData
++     *        row while building/rebuilding a creature's visible model (see
++     *        db2::creaturemodeldata::kResolveMerge in offsets/game/DB2.hpp) -- covers every way a
++     *        creature's model gets resolved, confirmed to be the single, centralized choke point via
++     *        "find references" (one call site client-wide). displayId is captured one step earlier,
++     *        at creaturedisplayinfo::kCaptureDisplayId, and carried forward -- it is the key you want
++     *        for a sidecar override table, NOT modelId: several CreatureDisplayInfo rows (different
++     *        texture-variant recolors of one creature) commonly share a single ModelId, so a
++     *        modelId-keyed override can't tell them apart, while displayId can. modelId comes from the
++     *        CreatureModelData row itself (0 if the ModelId lookup failed -- subscribers should check
++     *        record before touching it).
++     *
++     *        IMPORTANT: unlike ItemDisplayLookupArgs::record (a caller-owned stack copy -- see
++     *        ItemDisplayInfo::kLookup's doc comment in DB2.hpp), record here is NEVER the live,
++     *        shared db2::creaturemodeldata::kIdTable row -- it is a private scratch copy the emitter
++     *        (GameHooks.cpp's OnCreatureModelResolveMergeCaptured) makes specifically so subscribers
++     *        have somewhere safe to write. A subscriber may freely overwrite record's ModelName field
++     *        (creaturemodeldata::kOffModelName) in place with a virtual path; the emitter detects the
++     *        change and redirects the resolve to it without ever touching the real table row.
++     *        Writing ModelName on the real row used to be the documented pattern here and was a bug:
++     *        several displayIds sharing one ModelId would permanently corrupt each other's ModelName
++     *        for the rest of the process, since the "live" row is shared and persistent, not per-call.
++     */
++    struct CreatureModelResolveArgs { uint32_t displayId; uint32_t modelId; void* record; };
++    /** @brief Args for OnM2PerFrameUpdate; renderCtx is the per-instance render context that the
++     *         scene graph is updating — fires once per visible M2 instance per frame. */
++    struct M2PerFrameUpdateArgs { void* renderCtx; };
++    /** @brief Args for OnBuildBonePalette; fires after the engine fills the per-instance bone palette
++     *         from the current animation pose, immediately before the batch draw uploads it to the
++     *         vertex shader. renderCtx is the M2Instance whose bone palette was just written.
++     *         Subscribers may overwrite bone matrices here to override the engine's pose. */
++    struct BuildBonePaletteArgs { void* renderCtx; };
++    /** @brief Args for OnWorldEnter. */
++    struct WorldEnterArgs    { uint32_t mapId; };
++    /** @brief Args for OnWorldLeave. */
++    struct WorldLeaveArgs    { uint32_t mapId; };
++    /**
++     * @brief Args for OnBeforeHostLaunch; a subscriber may set *cancel true to suppress the
++     *        auto-launch (e.g. it manages the host itself). exePath is the path about to be launched.
++     *        cancel is never null and starts false. Fired once, before the CreateProcess.
++     */
++    struct HostLaunchArgs    { const char* exePath; bool* cancel; };
++
++    using Handler = void (*)(void* user, const void* args);
++
++    /**
++     * @brief Subscribes a handler to an event, called cold at startup.
++     * @param e        event to subscribe to.
++     * @param handler  function pointer invoked on Emit.
++     * @param user     opaque pointer passed back to the handler.
++     */
++    void Subscribe(Event e, Handler handler, void* user);
++
++    /**
++     * @brief Publishes an event to its subscribers in subscription order, called by the core's detours.
++     * @param e     event to publish.
++     * @param args  typed args struct for the event, passed by const pointer.
++     */
++    void Emit(Event e, const void* args);
++
++    /**
++     * @brief Reports whether an event has at least one subscriber.
++     *
++     * For a per-draw detour, checking this before building the args struct skips the whole emission
++     * when nothing listens. Subscription happens at module load, before the render hooks run, so the
++     * unsynchronized read is stable by the time a hot path consults it.
++     * @param e  event to test.
++     * @return true when Emit(e, ...) would invoke at least one handler.
++     */
++    bool Any(Event e);
++}
+diff --git a/Engine/Source/WXL/EventScript.h b/Engine/Source/WXL/EventScript.h
+new file mode 100644
+index 0000000..f43bd28
+--- /dev/null
++++ b/Engine/Source/WXL/EventScript.h
+@@ -0,0 +1,57 @@
++// EventScript: the OOP base a runtime script subclasses to handle events as member functions.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#pragma once
++
++#include "Engine/Source/WXL/Event.h"
++
++/// A runtime script subclasses EventScript and, in its ctor, binds member functions to events with
++/// on<&Self::method>(Event::X). The bind is a non-capturing trampoline (a plain function pointer), so
++/// the event bus stays POD-dispatch with no std::function on the path. Each handler is a typed member,
++/// e.g. void onFrame(const events::FrameArgs& a).
++namespace wxl::events
++{
++    namespace detail
++    {
++        /// Deduces the owning class and the args type from a void (C::*)(const A&) member pointer.
++        template <class C, class A> struct MemArg { using Class = C; using Arg = A; };
++        template <class C, class A> MemArg<C, A> MemArgOf(void (C::*)(const A&));
++    }
++
++    /// Base class a runtime script subclasses to bind member functions as event handlers.
++    class EventScript
++    {
++    protected:
++        EventScript() = default;
++        virtual ~EventScript() = default;
++
++        /**
++         * @brief Binds a member function to an event; the class and args type are deduced from Method.
++         * @param e  event to bind the member function to.
++         */
++        template <auto Method>
++        void on(Event e)
++        {
++            using Traits = decltype(detail::MemArgOf(Method));
++            using Self   = typename Traits::Class;
++            using Arg    = typename Traits::Arg;
++            Subscribe(e, [](void* user, const void* args) {
++                Self* self = static_cast<Self*>(static_cast<EventScript*>(user));
++                (self->*Method)(*static_cast<const Arg*>(args));
++            }, this);
++        }
++    };
++}
+diff --git a/Engine/Source/WXL/Hooks.h b/Engine/Source/WXL/Hooks.h
+new file mode 100644
+index 0000000..cdf2b91
+--- /dev/null
++++ b/Engine/Source/WXL/Hooks.h
+@@ -0,0 +1,42 @@
++// Helpers for placing WXL hook points inside decompiled functions.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++#include "Engine/Source/WXL/Event.h"
++
++namespace wxl::events
++{
++    /**
++     * @brief Emits an event when it goes out of scope, i.e. after the surrounding function has run
++     *        and on every return path.
++     *
++     * The original WXL detours ran the native function and then emitted ("call original, then emit").
++     * In source there is no wrapper to put the emit after, so the guard is declared on the first line
++     * of the function and fires when the function exits, early returns included.
++     *
++     * Cheap on the hot path: nothing is emitted unless the event has a subscriber.
++     */
++    template <class Args>
++    class EmitOnExit
++    {
++    public:
++        EmitOnExit(Event e, const Args& args) : m_event(e), m_args(args) {}
++        ~EmitOnExit()
++        {
++            if (Any(m_event)) Emit(m_event, &m_args);
++        }
++        EmitOnExit(const EmitOnExit&)            = delete;
++        EmitOnExit& operator=(const EmitOnExit&) = delete;
++
++    private:
++        Event m_event;
++        Args  m_args;
++    };
++
++    /// Emits at the call site, before the rest of the function. Skips the work when nothing listens.
++    template <class Args>
++    inline void EmitIfAny(Event e, const Args& args)
++    {
++        if (Any(e)) Emit(e, &args);
++    }
++}
+diff --git a/Engine/Source/WXL/WXL.cpp b/Engine/Source/WXL/WXL.cpp
+new file mode 100644
+index 0000000..c697d48
+--- /dev/null
++++ b/Engine/Source/WXL/WXL.cpp
+@@ -0,0 +1,10 @@
++#include "Engine/Source/WXL/WXL.h"
++
++namespace wxl
++{
++    void InitModules()
++    {
++        // In-tree modules are constructed here, e.g. equip extension:
++        //     static wxl::scripts::equipextension::EquipExtension s_equip;
++    }
++}
+diff --git a/Engine/Source/WXL/WXL.h b/Engine/Source/WXL/WXL.h
+new file mode 100644
+index 0000000..94dfcce
+--- /dev/null
++++ b/Engine/Source/WXL/WXL.h
+@@ -0,0 +1,15 @@
++// WarcraftXL in-tree entry point.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++namespace wxl
++{
++    /**
++     * @brief Constructs every in-tree WXL module so it can subscribe to events.
++     *
++     * Modules are created here explicitly rather than through file-scope objects: the client links
++     * its modules as static libraries, and the linker drops a library object that nothing references,
++     * which would silently discard a self-registering module. Call once, before the first model is loaded.
++     */
++    void InitModules();
++}
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index 131001f..5a6d513 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -55,6 +55,7 @@ target_link_libraries(WowClient
+         Gxu
+         Images
+         Model2
++        WXLCore
+         Os
+         Scrn
+         Services
+diff --git a/WoW/Common/CMakeLists.txt b/WoW/Common/CMakeLists.txt
+index 752e8bc..955700d 100644
+--- a/WoW/Common/CMakeLists.txt
++++ b/WoW/Common/CMakeLists.txt
+@@ -8,3 +8,5 @@ target_include_directories(WoWCommon
+     PUBLIC
+         ${CMAKE_SOURCE_DIR}
+ )
++
++target_link_libraries(WoWCommon PUBLIC WXLCore)
+diff --git a/WoW/Common/ComponentCore/CharacterComponent.cpp b/WoW/Common/ComponentCore/CharacterComponent.cpp
+index e3036d5..8538851 100644
+--- a/WoW/Common/ComponentCore/CharacterComponent.cpp
++++ b/WoW/Common/ComponentCore/CharacterComponent.cpp
+@@ -48,6 +48,7 @@
+ #include "WoW/Source/DB/Rec/ItemVisualsRec.h"
+ #include "WoW/Source/DB/Rec/ParticleColorRec.h"
+ #include "WoW/Source/Object/ObjectClient/Player_C.h"
++#include "Engine/Source/WXL/Hooks.h"
+ 
+ // STATIC: 0x009F6A00
+ static int32_t s_itemPriority[NUM_ITEM_SLOTS][NUM_COMPONENT_SECTIONS] = {
+@@ -3775,6 +3776,9 @@ void CCharacterComponent::RemoveItem(ITEM_SLOT itemSlot) {
+ // VERIFY: 9f6bde71 manual
+ // OFFSET: 0x004EE6D0
+ void CCharacterComponent::RemoveItemBySlot(INVENTORY_SLOTS invSlot) {
++    // WXL: OnItemSlotClear (orig 0x004EE6D0), fires before the native clear.
++    wxl::events::EmitIfAny(wxl::events::Event::OnItemSlotClear, wxl::events::ItemSlotClearArgs{ this, static_cast<uint32_t>(invSlot) });
++
+     ITEM_SLOT itemSlot = CCharacterComponent::GetItemSlotForInvSlot(invSlot);
+ 
+     if (itemSlot != NUM_ITEM_SLOTS) {
+@@ -5554,6 +5558,10 @@ bool CCharacterComponent::Init(ComponentData* data, const char* debug) {
+ // VERIFY: 474cb696 manual
+ // OFFSET: 0x004F2640
+ void CCharacterComponent::AddItem(ITEM_SLOT itemSlot, const ItemDisplayInfoRec* displayRec, int32_t itemVisual) {
++    // WXL: OnItemSlotChange (orig 0x004F2640), fires after the native slot handler so slot state is final.
++    wxl::events::EmitOnExit<wxl::events::ItemSlotChangeArgs> wxlHook(wxl::events::Event::OnItemSlotChange,
++        { this, static_cast<uint32_t>(itemSlot), const_cast<ItemDisplayInfoRec*>(displayRec) });
++
+     this->m_flags |= 0x4;
+     this->m_itemDisplayID[itemSlot] = displayRec->m_id;
+ 
+diff --git a/WoW/Source/Client.cpp b/WoW/Source/Client.cpp
+index 1207fb9..9ff1273 100644
+--- a/WoW/Source/Client.cpp
++++ b/WoW/Source/Client.cpp
+@@ -112,6 +112,7 @@
+ #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
+ #include "WoW/Source/WowSvcs/WowSvcsClient/FriendList.h"
+ #include "WoW/Source/WowSysMessageOutput.h"
++#include "Engine/Source/WXL/WXL.h"
+ 
+ namespace {
+ 
+@@ -1736,6 +1737,7 @@ bool InitializeGlobal() {
+     }
+ 
+     BaseInitializeGlobal();
++    wxl::InitModules();
+     EventInitialize(1, 0);
+ 
+     CVar* timingTestError = CVar::Register("timingTestError", "Error reported by the timing validation system", 6, "0", nullptr, CATEGORY_DEFAULT, false, nullptr, false);

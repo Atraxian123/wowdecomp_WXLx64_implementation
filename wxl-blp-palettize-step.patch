@@ -1,0 +1,1045 @@
+diff --git a/Engine/Source/BLPFile/CMakeLists.txt b/Engine/Source/BLPFile/CMakeLists.txt
+index dc6fe59..8597718 100644
+--- a/Engine/Source/BLPFile/CMakeLists.txt
++++ b/Engine/Source/BLPFile/CMakeLists.txt
+@@ -8,3 +8,5 @@ target_include_directories(BLPFile
+     PUBLIC
+         ${CMAKE_SOURCE_DIR}
+ )
++
++target_link_libraries(BLPFile PUBLIC WXLCore)
+diff --git a/Engine/Source/BLPFile/blp.cpp b/Engine/Source/BLPFile/blp.cpp
+index f23c987..6ddeb9e 100644
+--- a/Engine/Source/BLPFile/blp.cpp
++++ b/Engine/Source/BLPFile/blp.cpp
+@@ -7,6 +7,8 @@
+ #include "Engine/Source/Storm/H/storm.h"
+ #include "Engine/Source/Storm/H/stpl.h"
+ #include "Engine/Source/Tempest/C2iVector.h"
++#include <vector>
++#include "Engine/Source/WXL/Blp.h"
+ 
+ // STATIC: 0x00AD90B0
+ uint8_t CBLPFile::s_eightBitAlphaLookup[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+@@ -918,6 +920,13 @@ int32_t CBLPFile::Open(const char* fileName, int32_t flags) {
+     SFileReadFile(file, s_blpFileLoadBuffer.Ptr(), s_blpFileLoadBuffer.Count(), &bytesRead, nullptr, 0);
+     SFileCloseFile(file);
+ 
++    // WXL: offer the file to the BLP pipeline (palettizes DXT character components).
++    std::vector<uint8_t> wxlBlp;
++    if (wxl::blp::TransformForLoad(fileName, s_blpFileLoadBuffer.Ptr(), wxlBlp)) {
++        s_blpFileLoadBuffer.SetCount(static_cast<uint32_t>(wxlBlp.size()));
++        memcpy(s_blpFileLoadBuffer.Ptr(), wxlBlp.data(), wxlBlp.size());
++    }
++
+     return this->Source(s_blpFileLoadBuffer.Ptr());
+ }
+ 
+diff --git a/Engine/Source/Services/CMakeLists.txt b/Engine/Source/Services/CMakeLists.txt
+index be82da1..5f3bc5d 100644
+--- a/Engine/Source/Services/CMakeLists.txt
++++ b/Engine/Source/Services/CMakeLists.txt
+@@ -12,4 +12,5 @@ target_include_directories(Services
+ target_link_libraries(Services
+     PUBLIC
+         freetype
++        WXLCore
+ )
+diff --git a/Engine/Source/Services/Texture.cpp b/Engine/Source/Services/Texture.cpp
+index 00115b9..a4b65d1 100644
+--- a/Engine/Source/Services/Texture.cpp
++++ b/Engine/Source/Services/Texture.cpp
+@@ -18,6 +18,8 @@
+ #include "Engine/Source/Services/TextureInt.h"
+ #include "Engine/Source/Storm/H/storm.h"
+ #include "Engine/Source/Tempest/C2Vector.h"
++#include <vector>
++#include "Engine/Source/WXL/Blp.h"
+ 
+ // STATIC: 0x009F1028
+ static const uint16_t s_pixelFormatBytesPerBlock[NUM_PIXEL_FORMATS] = { 8, 16, 0, 0, 0, 0, 0, 16, 0, 0 };
+@@ -1767,6 +1769,13 @@ void UpdateTgaTexture(EGxTexCommand command, uint32_t width, uint32_t height, ui
+ // VERIFY: c0a503e5 manual
+ // OFFSET: 0x004B7BD0
+ int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
++    // WXL: offer the file to the BLP pipeline (palettizes DXT character components). Declared before
++    // `image` so the replacement buffer outlives the parsed image that points into it.
++    std::vector<uint8_t> wxlBlp;
++    if (wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp)) {
++        data = wxlBlp.data();
++    }
++
+     CBLPFile image;
+ 
+     if (!image.Source(data)) {
+diff --git a/Engine/Source/WXL/Blp.h b/Engine/Source/WXL/Blp.h
+new file mode 100644
+index 0000000..480b404
+--- /dev/null
++++ b/Engine/Source/WXL/Blp.h
+@@ -0,0 +1,25 @@
++// WXL BLP load-time transform: the one entry point the client's texture loaders call.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++#include <cstdint>
++#include <vector>
++
++namespace wxl::blp
++{
++    /**
++     * @brief Offers a just-read BLP file to the WXL pipeline before the client parses it.
++     *
++     * Today this palettizes DXT character component textures (Item\TextureComponents\...): the client
++     * CPU-composites those into the character skin and can only read the native palettized encoding,
++     * so a modern DXT component otherwise fails with "component texture saved as DXT compressed".
++     * Every other file is left alone.
++     *
++     * @param name  virtual path the file was opened under; matched case-insensitively, either slash.
++     * @param data  the whole file as read from the archive (BLP2 only; anything else returns false).
++     * @param out   receives the replacement file when the function returns true.
++     * @return true when out holds a replacement the caller must parse instead of data. The caller keeps
++     *         out alive for as long as it uses the parsed image. false means data is used unchanged.
++     */
++    bool TransformForLoad(const char* name, const void* data, std::vector<uint8_t>& out);
++}
+diff --git a/Engine/Source/WXL/Blp/BlpHost.cpp b/Engine/Source/WXL/Blp/BlpHost.cpp
+new file mode 100644
+index 0000000..de6d7e6
+--- /dev/null
++++ b/Engine/Source/WXL/Blp/BlpHost.cpp
+@@ -0,0 +1,135 @@
++// Routing half of the BLP pipeline: decides whether a just-read .blp needs transforming.
++// Derived from WarcraftXL's BlpHost.cpp (GPLv3, Copyright (C) 2026 WarcraftXL). The storage-hook
++// registration of the injected build is gone: the client's own loaders call TransformForLoad directly.
++//
++// Only the character-component palettize path is routed. TranscodeBlp and CapBlpMips are compiled in
++// (BlpTranscode.cpp) but not routed yet: their output is DXT, which the client may keep pointing into
++// the file buffer after loading, so serving it needs an ownership story first.
++
++#include "Engine/Source/WXL/Blp.h"
++#include "Engine/Source/WXL/Log.h"
++
++#include "BlpTranscode.hpp"
++
++#include <cctype>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++namespace
++{
++    namespace transcode = wxl::modern::assets::textures::blp;
++
++    uint32_t Rd32(const uint8_t* p)
++    {
++        return p[0] | (p[1] << 8) | (p[2] << 16) | (uint32_t(p[3]) << 24);
++    }
++
++    /// Bytes of the file that the header accounts for (end of the furthest mip), or 0 when this is not
++    /// a BLP2. The loaders hand over a bare buffer, so the size comes from the header.
++    size_t Blp2Extent(const uint8_t* b)
++    {
++        if (Rd32(b) != 0x32504C42 || Rd32(b + 4) != 1) return 0;
++        uint64_t end = 0x94;
++        for (int i = 0; i < 16; ++i)
++        {
++            const uint64_t off = Rd32(b + 0x14 + i * 4), size = Rd32(b + 0x54 + i * 4);
++            if (size != 0 && off + size > end) end = off + size;
++        }
++        return end > 0xFFFFFFFFull ? 0 : static_cast<size_t>(end);
++    }
++
++    bool StartsWithCI(const char* s, const char* prefix)
++    {
++        for (; *prefix; ++s, ++prefix)
++        {
++            char a = *s, b = *prefix;
++            if (a == '/') a = '\\';
++            if (b == '/') b = '\\';
++            if (std::tolower(static_cast<unsigned char>(a)) != std::tolower(static_cast<unsigned char>(b)))
++                return false;
++        }
++        return true;
++    }
++
++    bool IsTextureComponent(const char* name)
++    {
++        return StartsWithCI(name, "item\\texturecomponents\\");
++    }
++
++    std::string ReadTextFile(const char* path)
++    {
++        FILE* f = std::fopen(path, "rb");
++        if (!f) return {};
++        std::string content;
++        char buf[4096];
++        for (;;)
++        {
++            const size_t n = std::fread(buf, 1, sizeof(buf), f);
++            if (n) content.append(buf, n);
++            if (n < sizeof(buf)) break;
++        }
++        std::fclose(f);
++        return content;
++    }
++
++    int FindConfigInt(const std::string& cfg, const char* key, int fallback)
++    {
++        const std::string needle = std::string("SET ") + key;
++        size_t pos = cfg.find(needle);
++        if (pos == std::string::npos) return fallback;
++        pos += needle.size();
++        while (pos < cfg.size() && std::isspace(static_cast<unsigned char>(cfg[pos]))) ++pos;
++        if (pos < cfg.size() && cfg[pos] == '"') ++pos;
++        bool neg = false;
++        if (pos < cfg.size() && cfg[pos] == '-') { neg = true; ++pos; }
++        int value = 0;
++        bool any = false;
++        while (pos < cfg.size() && std::isdigit(static_cast<unsigned char>(cfg[pos])))
++        {
++            any = true;
++            value = value * 10 + int(cfg[pos] - '0');
++            ++pos;
++        }
++        if (!any) return fallback;
++        return neg ? -value : value;
++    }
++
++    /// Long-edge budget for a palettized component: 256 natively, 512/1024 for componentTextureLevel 8/9+.
++    /// The client's working directory is its own folder, so WTF\Config.wtf is the client's config.
++    uint32_t ComponentTextureMaxEdge()
++    {
++        static const uint32_t maxEdge = []() {
++            const int level = FindConfigInt(ReadTextFile("WTF\\Config.wtf"), "componentTextureLevel", 0);
++            uint32_t edge = 256;
++            if (level >= 9) edge = 1024;
++            else if (level >= 8) edge = 512;
++            wxl::Log("blp: componentTextureLevel=%d componentMaxEdge=%u", level, edge);
++            return edge;
++        }();
++        return maxEdge;
++    }
++}
++
++namespace wxl::blp
++{
++    bool TransformForLoad(const char* name, const void* data, std::vector<uint8_t>& out)
++    {
++        if (!name || !data || !IsTextureComponent(name)) return false;
++
++        const uint8_t* bytes = static_cast<const uint8_t*>(data);
++        const size_t   size  = Blp2Extent(bytes);
++        if (size == 0) return false;
++
++        const uint32_t maxEdge = ComponentTextureMaxEdge();
++        std::vector<uint8_t> palettized;
++        if (!transcode::TextureComponentToPaletted({ bytes, size }, palettized, maxEdge))
++            return false; // already palettized (native) or not a decodable DXT: serve as-is
++
++        wxl::Log("blp: %s DXT component -> paletted maxEdge=%u (%u -> %u bytes)",
++                 name, maxEdge, uint32_t(size), uint32_t(palettized.size()));
++        out = std::move(palettized);
++        return true;
++    }
++}
+diff --git a/Engine/Source/WXL/Blp/BlpTranscode.cpp b/Engine/Source/WXL/Blp/BlpTranscode.cpp
+new file mode 100644
+index 0000000..d5db88b
+--- /dev/null
++++ b/Engine/Source/WXL/Blp/BlpTranscode.cpp
+@@ -0,0 +1,587 @@
++// BLP transcode: re-encode an uncompressed-BGRA (encoding 3) image to DXT5 the Client decodes.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#include "BlpTranscode.hpp"
++
++#include "Dxt.hpp"
++
++#include <algorithm>
++#include <array>
++#include <cstring>
++
++namespace wxl::modern::assets::textures::blp
++{
++    namespace
++    {
++        constexpr uint32_t kMagicBlp2 = 0x32504C42; // 'BLP2'
++
++        uint32_t rd32(const uint8_t* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (uint32_t(p[3]) << 24); }
++        void     wr32(uint8_t* p, uint32_t v) { for (int i = 0; i < 4; ++i) p[i] = uint8_t(v >> (i * 8)); }
++        uint32_t mx(uint32_t a, uint32_t b) { return a > b ? a : b; }
++
++        // BLP2 header field offsets.
++        constexpr uint32_t kEncoding    = 0x08; // u8: 1 palettized, 2 DXT, 3 uncompressed BGRA
++        constexpr uint32_t kAlphaDepth  = 0x09; // u8
++        constexpr uint32_t kAlphaType   = 0x0A; // u8: 0 DXT1, 1 DXT3, 7 DXT5
++        constexpr uint32_t kWidth       = 0x0C;
++        constexpr uint32_t kHeight      = 0x10;
++        constexpr uint32_t kMipOffsets  = 0x14; // u32[16]
++        constexpr uint32_t kMipSizes    = 0x54; // u32[16]
++
++        struct RgbaImage
++        {
++            uint32_t w = 0;
++            uint32_t h = 0;
++            std::vector<uint8_t> px; // RGBA
++        };
++
++        struct PaletteColor
++        {
++            uint8_t r = 0;
++            uint8_t g = 0;
++            uint8_t b = 0;
++            uint32_t count = 0;
++        };
++
++        struct PaletteBox
++        {
++            size_t first = 0;
++            size_t last = 0;
++        };
++
++        uint16_t rd16(const uint8_t* p) { return uint16_t(p[0] | (uint16_t(p[1]) << 8)); }
++        uint8_t  u8(int v) { return static_cast<uint8_t>(std::clamp(v, 0, 255)); }
++
++        void DecodeDxtColors(const uint8_t* p, bool dxt1Alpha, uint8_t colors[4][4])
++        {
++            const uint16_t c0 = rd16(p), c1 = rd16(p + 2);
++            int r0, g0, b0, r1, g1, b1;
++            dxt::Unpack565(c0, r0, g0, b0);
++            dxt::Unpack565(c1, r1, g1, b1);
++
++            colors[0][0] = u8(r0); colors[0][1] = u8(g0); colors[0][2] = u8(b0); colors[0][3] = 255;
++            colors[1][0] = u8(r1); colors[1][1] = u8(g1); colors[1][2] = u8(b1); colors[1][3] = 255;
++            if (!dxt1Alpha || c0 > c1)
++            {
++                colors[2][0] = u8((2 * r0 + r1) / 3);
++                colors[2][1] = u8((2 * g0 + g1) / 3);
++                colors[2][2] = u8((2 * b0 + b1) / 3);
++                colors[2][3] = 255;
++                colors[3][0] = u8((r0 + 2 * r1) / 3);
++                colors[3][1] = u8((g0 + 2 * g1) / 3);
++                colors[3][2] = u8((b0 + 2 * b1) / 3);
++                colors[3][3] = 255;
++            }
++            else
++            {
++                colors[2][0] = u8((r0 + r1) / 2);
++                colors[2][1] = u8((g0 + g1) / 2);
++                colors[2][2] = u8((b0 + b1) / 2);
++                colors[2][3] = 255;
++                colors[3][0] = colors[3][1] = colors[3][2] = colors[3][3] = 0;
++            }
++        }
++
++        bool DecodeDxtMip(std::span<const uint8_t> in, RgbaImage& img, uint32_t maxEdge)
++        {
++            const uint8_t* b = in.data();
++            const uint32_t n = static_cast<uint32_t>(in.size());
++            if (n < 0x94 || rd32(b) != kMagicBlp2 || rd32(b + 4) != 1) return false;
++            if (b[kEncoding] != 2) return false;
++
++            const uint8_t alphaDepth = b[kAlphaDepth];
++            const uint8_t alphaType = b[kAlphaType];
++            if (alphaType != 0 && alphaType != 1 && alphaType != 7) return false;
++
++            const uint32_t width = rd32(b + kWidth), height = rd32(b + kHeight);
++            if (width == 0 || height == 0 || width > 4096 || height > 4096) return false;
++
++            uint32_t mip = 0;
++            if (maxEdge != 0)
++                while (mip < 15 && mx(mx(1u, width >> mip), mx(1u, height >> mip)) > maxEdge) ++mip;
++
++            uint32_t off = rd32(b + kMipOffsets + mip * 4), size = rd32(b + kMipSizes + mip * 4);
++            if ((off == 0 || size == 0 || off > n || size > n - off) && mip != 0)
++            {
++                mip = 0;
++                off = rd32(b + kMipOffsets);
++                size = rd32(b + kMipSizes);
++            }
++            if (off == 0 || size == 0 || off > n || size > n - off) return false;
++
++            const uint32_t mipW = mx(1u, width >> mip), mipH = mx(1u, height >> mip);
++            const uint32_t blockBytes = (alphaType == 0) ? 8u : 16u;
++            const uint32_t bx = (mipW + 3) / 4, by = (mipH + 3) / 4;
++            if (uint64_t(bx) * by * blockBytes > size) return false;
++
++            img.w = mipW;
++            img.h = mipH;
++            img.px.assign(size_t(mipW) * mipH * 4, 0);
++
++            const uint8_t* src = b + off;
++            for (uint32_t ty = 0; ty < by; ++ty)
++            {
++                for (uint32_t tx = 0; tx < bx; ++tx)
++                {
++                    const uint8_t* block = src + (size_t(ty) * bx + tx) * blockBytes;
++                    uint8_t alpha[16];
++                    std::fill(std::begin(alpha), std::end(alpha), uint8_t(255));
++
++                    const uint8_t* colorBlock = block;
++                    if (alphaType == 1)
++                    {
++                        for (int i = 0; i < 16; ++i)
++                        {
++                            const uint8_t packed = block[i / 2];
++                            const uint8_t nibble = (i & 1) ? (packed >> 4) : (packed & 0x0f);
++                            alpha[i] = uint8_t(nibble * 17);
++                        }
++                        colorBlock = block + 8;
++                    }
++                    else if (alphaType == 7)
++                    {
++                        uint8_t al[8];
++                        al[0] = block[0]; al[1] = block[1];
++                        if (al[0] > al[1])
++                        {
++                            for (int i = 1; i < 7; ++i)
++                                al[i + 1] = uint8_t(((7 - i) * al[0] + i * al[1]) / 7);
++                        }
++                        else
++                        {
++                            for (int i = 1; i < 5; ++i)
++                                al[i + 1] = uint8_t(((5 - i) * al[0] + i * al[1]) / 5);
++                            al[6] = 0;
++                            al[7] = 255;
++                        }
++
++                        uint64_t bits = 0;
++                        for (int i = 0; i < 6; ++i) bits |= uint64_t(block[2 + i]) << (8 * i);
++                        for (int i = 0; i < 16; ++i)
++                            alpha[i] = al[(bits >> (3 * i)) & 7];
++                        colorBlock = block + 8;
++                    }
++
++                    uint8_t colors[4][4];
++                    // BLP uses alphaDepth to distinguish opaque BC1/DXT1 from its 1-bit-alpha mode.
++                    // Endpoint ordering alone is insufficient: opaque blocks are allowed to have c0 <= c1,
++                    // where index 3 must remain an opaque interpolated color instead of becoming transparent.
++                    DecodeDxtColors(colorBlock, alphaType == 0 && alphaDepth != 0, colors);
++                    const uint32_t cidx = rd32(colorBlock + 4);
++                    for (uint32_t py = 0; py < 4; ++py)
++                    {
++                        for (uint32_t px = 0; px < 4; ++px)
++                        {
++                            const uint32_t x = tx * 4 + px, y = ty * 4 + py;
++                            if (x >= mipW || y >= mipH) continue;
++                            const uint32_t si = py * 4 + px;
++                            const uint32_t ci = (cidx >> (2 * si)) & 3;
++                            uint8_t* dst = img.px.data() + (size_t(y) * mipW + x) * 4;
++                            dst[0] = colors[ci][0];
++                            dst[1] = colors[ci][1];
++                            dst[2] = colors[ci][2];
++                            dst[3] = (alphaType == 0 && colors[ci][3] == 0) ? 0 : alpha[si];
++                        }
++                    }
++                }
++            }
++            return true;
++        }
++
++        RgbaImage DownsampleHalf(const RgbaImage& src)
++        {
++            RgbaImage dst;
++            dst.w = std::max(1u, src.w / 2);
++            dst.h = std::max(1u, src.h / 2);
++            dst.px.assign(size_t(dst.w) * dst.h * 4, 0);
++            for (uint32_t y = 0; y < dst.h; ++y)
++            {
++                for (uint32_t x = 0; x < dst.w; ++x)
++                {
++                    uint32_t sum[4] = {};
++                    uint32_t count = 0;
++                    for (uint32_t oy = 0; oy < 2; ++oy)
++                    {
++                        for (uint32_t ox = 0; ox < 2; ++ox)
++                        {
++                            const uint32_t sx = std::min(src.w - 1, x * 2 + ox);
++                            const uint32_t sy = std::min(src.h - 1, y * 2 + oy);
++                            const uint8_t* sp = src.px.data() + (size_t(sy) * src.w + sx) * 4;
++                            for (int k = 0; k < 4; ++k) sum[k] += sp[k];
++                            ++count;
++                        }
++                    }
++                    uint8_t* dp = dst.px.data() + (size_t(y) * dst.w + x) * 4;
++                    for (int k = 0; k < 4; ++k) dp[k] = uint8_t(sum[k] / count);
++                }
++            }
++            return dst;
++        }
++
++        uint16_t ColorKey(uint8_t r, uint8_t g, uint8_t b)
++        {
++            return uint16_t(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
++        }
++
++        PaletteColor KeyCenter(uint16_t key, uint32_t count)
++        {
++            const uint8_t r5 = uint8_t((key >> 10) & 31);
++            const uint8_t g5 = uint8_t((key >> 5) & 31);
++            const uint8_t b5 = uint8_t(key & 31);
++            return PaletteColor{
++                uint8_t((uint32_t(r5) * 255 + 15) / 31),
++                uint8_t((uint32_t(g5) * 255 + 15) / 31),
++                uint8_t((uint32_t(b5) * 255 + 15) / 31),
++                count
++            };
++        }
++
++        void BoxBounds(const std::vector<PaletteColor>& colors, const PaletteBox& box,
++                       uint8_t& rMin, uint8_t& rMax, uint8_t& gMin, uint8_t& gMax,
++                       uint8_t& bMin, uint8_t& bMax, uint64_t& total)
++        {
++            rMin = gMin = bMin = 255;
++            rMax = gMax = bMax = 0;
++            total = 0;
++            for (size_t i = box.first; i < box.last; ++i)
++            {
++                const PaletteColor& c = colors[i];
++                rMin = std::min(rMin, c.r); rMax = std::max(rMax, c.r);
++                gMin = std::min(gMin, c.g); gMax = std::max(gMax, c.g);
++                bMin = std::min(bMin, c.b); bMax = std::max(bMax, c.b);
++                total += c.count;
++            }
++        }
++
++        std::array<std::array<uint8_t, 3>, 256> BuildPalette(const RgbaImage& base)
++        {
++            std::array<uint32_t, 32768> hist{};
++            const size_t pixels = size_t(base.w) * base.h;
++            for (size_t i = 0; i < pixels; ++i)
++            {
++                const uint8_t* p = base.px.data() + i * 4;
++                if (p[3] < 8) continue;
++                ++hist[ColorKey(p[0], p[1], p[2])];
++            }
++
++            std::vector<PaletteColor> colors;
++            colors.reserve(32768);
++            for (uint32_t i = 0; i < hist.size(); ++i)
++                if (hist[i] != 0)
++                    colors.push_back(KeyCenter(static_cast<uint16_t>(i), hist[i]));
++
++            if (colors.empty())
++                colors.push_back(PaletteColor{ 0, 0, 0, 1 });
++
++            std::vector<PaletteBox> boxes;
++            boxes.push_back(PaletteBox{ 0, colors.size() });
++            while (boxes.size() < 256)
++            {
++                size_t best = boxes.size();
++                uint32_t bestScore = 0;
++                uint8_t brMin = 0, brMax = 0, bgMin = 0, bgMax = 0, bbMin = 0, bbMax = 0;
++                uint64_t bestTotal = 0;
++
++                for (size_t i = 0; i < boxes.size(); ++i)
++                {
++                    const PaletteBox& box = boxes[i];
++                    if (box.last - box.first <= 1) continue;
++                    uint8_t rMin, rMax, gMin, gMax, bMin, bMax;
++                    uint64_t total;
++                    BoxBounds(colors, box, rMin, rMax, gMin, gMax, bMin, bMax, total);
++                    const uint32_t rRange = rMax - rMin;
++                    const uint32_t gRange = gMax - gMin;
++                    const uint32_t bRange = bMax - bMin;
++                    const uint32_t score = std::max({ rRange, gRange, bRange }) * static_cast<uint32_t>(std::min<uint64_t>(total, 0xffff));
++                    if (score > bestScore)
++                    {
++                        best = i;
++                        bestScore = score;
++                        brMin = rMin; brMax = rMax;
++                        bgMin = gMin; bgMax = gMax;
++                        bbMin = bMin; bbMax = bMax;
++                        bestTotal = total;
++                    }
++                }
++
++                if (best == boxes.size()) break;
++
++                PaletteBox box = boxes[best];
++                const uint32_t rRange = brMax - brMin;
++                const uint32_t gRange = bgMax - bgMin;
++                const uint32_t bRange = bbMax - bbMin;
++                if (rRange >= gRange && rRange >= bRange)
++                    std::sort(colors.begin() + box.first, colors.begin() + box.last,
++                              [](const PaletteColor& a, const PaletteColor& b) { return a.r < b.r; });
++                else if (gRange >= bRange)
++                    std::sort(colors.begin() + box.first, colors.begin() + box.last,
++                              [](const PaletteColor& a, const PaletteColor& b) { return a.g < b.g; });
++                else
++                    std::sort(colors.begin() + box.first, colors.begin() + box.last,
++                              [](const PaletteColor& a, const PaletteColor& b) { return a.b < b.b; });
++
++                uint64_t leftCount = 0;
++                size_t split = box.first + 1;
++                const uint64_t half = std::max<uint64_t>(1, bestTotal / 2);
++                for (; split < box.last; ++split)
++                {
++                    leftCount += colors[split - 1].count;
++                    if (leftCount >= half) break;
++                }
++                split = std::clamp(split, box.first + 1, box.last - 1);
++
++                boxes[best] = PaletteBox{ box.first, split };
++                boxes.push_back(PaletteBox{ split, box.last });
++            }
++
++            std::array<std::array<uint8_t, 3>, 256> palette{};
++            size_t pi = 0;
++            for (const PaletteBox& box : boxes)
++            {
++                uint64_t total = 0, r = 0, g = 0, b = 0;
++                for (size_t i = box.first; i < box.last; ++i)
++                {
++                    const PaletteColor& c = colors[i];
++                    total += c.count;
++                    r += uint64_t(c.r) * c.count;
++                    g += uint64_t(c.g) * c.count;
++                    b += uint64_t(c.b) * c.count;
++                }
++                if (total == 0) total = 1;
++                palette[pi++] = {
++                    uint8_t(r / total),
++                    uint8_t(g / total),
++                    uint8_t(b / total)
++                };
++                if (pi == palette.size()) break;
++            }
++            while (pi < palette.size())
++            {
++                palette[pi] = palette[pi ? pi - 1 : 0];
++                ++pi;
++            }
++            return palette;
++        }
++
++        std::array<uint8_t, 32768> BuildPaletteMap(const std::array<std::array<uint8_t, 3>, 256>& palette)
++        {
++            std::array<uint8_t, 32768> map{};
++            for (uint32_t key = 0; key < map.size(); ++key)
++            {
++                const PaletteColor c = KeyCenter(static_cast<uint16_t>(key), 1);
++                uint32_t bestDist = 0xffffffffu;
++                uint8_t best = 0;
++                for (uint32_t i = 0; i < palette.size(); ++i)
++                {
++                    const int dr = int(c.r) - palette[i][0];
++                    const int dg = int(c.g) - palette[i][1];
++                    const int db = int(c.b) - palette[i][2];
++                    const uint32_t dist = uint32_t(dr * dr + dg * dg + db * db);
++                    if (dist < bestDist)
++                    {
++                        bestDist = dist;
++                        best = static_cast<uint8_t>(i);
++                    }
++                }
++                map[key] = best;
++            }
++            return map;
++        }
++
++        void WritePalette(uint8_t* dst, const std::array<std::array<uint8_t, 3>, 256>& palette)
++        {
++            for (size_t i = 0; i < palette.size(); ++i)
++            {
++                dst[i * 4 + 0] = palette[i][2];
++                dst[i * 4 + 1] = palette[i][1];
++                dst[i * 4 + 2] = palette[i][0];
++                dst[i * 4 + 3] = 255;
++            }
++        }
++
++        bool EncodePalettedBlp(const RgbaImage& base, std::vector<uint8_t>& out)
++        {
++            if (base.w == 0 || base.h == 0 || base.px.size() != size_t(base.w) * base.h * 4) return false;
++
++            std::vector<RgbaImage> mips;
++            mips.push_back(base);
++            while ((mips.back().w > 1 || mips.back().h > 1) && mips.size() < 16)
++                mips.push_back(DownsampleHalf(mips.back()));
++
++            out.assign(0x94 + 1024, 0);
++            wr32(out.data(), kMagicBlp2);
++            wr32(out.data() + 4, 1);
++            out[kEncoding] = 1;
++            out[kAlphaDepth] = 8;
++            out[kAlphaType] = 8;
++            out[0x0b] = 1;
++            wr32(out.data() + kWidth, base.w);
++            wr32(out.data() + kHeight, base.h);
++            const auto palette = BuildPalette(base);
++            const auto paletteMap = BuildPaletteMap(palette);
++            WritePalette(out.data() + 0x94, palette);
++
++            uint32_t offsets[16] = {}, sizes[16] = {};
++            for (size_t mip = 0; mip < mips.size(); ++mip)
++            {
++                const RgbaImage& img = mips[mip];
++                offsets[mip] = static_cast<uint32_t>(out.size());
++                const size_t pixels = size_t(img.w) * img.h;
++                for (size_t i = 0; i < pixels; ++i)
++                {
++                    const uint8_t* p = img.px.data() + i * 4;
++                    out.push_back(paletteMap[ColorKey(p[0], p[1], p[2])]);
++                }
++                for (size_t i = 0; i < pixels; ++i)
++                    out.push_back(img.px[i * 4 + 3]);
++                sizes[mip] = static_cast<uint32_t>(out.size()) - offsets[mip];
++            }
++            for (int i = 0; i < 16; ++i)
++            {
++                wr32(out.data() + kMipOffsets + i * 4, offsets[i]);
++                wr32(out.data() + kMipSizes + i * 4, sizes[i]);
++            }
++            return true;
++        }
++    }
++
++    bool CapBlpMips(std::span<const uint8_t> in, std::vector<uint8_t>& out, uint32_t maxEdge)
++    {
++        const uint8_t* b = in.data();
++        const uint32_t n = static_cast<uint32_t>(in.size());
++        // BLP1 has a different header layout. Treating its compression field as the BLP2 version and
++        // reading BLP2 mip offsets can walk outside the source buffer (several legacy Stormwind textures
++        // use BLP1), so the generic mip dropper must be strictly BLP2-only.
++        if (n < 0x94 || rd32(b) != kMagicBlp2 || rd32(b + 4) != 1) return false;
++
++        const uint32_t width = rd32(b + kWidth), height = rd32(b + kHeight);
++        if (width == 0 || height == 0 || width > 16384 || height > 16384 || maxEdge == 0) return false;
++        const uint32_t maxdim = mx(width, height);
++        if (maxdim <= maxEdge) return false; // already within budget
++
++        uint32_t drop = 0;
++        while (drop < 15 && (maxdim >> drop) > maxEdge) ++drop; // halvings until the larger edge fits
++        if ((maxdim >> drop) > maxEdge) return false;
++
++        uint32_t mipOff[16], mipSize[16];
++        for (int i = 0; i < 16; ++i) { mipOff[i] = rd32(b + kMipOffsets + i * 4); mipSize[i] = rd32(b + kMipSizes + i * 4); }
++        // The target level must exist in the chain, and the data region must be in range.
++        if (drop >= 16 || mipSize[drop] == 0 || mipOff[drop] == 0) return false;
++        if (mipOff[0] < 0x94 || mipOff[0] > n) return false;
++
++        // Header (and palette for the palettized encoding) live before the first mip; keep them verbatim.
++        const uint32_t dataStart = mipOff[0];
++        out.assign(b, b + dataStart);
++
++        uint32_t newOff[16] = {}, newSize[16] = {};
++        bool copiedAny = false;
++        for (uint32_t i = drop, j = 0; i < 16; ++i, ++j)
++        {
++            if (mipSize[i] == 0 || mipOff[i] == 0) break;
++            if (mipOff[i] > n || mipSize[i] > n - mipOff[i]) break; // truncated/overflowed level
++            newOff[j]  = static_cast<uint32_t>(out.size());
++            out.insert(out.end(), b + mipOff[i], b + mipOff[i] + mipSize[i]);
++            newSize[j] = mipSize[i];
++            copiedAny = true;
++        }
++
++        if (!copiedAny) { out.clear(); return false; }
++
++        wr32(out.data() + kWidth,  mx(1u, width  >> drop));
++        wr32(out.data() + kHeight, mx(1u, height >> drop));
++        for (int i = 0; i < 16; ++i) { wr32(out.data() + kMipOffsets + i * 4, newOff[i]); wr32(out.data() + kMipSizes + i * 4, newSize[i]); }
++        return true;
++    }
++
++    bool TranscodeBlp(std::span<const uint8_t> in, std::vector<uint8_t>& out)
++    {
++        const uint8_t* b = in.data();
++        const uint32_t n = static_cast<uint32_t>(in.size());
++        if (n < 0x94 || rd32(b) != kMagicBlp2 || rd32(b + 4) != 1) return false; // not a BLP image
++        if (b[kEncoding] != 3) return false;                                      // only uncompressed BGRA
++
++        const uint32_t width = rd32(b + kWidth), height = rd32(b + kHeight);
++        const uint8_t  srcAlpha = b[kAlphaDepth];
++        if (width == 0 || height == 0) return false;
++
++        uint32_t mipOff[16], mipSize[16];
++        for (int i = 0; i < 16; ++i) { mipOff[i] = rd32(b + kMipOffsets + i * 4); mipSize[i] = rd32(b + kMipSizes + i * 4); }
++        if (mipSize[0] == 0 || mipOff[0] == 0 || mipOff[0] > n) return false;
++
++        // Bytes per source pixel from mip 0 (encoding 3 is normally 4-byte BGRA; tolerate 3-byte BGR).
++        const uint64_t px0 = uint64_t(width) * height;
++        const uint32_t bpp = static_cast<uint32_t>(mipSize[0] / px0);
++        if (bpp != 3 && bpp != 4) return false;
++
++        // Keep the source header + palette region verbatim, retag it as DXT5, then append the re-encoded mips.
++        out.assign(b, b + mipOff[0]);
++        out[kEncoding]   = 2; // DXT
++        out[kAlphaDepth] = 8;
++        out[kAlphaType]  = 7; // DXT5
++
++        uint32_t newOff[16] = {}, newSize[16] = {};
++        for (int i = 0; i < 16; ++i)
++        {
++            if (mipSize[i] == 0 || mipOff[i] == 0) continue;
++            const uint32_t mw = mx(1u, width >> i), mh = mx(1u, height >> i);
++            if (mipOff[i] + size_t(mw) * mh * bpp > n) break; // truncated source mip
++            const uint8_t* src = b + mipOff[i];
++
++            newOff[i] = static_cast<uint32_t>(out.size());
++            const uint32_t bx = (mw + 3) / 4, by = (mh + 3) / 4;
++            for (uint32_t ty = 0; ty < by; ++ty)
++                for (uint32_t tx = 0; tx < bx; ++tx)
++                {
++                    uint8_t block[64];
++                    for (uint32_t py = 0; py < 4; ++py)
++                        for (uint32_t pxi = 0; pxi < 4; ++pxi)
++                        {
++                            const uint32_t sx = (tx * 4 + pxi < mw) ? tx * 4 + pxi : mw - 1; // clamp edge
++                            const uint32_t sy = (ty * 4 + py  < mh) ? ty * 4 + py  : mh - 1;
++                            const uint8_t* p = src + (size_t(sy) * mw + sx) * bpp;
++                            uint8_t* d = block + (py * 4 + pxi) * 4;
++                            d[0] = p[2]; d[1] = p[1]; d[2] = p[0];               // BGR -> RGB
++                            d[3] = (bpp == 4 && srcAlpha != 0) ? p[3] : 255;     // opaque when no source alpha
++                        }
++                    uint8_t enc[16];
++                    dxt::CompressBlock(block, enc);
++                    out.insert(out.end(), enc, enc + 16);
++                }
++            newSize[i] = static_cast<uint32_t>(out.size()) - newOff[i];
++        }
++
++        for (int i = 0; i < 16; ++i)
++        {
++            wr32(out.data() + kMipOffsets + i * 4, newOff[i]);
++            wr32(out.data() + kMipSizes + i * 4, newSize[i]);
++        }
++        return true;
++    }
++
++    bool TextureComponentToPaletted(std::span<const uint8_t> in, std::vector<uint8_t>& out,
++                                    uint32_t maxEdge)
++    {
++        // Native character component textures usually top out around 256px on the long edge. Higher
++        // componentTextureLevel values preserve a larger modern mip before palettizing.
++        if (maxEdge < 256) maxEdge = 256;
++        if (maxEdge > 1024) maxEdge = 1024;
++
++        RgbaImage img;
++        if (!DecodeDxtMip(in, img, maxEdge)) return false;
++
++        return EncodePalettedBlp(img, out);
++    }
++}
+diff --git a/Engine/Source/WXL/Blp/BlpTranscode.hpp b/Engine/Source/WXL/Blp/BlpTranscode.hpp
+new file mode 100644
+index 0000000..4778d4a
+--- /dev/null
++++ b/Engine/Source/WXL/Blp/BlpTranscode.hpp
+@@ -0,0 +1,43 @@
++// BLP transcode: re-encode an uncompressed-BGRA (encoding 3) image to DXT5 the Client decodes.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#pragma once
++
++#include <cstdint>
++#include <span>
++#include <vector>
++
++// The Client's texture loader decodes palettized (1) and DXT (2) BLP, but NOT the uncompressed-BGRA
++// encoding (3) introduced after it. A modern source ships smooth textures (skies) as encoding 3, which the
++// Client cannot read -> they render white. This re-encodes an encoding-3 image to DXT5 (encoding 2), which
++// the Client reads, keeping the full mip chain. Pure bytes -> bytes.
++namespace wxl::modern::assets::textures::blp
++{
++    // Transcode an encoding-3 BLP to DXT5. Returns false (serve raw) for any other encoding or a non-BLP.
++    bool TranscodeBlp(std::span<const uint8_t> in, std::vector<uint8_t>& out);
++
++    // Character component textures are CPU-composited by the client. Native components are palettized
++    // BLP2 (encoding 1), while modern retail components are commonly DXT. Converts DXT components to that
++    // legacy shape, using the mip whose long edge fits the native-style component budget.
++    bool TextureComponentToPaletted(std::span<const uint8_t> in, std::vector<uint8_t>& out,
++                                    uint32_t maxEdge = 256);
++
++    // Caps a BLP's larger edge to maxEdge by dropping the top mip level(s) and re-basing the mip table:
++    // a 2048 texture is served as its existing 1024 mip, a 4096 as its 1024 mip, etc. No decode/re-encode,
++    // so it works for any encoding and loses nothing below the dropped level. Returns false (no change) for
++    // a non-BLP, an image already within maxEdge, or one whose mip chain is too short to reach maxEdge.
++    bool CapBlpMips(std::span<const uint8_t> in, std::vector<uint8_t>& out, uint32_t maxEdge);
++}
+diff --git a/Engine/Source/WXL/Blp/Dxt.hpp b/Engine/Source/WXL/Blp/Dxt.hpp
+new file mode 100644
+index 0000000..4de4213
+--- /dev/null
++++ b/Engine/Source/WXL/Blp/Dxt.hpp
+@@ -0,0 +1,89 @@
++// Compact DXT5 (BC3) block compressor: range-fit endpoints, enough for smooth gradient textures.
++// Copyright (C) 2026 WarcraftXL
++//
++// This program is free software: you can redistribute it and/or modify
++// it under the terms of the GNU General Public License as published by
++// the Free Software Foundation, either version 3 of the License, or
++// (at your option) any later version.
++//
++// This program is distributed in the hope that it will be useful,
++// but WITHOUT ANY WARRANTY; without even the implied warranty of
++// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
++// GNU General Public License for more details.
++//
++// You should have received a copy of the GNU General Public License
++// along with this program. If not, see <https://www.gnu.org/licenses/>.
++
++#pragma once
++
++#include <cstdint>
++#include <cstdlib>
++
++// One 4x4 RGBA block -> 16-byte DXT5 (BC3): an 8-byte alpha block (2 endpoints + 16 3-bit indices) then an
++// 8-byte DXT1 color block (2 RGB565 endpoints + 16 2-bit indices). Range-fit (min/max endpoints): not the
++// optimal compressor, but correct and decodable, and good enough for the smooth sky gradients that need it.
++namespace wxl::modern::assets::textures::blp::dxt
++{
++    inline uint16_t Pack565(int r, int g, int b)
++    {
++        return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
++    }
++    inline void Unpack565(uint16_t c, int& r, int& g, int& b)
++    {
++        r = ((c >> 11) & 0x1F) << 3; g = ((c >> 5) & 0x3F) << 2; b = (c & 0x1F) << 3;
++    }
++
++    // px = 16 RGBA texels (row-major 4x4). out = 16 bytes.
++    inline void CompressBlock(const uint8_t px[64], uint8_t out[16])
++    {
++        // --- alpha (BC3 alpha) ---
++        uint8_t amin = 255, amax = 0;
++        for (int i = 0; i < 16; ++i) { uint8_t a = px[i * 4 + 3]; if (a < amin) amin = a; if (a > amax) amax = a; }
++        out[0] = amax; out[1] = amin; // a0 >= a1 -> 8-alpha interpolation mode
++        uint8_t al[8];
++        al[0] = amax; al[1] = amin;
++        for (int i = 1; i < 7; ++i) al[i + 1] = static_cast<uint8_t>(((7 - i) * amax + i * amin) / 7);
++        uint64_t aidx = 0;
++        for (int i = 0; i < 16; ++i)
++        {
++            int a = px[i * 4 + 3], best = 0, bd = 1 << 30;
++            for (int j = 0; j < 8; ++j) { int d = std::abs(a - al[j]); if (d < bd) { bd = d; best = j; } }
++            aidx |= static_cast<uint64_t>(best) << (3 * i);
++        }
++        for (int i = 0; i < 6; ++i) out[2 + i] = static_cast<uint8_t>(aidx >> (8 * i));
++
++        // --- color (DXT1) ---
++        int rmn = 255, gmn = 255, bmn = 255, rmx = 0, gmx = 0, bmx = 0;
++        for (int i = 0; i < 16; ++i)
++        {
++            int r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
++            if (r < rmn) rmn = r; if (g < gmn) gmn = g; if (b < bmn) bmn = b;
++            if (r > rmx) rmx = r; if (g > gmx) gmx = g; if (b > bmx) bmx = b;
++        }
++        uint16_t c0 = Pack565(rmx, gmx, bmx), c1 = Pack565(rmn, gmn, bmn);
++        if (c0 < c1) { uint16_t t = c0; c0 = c1; c1 = t; } // c0 > c1 -> 4-colour mode
++        out[8] = uint8_t(c0); out[9] = uint8_t(c0 >> 8); out[10] = uint8_t(c1); out[11] = uint8_t(c1 >> 8);
++        if (c0 == c1) { out[12] = out[13] = out[14] = out[15] = 0; return; } // flat block, all index 0
++
++        int cr[4], cg[4], cb[4];
++        Unpack565(c0, cr[0], cg[0], cb[0]);
++        Unpack565(c1, cr[1], cg[1], cb[1]);
++        for (int k = 0; k < 3; ++k)
++        {
++            int* e = (k == 0) ? cr : (k == 1) ? cg : cb;
++            e[2] = (2 * e[0] + e[1]) / 3; e[3] = (e[0] + 2 * e[1]) / 3;
++        }
++        uint32_t cidx = 0;
++        for (int i = 0; i < 16; ++i)
++        {
++            int r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2], best = 0, bd = 1 << 30;
++            for (int j = 0; j < 4; ++j)
++            {
++                int dr = r - cr[j], dg = g - cg[j], db = b - cb[j], d = dr * dr + dg * dg + db * db;
++                if (d < bd) { bd = d; best = j; }
++            }
++            cidx |= static_cast<uint32_t>(best) << (2 * i);
++        }
++        for (int i = 0; i < 4; ++i) out[12 + i] = static_cast<uint8_t>(cidx >> (8 * i));
++    }
++}
+diff --git a/Engine/Source/WXL/CMakeLists.txt b/Engine/Source/WXL/CMakeLists.txt
+index 0d240ec..3cc32c1 100644
+--- a/Engine/Source/WXL/CMakeLists.txt
++++ b/Engine/Source/WXL/CMakeLists.txt
+@@ -11,3 +11,12 @@ target_include_directories(WXLCore
+     PUBLIC
+         ${CMAKE_SOURCE_DIR}
+ )
++
++# BlpTranscode.cpp uses std::span (C++20); the rest of the tree is C++17. Only this target moves up, and
++# its public headers (Event.h, Hooks.h, Blp.h, Log.h, WXL.h) stay C++17-clean.
++set_target_properties(WXLCore PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
++
++target_include_directories(WXLCore
++    PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}/Blp
++)
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+new file mode 100644
+index 0000000..141abbd
+--- /dev/null
++++ b/Engine/Source/WXL/Log.cpp
+@@ -0,0 +1,24 @@
++#include "Engine/Source/WXL/Log.h"
++
++#include <cstdarg>
++#include <cstdio>
++#include <mutex>
++
++namespace wxl
++{
++    void Log(const char* format, ...)
++    {
++        static std::mutex s_mutex;
++        std::lock_guard<std::mutex> lock(s_mutex);
++
++        FILE* f = std::fopen("WXL.log", "ab");
++        if (!f) return;
++
++        va_list args;
++        va_start(args, format);
++        std::vfprintf(f, format, args);
++        va_end(args);
++        std::fputc('\n', f);
++        std::fclose(f);
++    }
++}
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+new file mode 100644
+index 0000000..23d6de9
+--- /dev/null
++++ b/Engine/Source/WXL/Log.h
+@@ -0,0 +1,9 @@
++// Minimal thread-safe log for in-tree WXL code (WXL.log next to the executable).
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++namespace wxl
++{
++    /// printf-style line appended to WXL.log in the working directory. Safe from loader threads.
++    void Log(const char* format, ...);
++}

@@ -48,6 +48,7 @@
 #include "WoW/Source/DB/Rec/ItemVisualsRec.h"
 #include "WoW/Source/DB/Rec/ParticleColorRec.h"
 #include "WoW/Source/Object/ObjectClient/Player_C.h"
+#include "Engine/Source/WXL/Hooks.h"
 
 // STATIC: 0x009F6A00
 static int32_t s_itemPriority[NUM_ITEM_SLOTS][NUM_COMPONENT_SECTIONS] = {
@@ -3775,6 +3776,9 @@ void CCharacterComponent::RemoveItem(ITEM_SLOT itemSlot) {
 // VERIFY: 9f6bde71 manual
 // OFFSET: 0x004EE6D0
 void CCharacterComponent::RemoveItemBySlot(INVENTORY_SLOTS invSlot) {
+    // WXL: OnItemSlotClear (orig 0x004EE6D0), fires before the native clear.
+    wxl::events::EmitIfAny(wxl::events::Event::OnItemSlotClear, wxl::events::ItemSlotClearArgs{ this, static_cast<uint32_t>(invSlot) });
+
     ITEM_SLOT itemSlot = CCharacterComponent::GetItemSlotForInvSlot(invSlot);
 
     if (itemSlot != NUM_ITEM_SLOTS) {
@@ -5554,6 +5558,10 @@ bool CCharacterComponent::Init(ComponentData* data, const char* debug) {
 // VERIFY: 474cb696 manual
 // OFFSET: 0x004F2640
 void CCharacterComponent::AddItem(ITEM_SLOT itemSlot, const ItemDisplayInfoRec* displayRec, int32_t itemVisual) {
+    // WXL: OnItemSlotChange (orig 0x004F2640), fires after the native slot handler so slot state is final.
+    wxl::events::EmitOnExit<wxl::events::ItemSlotChangeArgs> wxlHook(wxl::events::Event::OnItemSlotChange,
+        { this, static_cast<uint32_t>(itemSlot), const_cast<ItemDisplayInfoRec*>(displayRec) });
+
     this->m_flags |= 0x4;
     this->m_itemDisplayID[itemSlot] = displayRec->m_id;
 

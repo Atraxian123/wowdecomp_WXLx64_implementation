@@ -112,6 +112,7 @@
 #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
 #include "WoW/Source/WowSvcs/WowSvcsClient/FriendList.h"
 #include "WoW/Source/WowSysMessageOutput.h"
+#include "Engine/Source/WXL/WXL.h"
 
 namespace {
 
@@ -1736,6 +1737,7 @@ bool InitializeGlobal() {
     }
 
     BaseInitializeGlobal();
+    wxl::InitModules();
     EventInitialize(1, 0);
 
     CVar* timingTestError = CVar::Register("timingTestError", "Error reported by the timing validation system", 6, "0", nullptr, CATEGORY_DEFAULT, false, nullptr, false);

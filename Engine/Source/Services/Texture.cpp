@@ -18,6 +18,8 @@
 #include "Engine/Source/Services/TextureInt.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/C2Vector.h"
+#include <vector>
+#include "Engine/Source/WXL/Blp.h"
 
 // STATIC: 0x009F1028
 static const uint16_t s_pixelFormatBytesPerBlock[NUM_PIXEL_FORMATS] = { 8, 16, 0, 0, 0, 0, 0, 16, 0, 0 };
@@ -1767,6 +1769,13 @@ void UpdateTgaTexture(EGxTexCommand command, uint32_t width, uint32_t height, ui
 // VERIFY: c0a503e5 manual
 // OFFSET: 0x004B7BD0
 int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
+    // WXL: offer the file to the BLP pipeline (palettizes DXT character components). Declared before
+    // `image` so the replacement buffer outlives the parsed image that points into it.
+    std::vector<uint8_t> wxlBlp;
+    if (wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp)) {
+        data = wxlBlp.data();
+    }
+
     CBLPFile image;
 
     if (!image.Source(data)) {

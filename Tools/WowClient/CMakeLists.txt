@@ -55,6 +55,7 @@ target_link_libraries(WowClient
         Gxu
         Images
         Model2
+        WXLCore
         Os
         Scrn
         Services
