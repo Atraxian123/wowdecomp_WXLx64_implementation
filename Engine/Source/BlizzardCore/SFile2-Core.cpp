@@ -19,6 +19,8 @@
 #include "Engine/Source/BlizzardCore/Source/Packages/Util/Hash.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Storm/Source/MD5.h"
+#include <vector>
+#include "Engine/Source/WXL/Storage.h"
 
 // STATIC: 0x00B32038
 static SFileStreamingStatus s_streamingStatus;
@@ -1028,6 +1030,28 @@ int32_t STORMAPI SFile::FileExistsEx(const char* name, uint32_t flags) {
 // OFFSET: 0x00424B50
 int32_t STORMAPI SFile::OpenEx(SArchive* archive, const char* name, uint32_t flags, SFileImpl** result) {
     Blizzard::File::SetLastErrorStack(nullptr);
+
+    // WXL: let in-tree modules serve a virtual file from memory. Opens that name a specific archive
+    // stay native, as the injected build did. A hit is an ordinary in-memory SFileImpl (type 5), so
+    // SFileReadFile / SFileGetFileSize / SFile::SetFilePointer / SFileCloseFile need no change.
+    if (!archive && wxl::storage::HasProviders()) {
+        std::vector<uint8_t> served;
+
+        if (wxl::storage::TryServe(name, served)) {
+            SFileImpl* file = new (0u, __FILE__, __LINE__) SFileImpl(5);
+            file->m_size = static_cast<uint32_t>(served.size());
+            file->m_data = static_cast<uint8_t*>(Blizzard::Memory::Allocate(file->m_size ? file->m_size : 1, 0, __FILE__, __LINE__));
+            file->m_position = 0;
+            file->m_name = Blizzard::String::Duplicate(name);
+
+            if (file->m_size) {
+                memcpy(file->m_data, served.data(), file->m_size);
+            }
+
+            *result = file;
+            return 1;
+        }
+    }
 
     if (CheckIfStreamingAndTrial() && System_SFile2::s_soundCacheArchive && Blizzard::String::FindI(name, ".wav", 0x7FFFFFFF)) {
         *result = new (0u, __FILE__, __LINE__) SFileImpl(3);

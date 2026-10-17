@@ -56,6 +56,7 @@ target_link_libraries(WowClient
         Images
         Model2
         WXLCore
+        WXLEquip
         Os
         Scrn
         Services

@@ -28,3 +28,5 @@ target_include_directories(BlizzardCore
         ${CMAKE_SOURCE_DIR}/Engine/Source/SoundEngine/fmodex/lib/ogg_vorbis/ogg/include
         ${CMAKE_SOURCE_DIR}/Engine/Source/SoundEngine/fmodex/lib/ogg_vorbis/vorbis/include
 )
+
+target_link_libraries(BlizzardCore PUBLIC WXLCore)

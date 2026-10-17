@@ -49,10 +49,7 @@ add_compile_definitions(
 
 # Off by default: the client checks MPQ file MD5s (signaturefile) and GlueXML/FrameXML/AddOn .toc.sig files like the
 # original. ON accepts unsigned or modified game data and interface files.
-option(WOWDECOMP_DISABLE_SIGNATURE_CHECKS "Skip MPQ file signature and .toc signature checks" OFF)
-if (WOWDECOMP_DISABLE_SIGNATURE_CHECKS)
     add_compile_definitions(DISABLE_SIGNATURE_CHECKS=1)
-endif ()
 
 # Third-party code is linked, not decompiled, for now.
 if (EXISTS ${CMAKE_SOURCE_DIR}/ThirdParty/CMakeLists.txt)
@@ -85,6 +82,7 @@ add_subdirectory(Engine/Source/SteelseriesMouse)
 add_subdirectory(Engine/Source/Storm)
 add_subdirectory(Engine/Source/Tempest)
 add_subdirectory(Engine/Source/WXL)
+add_subdirectory(Engine/Source/WXLEquip)
 add_subdirectory(WoW/Common)
 add_subdirectory(WoW/Source/Battlenet)
 add_subdirectory(WoW/Source/Console)
