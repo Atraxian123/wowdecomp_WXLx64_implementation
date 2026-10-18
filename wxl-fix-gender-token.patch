@@ -1,0 +1,37 @@
+diff --git a/Engine/Source/WXL/Blp/BlpHost.cpp b/Engine/Source/WXL/Blp/BlpHost.cpp
+index fdabe8b..17f5815 100644
+--- a/Engine/Source/WXL/Blp/BlpHost.cpp
++++ b/Engine/Source/WXL/Blp/BlpHost.cpp
+@@ -116,7 +116,14 @@ namespace wxl::blp
+ {
+     bool TransformForLoad(const char* name, const void* data, std::vector<uint8_t>& out)
+     {
+-        if (!name || !data || !IsTextureComponent(name)) return false;
++        if (!name || !data) return false;
++
++        // The first BLP names the client offers, so the log shows whether this hook is reached at all and how
++        // the names are spelled. Without this, a silent hook and a non-matching name look identical.
++        if (wxl::LogThrottle("blp.seen", 80, 0))
++            wxl::LogCat("BLP", "offered '%s' (%s)", name, IsTextureComponent(name) ? "character component" : "not a component");
++
++        if (!IsTextureComponent(name)) return false;
+ 
+         const uint8_t* bytes = static_cast<const uint8_t*>(data);
+         const size_t   size  = Blp2Extent(bytes);
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index c22c4a9..756a176 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -1844,7 +1844,11 @@ namespace wxl::scripts::equipextension
+             return;
+         }
+ 
+-        static const char* const kGenderStrings[2] = { "Male", "Female" };
++        // The gender token in object-component file names is a single letter: "M" or "F". It is the same table the
++        // client uses for its own helm paths (s_fileDecorations at 0x00AC46A0 = { "M", "F", "U" }); the old
++        // offsets file mislabelled that address as "Male"/"Female", which produced names like _Be_Female.mdx
++        // that no file has, so every collection and helm model failed to load.
++        static const char* const kGenderStrings[2] = { "M", "F" };
+         const char* raceCode  = chrRec->m_clientPrefix;
+         uint32_t    genderIdx = eng::CmoGender(cmo);
+         const char* genderStr = genderIdx < 2 ? kGenderStrings[genderIdx] : nullptr;

@@ -116,7 +116,14 @@ namespace wxl::blp
 {
     bool TransformForLoad(const char* name, const void* data, std::vector<uint8_t>& out)
     {
-        if (!name || !data || !IsTextureComponent(name)) return false;
+        if (!name || !data) return false;
+
+        // The first BLP names the client offers, so the log shows whether this hook is reached at all and how
+        // the names are spelled. Without this, a silent hook and a non-matching name look identical.
+        if (wxl::LogThrottle("blp.seen", 80, 0))
+            wxl::LogCat("BLP", "offered '%s' (%s)", name, IsTextureComponent(name) ? "character component" : "not a component");
+
+        if (!IsTextureComponent(name)) return false;
 
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
         const size_t   size  = Blp2Extent(bytes);

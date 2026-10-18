@@ -1844,7 +1844,11 @@ namespace wxl::scripts::equipextension
             return;
         }
 
-        static const char* const kGenderStrings[2] = { "Male", "Female" };
+        // The gender token in object-component file names is a single letter: "M" or "F". It is the same table the
+        // client uses for its own helm paths (s_fileDecorations at 0x00AC46A0 = { "M", "F", "U" }); the old
+        // offsets file mislabelled that address as "Male"/"Female", which produced names like _Be_Female.mdx
+        // that no file has, so every collection and helm model failed to load.
+        static const char* const kGenderStrings[2] = { "M", "F" };
         const char* raceCode  = chrRec->m_clientPrefix;
         uint32_t    genderIdx = eng::CmoGender(cmo);
         const char* genderStr = genderIdx < 2 ? kGenderStrings[genderIdx] : nullptr;
