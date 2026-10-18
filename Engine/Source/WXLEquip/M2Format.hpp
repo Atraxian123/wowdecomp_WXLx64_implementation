@@ -103,7 +103,10 @@ namespace wxl::structure::m2
      * @brief One animation sequence, 0x40 bytes.
      *
      * The loader reads a single u32 duration at 0x04 and a single u32 blendTime at 0x1C. flags bit
-     * 0x20 = data embedded in the model; clear = streamed from a sequence file.
+     * 0x20 = data embedded in the model; clear = streamed from a sequence file. flags bit 0x40 = the
+     * record carries no keyframes of its own: aliasNext is the INDEX of the next member of a circular
+     * ring of sequences that all play one key set, and the engine walks that ring both to name the
+     * sequence file and to bind it to every member.
      */
     struct M2Sequence
     {
@@ -118,8 +121,8 @@ namespace wxl::structure::m2
         uint32_t replayMax;      // 0x18
         uint32_t blendTime;      // 0x1C
         uint8_t  _bounds[0x1C];  // 0x20
-        int16_t  variationNext;  // 0x3C
-        uint16_t aliasNext;      // 0x3E
+        int16_t  variationNext;  // 0x3C  index of the next variation of this id, -1 = none
+        uint16_t aliasNext;      // 0x3E  index of the next ring member (see flags bit 0x40)
     };
 
     /**
@@ -134,10 +137,13 @@ namespace wxl::structure::m2
         M2Array  filename; // 0x08
     };
 
-    // Common texture.type values used by the 3.3.5 client.
+    // Common texture.type values used by the target client.
     constexpr uint32_t kTexTypeHardcoded = 0;
     constexpr uint32_t kTexTypeObjectSkin = 2;
     constexpr uint32_t kTexTypeWeaponBlade = 3;
+    // Character hair and facial hair. Never named by the file: the character code hands the handle to
+    // the model's texture-replace entry, which writes it at every texture index of this type.
+    constexpr uint32_t kTexTypeCharHair = 6;
 
     /**
      * @brief One render batch (texunit), 0x18 bytes.
@@ -202,8 +208,8 @@ namespace wxl::structure::m2
     };
 
     /**
-     * @brief One M2Track<T> animation block: interpolation/global-sequence header plus the pre-Legion,
-     *        per-sequence-indexed timestamp and value tables.
+     * @brief One M2Track<T> animation block: interpolation/global-sequence header plus the legacy,
+     *        per-sequence-indexed timestamp and value tables that predate the modern single-array layout.
      *
      * timestamps/values are each an array of arrays: outer entry i holds sequence i's own timestamp (or
      * value) list, so a track with no global sequence still needs one outer entry per animation sequence

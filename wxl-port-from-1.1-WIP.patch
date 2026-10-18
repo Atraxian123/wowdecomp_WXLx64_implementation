@@ -1,0 +1,2736 @@
+diff --git a/Engine/Source/WXL/HandItem.cpp b/Engine/Source/WXL/HandItem.cpp
+new file mode 100644
+index 0000000..2f44e71
+--- /dev/null
++++ b/Engine/Source/WXL/HandItem.cpp
+@@ -0,0 +1,28 @@
++#include "Engine/Source/WXL/HandItem.h"
++#include "Engine/Source/WXL/Log.h"
++
++namespace wxl::hooks
++{
++    namespace
++    {
++        HandItemModelResolver g_resolver = nullptr;
++    }
++
++    void SetHandItemModelResolver(HandItemModelResolver fn)
++    {
++        g_resolver = fn;
++        wxl::LogCat("EVENT", "hand-item model resolver %s", fn ? "installed" : "cleared");
++    }
++
++    bool ResolveHandItemModel(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize)
++    {
++        // Counts calls so the log proves the engine reaches AddHandItem at all, whether or not a resolver
++        // or a sidecar entry exists.
++        if (wxl::LogThrottle("handitem.called", 12, 500))
++            wxl::LogCat("EVENT", "AddHandItem reached: displayId=%u slot=%u resolver=%s", displayId, invSlot,
++                        g_resolver ? "installed" : "NOT INSTALLED");
++        if (!g_resolver || !out || outSize == 0) return false;
++        out[0] = '\0';
++        return g_resolver(displayId, invSlot, out, outSize);
++    }
++}
+diff --git a/Engine/Source/WXL/HandItem.h b/Engine/Source/WXL/HandItem.h
+new file mode 100644
+index 0000000..5a4761f
+--- /dev/null
++++ b/Engine/Source/WXL/HandItem.h
+@@ -0,0 +1,26 @@
++// Hook point for held-weapon model resolution (CCharacterComponent::AddHandItem).
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace wxl::hooks
++{
++    /**
++     * @brief Callback type: may replace the model file name the client loads for a held weapon.
++     * @param displayId  the ItemDisplayInfo id of the weapon.
++     * @param invSlot    the WoW inventory slot being filled (15 = main hand, 16 = off hand, 17 = ranged).
++     * @param out        receives the replacement file name (bare name, no directory: the client prepends
++     *                   Item\ObjectComponents\Weapon\ or ...\Shield\ itself).
++     * @param outSize    capacity of out.
++     * @return true when out holds a replacement the client must load instead of the record's own Model1.
++     */
++    using HandItemModelResolver = bool (*)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
++
++    /// Registers the resolver. One resolver only; a later call replaces the earlier one.
++    void SetHandItemModelResolver(HandItemModelResolver fn);
++
++    /// Called by AddHandItem before it builds the model path. false when no resolver is set or it declines.
++    bool ResolveHandItemModel(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
++}
+diff --git a/Engine/Source/WXLEquip/CreatureExtension.cpp b/Engine/Source/WXLEquip/CreatureExtension.cpp
+index 2dd25cd..366b708 100644
+--- a/Engine/Source/WXLEquip/CreatureExtension.cpp
++++ b/Engine/Source/WXLEquip/CreatureExtension.cpp
+@@ -433,10 +433,8 @@ namespace wxl::scripts::creatureextension
+         // its own doc comment, and its registration in the constructor below) to still bake anything
+         // at all -- unlike weapons, there is no separate reactive per-equip hook for creature models
+         // to fall back on.
+-        const bool eagerCreatures = WxlIniGetBool("EagerPreload", "Creatures", true);
+-        CreatureLog("EagerPreload Creatures=%d (set [EagerPreload] Creatures=0 in WXLExtendedEquipment.ini to bake lazily on first request instead)", eagerCreatures ? 1 : 0);
+-        if (eagerCreatures)
+-            PreregisterSidecarCreatures();
++//        if (WxlIniGetBool("EagerPreload", "Creatures", true))
++//            PreregisterSidecarCreatures();
+     }
+ 
+     // Builds a "TextureType=TexturePath|TextureType=TexturePath|..." spec for displayId, in the
+@@ -495,8 +493,6 @@ namespace wxl::scripts::creatureextension
+         }
+ 
+         // No texPath (only materialPatchSpec) -- creature texture rows are all TextureType-keyed.
+-        CreatureLog("  bake begin: display=%u real='%s' (the last line of the log names the display in progress if the client crashes here)",
+-                    displayId, pathIt->second.c_str());
+         char vModelPath[280] = {};
+         bool registered = VPathPopulateGlobal(pathIt->second.c_str(), displayId, nullptr, matSpec,
+                                                geoSpec ? geoSpec->ids : nullptr,
+@@ -597,6 +593,7 @@ namespace wxl::scripts::creatureextension
+         LoadCreatureSidecar(); // no-op after the first call; runs PreregisterSidecarCreatures at its end
+     }
+ 
++
+     void Create()
+     {
+         // Constructed explicitly from wxl::equip::Init(): a file-scope instance in a static library is
+diff --git a/Engine/Source/WXLEquip/CreatureExtension.hpp b/Engine/Source/WXLEquip/CreatureExtension.hpp
+index 0539f6d..15b3b0d 100644
+--- a/Engine/Source/WXLEquip/CreatureExtension.hpp
++++ b/Engine/Source/WXLEquip/CreatureExtension.hpp
+@@ -15,8 +15,13 @@
+ // along with this program. If not, see <https://www.gnu.org/licenses/>.
+ 
+ #pragma once
++#include <cstddef>
++#include <cstdint>
++
+ #include "Engine/Source/WXL/EventScript.h"
+ 
++#include "Engine/Source/WXL/Event.h"
++
+ namespace wxl::scripts::creatureextension
+ {
+     class CreatureExtension : public wxl::events::EventScript
+diff --git a/Engine/Source/WXLEquip/EngineAccess.h b/Engine/Source/WXLEquip/EngineAccess.h
+index b2a25be..f0297a0 100644
+--- a/Engine/Source/WXLEquip/EngineAccess.h
++++ b/Engine/Source/WXLEquip/EngineAccess.h
+@@ -66,6 +66,11 @@ namespace wxl::equip::eng
+     {
+         return model ? reinterpret_cast<uint8_t*>(static_cast<CM2Model*>(model)->m_boneMatrices) : nullptr;
+     }
++    /// The model this instance is attached to (CM2Model::m_attachParent), or null for a root.
++    inline void* ModelParent(void* model)
++    {
++        return model ? static_cast<CM2Model*>(model)->m_attachParent : nullptr;
++    }
+     /// The loaded .m2 behind an instance. The model destructor nulls it, which is the extension's
+     /// "this render context is dead" test.
+     inline void* ModelShared(void* model)
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index b824d3e..a8ccb99 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -63,6 +63,7 @@ namespace wxl::equip
+                 "WXLItemDisplayModels.csv", "WXLItemDisplayModelMaterials.csv",
+                 "WXLWeaponModels.csv",      "WXLWeaponTextures.csv",
+                 "WXLCreatureModels.csv",    "WXLCreatureTextures.csv",
++                "WXLHelmOffsets.csv",
+             };
+             wxl::LogCat("SIDECAR", "working directory: %s", wxl::WorkingDirectory());
+             for (const char* name : kNames)
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index 756a176..a7bb5ae 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -15,9 +15,12 @@
+ // along with this program. If not, see <https://www.gnu.org/licenses/>.
+ 
+ #include "Engine/Source/WXLEquip/EquipExtension.hpp"
++#include "Engine/Source/WXLEquip/CreatureExtension.hpp"
++#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+ #include "Engine/Source/WXLEquip/EngineAccess.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ #include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/HandItem.h"
+ #include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXL/Storage.h"
+ #include "WoW/Source/DB/DBClient/DBClient.h"
+@@ -61,8 +64,11 @@ namespace wxl::scripts::equipextension
+     {
+         uint16_t count;
+         uint8_t  collToChar[256];
+-
+-
++        void*    collectionModel; // live M2 model this remap was built for (collection side)
++        void*    characterModel;  // live M2 model this remap was built for (character/pose side)
++        // How each collection bone was matched: 0 = unmatched, 1 = bone-name CRC, 2 = key bone id,
++        // 3 = key-bone lookup table, 4 = inherited from its parent bone. Diagnostics only.
++        uint8_t  how[256];
+     };
+ 
+     struct SidecarModelEntry
+@@ -105,6 +111,14 @@ namespace wxl::scripts::equipextension
+         bool        perFrameLogged    = false; // suppress repeated per-frame noise after first log
+         bool        charSweepApplied = false; // set when character-model PerFrame sweep first copies bones
+         bool        bbpLogDone       = false; // suppress OnBuildBonePalette remap dump after first fire
++        bool        cloneBbpLogDone  = false; // suppress duplicate-ModelFrame fallback noise
++        bool        virtualPopulateFailed = false; // NeedsVirtualModel() was true but VPathPopulate
++            // could not read the real backing file (mdx/skin read failure -- see VPathPopulate log).
++            // Phase1 must NOT fall back to e.keyBuf (the raw, unpatched path) for these: that path was
++            // already proven unreadable by the same failed populate call, the native GetRenderCtx can
++            // still return a non-null placeholder/error-model context for it regardless, and feeding
++            // that placeholder into BuildBoneRemap/geoset-filter code that assumes the real collection
++            // mesh's layout is a memory-safety violation waiting to happen, not a cosmetic miss.
+         uint16_t    texAnimProbeFrames = 0; // short targeted UV-animation diagnostic
+         uint32_t    texAnimProbeFirst[4] = {};
+         uint8_t     texAnimProbeChanged = 0;											
+@@ -119,6 +133,8 @@ namespace wxl::scripts::equipextension
+     // PatchWeaponModelByDisplayId, OnWeaponVisualChange, OnItemDisplayLookup), all removed now that
+     // WeaponExtension patches ItemModelData.dbc at the data level instead. See WeaponExtension.cpp.
+ 
++static EquipExtension* g_equipInstance = nullptr; // set in the constructor, used by the raw hooks below
++
+     // cmo (CharModelObject*) → attached M2 entries for that character
+     static std::unordered_map<void*, std::vector<AttachEntry>> g_attached;
+ 
+@@ -196,6 +212,17 @@ namespace wxl::scripts::equipextension
+         10,                      // 18 TABARD
+     };
+ 
++    // ─── Diagnostic call-order sequence (temporary -- weapon mainhand/offhand investigation) ─────
++    // Shared by OnItemSlotChange/OnItemSlotClear and the diagnostic hooks below (ItemDisplayInfo-
++    // LookupDetour, CharAddHandItemDetour) so their WarcraftXL_equip.log lines can be sorted back
++    // into true call order even when GetTickCount()'s ~15ms resolution can't tell two calls apart.
++    // InterlockedIncrement rather than a plain ++ since detours can in principle run off the main
++    // thread (loader/streaming threads touch some of these paths) and this counter must never hand
++    // out the same value twice. Remove alongside the diagnostic hooks once the investigation is
++    // done -- a normal build has no use for this.
++    static LONG g_diagSeq = 0;
++    static uint32_t NextDiagSeq() noexcept { return static_cast<uint32_t>(InterlockedIncrement(&g_diagSeq)); }
++
+     // ─── Debug logging ───────────────────────────────────────────────────────────
+ 
+     static void EquipLog(const char* fmt, ...) noexcept
+@@ -235,35 +262,103 @@ namespace wxl::scripts::equipextension
+         return v;
+     }
+ 
++    static void* NativeParentGuarded(void* instance) noexcept
++    {
++        if (!instance) return nullptr;
++        void* parent = eng::ModelParent(instance);
++        return parent != instance ? parent : nullptr;
++    }
++
++    // Locate the character instance inside a duplicated/parented M2 tree by shared-model identity.
++    // We deliberately do not choose the absolute root: a character can itself be attached to a
++    // mount or vehicle, while the collection mesh still needs the character's bone palette.
++    static void* FindAncestorWithModelGuarded(void* instance, void* wantedModel) noexcept
++    {
++        if (!instance || !wantedModel) return nullptr;
++
++        void* seen[32] = {};
++        void* current = NativeParentGuarded(instance);
++        for (uint32_t depth = 0; depth < 32; ++depth)
++        {
++            if (!current) return nullptr;
++            for (uint32_t i = 0; i < depth; ++i)
++                if (seen[i] == current) return nullptr;
++            seen[depth] = current;
++
++            if (eng::ModelShared(current) ==
++                wantedModel)
++                return current;
++            current = NativeParentGuarded(current);
++        }
++        return nullptr;
++    }
++
++    static bool BoneRemapHasMatch(const BoneRemap& remap) noexcept
++    {
++        if (remap.count == 0 || remap.count > 65535) return false;
++        for (uint32_t i = 0; i < remap.count; ++i)
++            if (remap.collToChar[i] != 0xFF) return true;
++        return false;
++    }
++
++    static bool BoneRemapMatchesContextsGuarded(const BoneRemap& remap,
++                                                void* collectionCtx,
++                                                void* characterCtx) noexcept
++    {
++        if (!BoneRemapHasMatch(remap) || !collectionCtx || !characterCtx ||
++            collectionCtx == characterCtx || !remap.collectionModel || !remap.characterModel)
++            return false;
++
++        return eng::ModelShared(collectionCtx) ==
++                   remap.collectionModel &&
++               eng::ModelShared(characterCtx) ==
++                   remap.characterModel;
++    }
++
++    static uint32_t RenderCtxBoneCountGuarded(void* renderCtx) noexcept
++    {
++        if (!renderCtx) return 0;
++        __try
++        {
++            const M2Data* header = eng::ModelHeader(renderCtx);
++            if (!header) return 0;
++            const uint32_t count = header->m_bones.m_count;
++            return count <= 65535 ? count : 0;
++        }
++        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
++    }
++
+     static bool CopyRemappedBonesGuarded(uint8_t* dstBuf,
++                                         uint32_t dstBoneCount,
+                                          const uint8_t* srcBuf,
+-                                         const BoneRemap& remap) noexcept
+-																	 
+-    {
+-							   
+-		 
+-									   
+-						
+-			 
+-							  
+-																										
+-			 
+-						
+-		 
+-																					   
+-        if (!dstBuf || !srcBuf || remap.count == 0 || remap.count > 256)
+-																
+-															  
+-																													
+-																												 
++                                         uint32_t srcBoneCount,
++                                         const BoneRemap& remap,
++                                         void* dstRenderCtx,
++                                         void* srcRenderCtx) noexcept
++    {
++        // The palette is allocated as modelBoneCount * 0x40 by the engine. A stale render-context
++        // address can be recycled for a smaller model while g_attached still holds the old remap;
++        // an unguarded copy loop would then write beyond that new palette and corrupt the heap.
++        // Require the live destination model to have the exact count the remap was built for and
++        // independently bind every source index to the live character model.
++        if (!dstBuf || !srcBuf || dstBuf == srcBuf || !dstRenderCtx || !srcRenderCtx ||
++            remap.count == 0 || remap.count > 65535 ||
++            dstBoneCount == 0 || srcBoneCount == 0 ||
++            remap.count != dstBoneCount || srcBoneCount > 65535 ||
++            !remap.collectionModel || !remap.characterModel ||
++            eng::ModelShared(dstRenderCtx) !=
++                remap.collectionModel ||
++            eng::ModelShared(srcRenderCtx) !=
++                remap.characterModel)
+             return false;
++
+         __try
+         {
+             for (uint32_t bi = 0; bi < remap.count; ++bi)
+             {
+                 uint8_t ci = remap.collToChar[bi];
+                 if (ci == 0xFF) continue;
+-
++                if (ci >= srcBoneCount) continue;
+                 std::memcpy(dstBuf + bi * eng::kBonePaletteStride,
+                             srcBuf + ci * eng::kBonePaletteStride,
+                             eng::kBonePaletteStride);
+@@ -278,7 +373,8 @@ namespace wxl::scripts::equipextension
+ 
+     // SEH-only wrapper: no C++ objects in this function, __try is safe.
+     // Catches access violations from garbage/dangling hash-table buckets — see RebuildAllModels.
+-    // owner28 = subObj->m_scene: the CM2Scene that owns the M2 model cache — NOT the slot-dispatch 'cmo' from hkSlotDispatch, which is a different
++    // owner28 = *(subObj + kOffSceneNodeOwner): the actual CharModelObject that owns the
++    // M2 hash table — NOT the slot-dispatch 'cmo' from hkSlotDispatch, which is a different
+     // (wrapper) object whose +4 hash-table pointer is always null.
+     static void* SafeGetRenderCtx(void* owner28, const char* keyBuf) noexcept
+     {
+@@ -288,16 +384,104 @@ namespace wxl::scripts::equipextension
+         return result;
+     }
+ 
++    // SEH-only wrapper: no C++ objects in this function, __try is safe.
++    // Mirrors SafeGetRenderCtx's rationale, but for DetachSlot: this is the first place in the whole
++    // porting effort where a non-virtual entry's Phase1 key has been observed to exactly match
++    // vanilla's own already-attached key (see the "hkSlotDispatch runs vanilla first" comment above
++    // Phase1). If gm2::GetRenderCtx's refcount semantics for an already-resident model differ even
++    // slightly under core 1.1 from what that get-ref-before-detach ordering assumes, our extra ref
++    // from Phase1 would be illusory and this call would free the node down to zero, leaving the
++    // dangling-pointer crash the original comment predicted for the opposite (wrong) ordering. This
++    // wrapper can't fix that if it's a real refcount regression, but it stops a fault here from
++    // taking the whole client down, and the log line pinpoints exactly which attachId faulted.
++    static void SafeDetachSlot(void* subObj, uint32_t attachId) noexcept
++    {
++        __try { eng::DetachSlot(subObj, attachId); }
++        __except (EXCEPTION_EXECUTE_HANDLER)
++        {
++            EquipLog("  DetachSlot CRASH CAUGHT attachId=%u subObj=%p (see comment at SafeDetachSlot)",
++                     attachId, subObj);
++        }
++    }
++
++    // SEH-only wrappers: no C++ objects in these functions, __try is safe.
++    // gm2::LoadResource and gm2::BindTexSlot had zero exception protection -- the crash trail so
++    // far has ruled out GetRenderCtx and DetachSlot in turn (both already guarded, both now proven
++    // clean via logging), and the client stops dead before the very first Phase3 log line, which is
++    // printed *after* both of these calls. This is the next narrowest window to isolate.
++    static void* SafeLoadResource(const char* texBuf, int flag) noexcept
++    {
++        void* result = nullptr;
++        __try { result = eng::LoadResource(texBuf); (void)flag; }
++        __except (EXCEPTION_EXECUTE_HANDLER)
++        {
++            EquipLog("  LoadResource CRASH CAUGHT tex='%s'", texBuf ? texBuf : "(null)");
++        }
++        return result;
++    }
++
++    static bool SafeBindTexSlot(void* rctx, void* tex) noexcept
++    {
++        __try { eng::BindTexSlot(rctx, tex); return true; }
++        __except (EXCEPTION_EXECUTE_HANDLER)
++        {
++            EquipLog("  BindTexSlot CRASH CAUGHT rctx=0x%p tex=0x%p", rctx, tex);
++            return false;
++        }
++    }
++
++
+     // SEH wrapper for BuildBoneRemap's pointer walks.
+     // BoneRemap is a POD struct (trivially destructible), so __try is safe inside this function.
+-    static BoneRemap BuildBoneRemapGuarded(void* collRc, void* charRc) noexcept
++    /// Summarizes how a collection model's bones were matched to the character's, and lists every bone with
++    /// the data that decides matching (CRC, key id, parent). Logged for the first few remaps only: enough to
++    /// see whether the CRC match is doing the work.
++    static void LogBoneRemap(void* collRc, void* charRc, const BoneRemap& r) noexcept
++    {
++        if (r.count == 0 || !wxl::LogThrottle("equip.boneRemap", 24, 0)) return;
++        uint32_t byHow[5] = {};
++        uint32_t unmatched = 0;
++        for (uint32_t i = 0; i < r.count && i < 256; ++i)
++        {
++            ++byHow[r.how[i] < 5 ? r.how[i] : 0];
++            if (r.collToChar[i] == 0xFF) ++unmatched;
++        }
++        EquipLog("  BoneRemap: %u bones -> by CRC=%u, by key bone id=%u, by key lookup=%u, inherited from parent=%u, UNMATCHED=%u",
++                 (uint32_t)r.count, byHow[1], byHow[2], byHow[3], byHow[4], unmatched);
++
++        const M2Data* collHdr = eng::ModelHeader(collRc);
++        if (!collHdr) return;
++        const uint32_t collN = collHdr->m_bones.m_count < 256 ? collHdr->m_bones.m_count : 256;
++        const M2CompBone* cb = collN ? collHdr->m_bones.Data() : nullptr;
++        if (!cb) return;
++        static const char* const kHow[5] = { "none", "crc", "key", "lookup", "parent" };
++        for (uint32_t i = 0; i < collN; ++i)
++        {
++            const uint32_t to = r.collToChar[i];
++            EquipLog("    bone %2u (crc=0x%08X keyId=%d parent=%d) -> char bone %s%u (%s)",
++                     i, cb[i].m_boneNameCRC, static_cast<int32_t>(cb[i].m_boneId),
++                     static_cast<int16_t>(cb[i].m_parentIndex),
++                     to == 0xFF ? "NONE " : "", to == 0xFF ? 0u : to,
++                     kHow[r.how[i] < 5 ? r.how[i] : 0]);
++        }
++        (void)charRc;
++    }
++
++    static BoneRemap BuildBoneRemapCore(void* collRc, void* charRc) noexcept
+     {
+         BoneRemap r = {};
+         std::memset(r.collToChar, 0xFF, sizeof(r.collToChar));
+         __try
+         {
+-            // The parsed .m2 headers of the two instances. M2Array members are self-relative, so the
+-            // bone and lookup arrays are reached with Data() instead of a stored raw pointer.
++            // Live models of the two instances. A remap is only valid for the exact pair it was built for.
++            void* collM2 = eng::ModelShared(collRc);
++            void* charM2 = eng::ModelShared(charRc);
++            if (!collM2 || !charM2) return r;
++            r.collectionModel = collM2;
++            r.characterModel  = charM2;
++
++            // The parsed .m2 headers. M2Array members are self-relative, so the bone and lookup arrays are
++            // reached with Data() instead of a stored raw pointer.
+             const M2Data* collHdr = eng::ModelHeader(collRc);
+             const M2Data* charHdr = eng::ModelHeader(charRc);
+             if (!collHdr || !charHdr) return r;
+@@ -311,29 +495,34 @@ namespace wxl::scripts::equipextension
+             const uint32_t  charLutN = charHdr->m_boneIndicesById.m_count;
+             const uint16_t* charLut  = charLutN ? charHdr->m_boneIndicesById.Data() : nullptr;
+ 
++            EquipLog("  BuildBoneRemap: collN=%u charN=%u collBase=%p charBase=%p charLut=%p",
++                     collN, charN, static_cast<const void*>(collBase), static_cast<const void*>(charBase),
++                     static_cast<const void*>(charLut));
++
+             if (!collBase) return r;
+             r.count = static_cast<uint16_t>(collN);
+ 
+-            // Pass 1a: bone name CRC match
++            // Pass 1a (primary): bone-name CRC. A CRC match is never overwritten by a later pass.
+             if (charBase)
+             {
+                 for (uint32_t i = 0; i < collN; ++i)
+                 {
+-                    if (r.collToChar[i] != 0xFF) continue;
+                     const uint32_t collCrc = collBase[i].m_boneNameCRC;
+                     if (collCrc == 0) continue;
+                     for (uint32_t j = 0; j < charN && j < 255; ++j)
+                     {
+-                        if (charBase[j].m_boneNameCRC == collCrc) { r.collToChar[i] = static_cast<uint8_t>(j); break; }
++                        if (charBase[j].m_boneNameCRC == collCrc) { r.collToChar[i] = static_cast<uint8_t>(j); r.how[i] = 1; break; }
+                     }
+                 }
+             }
+ 
+-            // Pass 1b: match by key_bone_id scan of the char bone array
++            // Pass 1b: key_bone_id, ONLY for bones the CRC pass left unmatched. This pass used to overwrite
++            // CRC matches, which sent bones to the wrong place whenever key-bone ids and bone names disagree.
+             if (charBase)
+             {
+                 for (uint32_t i = 0; i < collN; ++i)
+                 {
++                    if (r.collToChar[i] != 0xFF) continue;
+                     const int32_t key = static_cast<int32_t>(collBase[i].m_boneId);
+                     if (key < 0) continue;
+                     for (uint32_t j = 0; j < charN && j < 255; ++j)
+@@ -341,6 +530,7 @@ namespace wxl::scripts::equipextension
+                         if (static_cast<int32_t>(charBase[j].m_boneId) == key)
+                         {
+                             r.collToChar[i] = static_cast<uint8_t>(j);
++                            r.how[i] = 2;
+                             break;
+                         }
+                     }
+@@ -357,7 +547,10 @@ namespace wxl::scripts::equipextension
+                     if (key < 0 || static_cast<uint32_t>(key) >= charLutN) continue;
+                     const int16_t ci = static_cast<int16_t>(charLut[key]);
+                     if (ci >= 0 && static_cast<uint32_t>(ci) < charN && ci < 255)
++                    {
+                         r.collToChar[i] = static_cast<uint8_t>(ci);
++                        r.how[i] = 3;
++                    }
+                 }
+             }
+ 
+@@ -373,14 +566,15 @@ namespace wxl::scripts::equipextension
+                     if (r.collToChar[parent] != 0xFF)
+                     {
+                         r.collToChar[i] = r.collToChar[parent];
++                        r.how[i] = 4;
+                         changed = true;
+                     }
+                 }
+                 if (!changed) break;
+             }
+ 
+-            // If no bone was matched at all, signal "not ready" by resetting count to 0 (the character
+-            // M2 is not parsed yet). count=0 makes every caller's retry guard re-fire until it is.
++            // If no bone was matched at all, signal "not ready" by resetting count to 0 (the character M2 is
++            // not parsed yet). count=0 makes every caller's retry guard re-fire until it is.
+             {
+                 uint32_t matched = 0;
+                 for (uint32_t bi = 0; bi < r.count; ++bi)
+@@ -392,6 +586,13 @@ namespace wxl::scripts::equipextension
+         return r;
+     }
+ 
++    static BoneRemap BuildBoneRemapGuarded(void* collRc, void* charRc) noexcept
++    {
++        const BoneRemap r = BuildBoneRemapCore(collRc, charRc);
++        LogBoneRemap(collRc, charRc, r);
++        return r;
++    }
++
+ 
+     // ─── Parse helpers ────────────────────────────────────────────────────────────
+ 
+@@ -747,55 +948,17 @@ namespace wxl::scripts::equipextension
+             const char* b = needle;
+             while (*a && *b)
+             {
+-                char ca = *a;
+-                char cb = *b;
++                char ca = *a++;
++                char cb = *b++;
+                 if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca - 'A' + 'a');
+                 if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb - 'A' + 'a');
+                 if (ca != cb) break;
+-                ++a; ++b;
+             }
+             if (!*b) return true;
+         }
+         return false;
+     }
+ 
+-    // Case-insensitive suffix match. optExt, if non-null, is an additional extension (e.g. ".mdx")
+-    // that -- when present at the very end of s -- is ignored before the suffix comparison, so
+-    // "..._shoulder_l.mdx" still matches suffix "_l".
+-    static bool EndsWithCI(const char* s, const char* suffix, const char* optExt = nullptr) noexcept
+-    {
+-        if (!s || !suffix || !*suffix) return false;
+-        size_t sLen = std::strlen(s);
+-        if (optExt && *optExt)
+-        {
+-            size_t extLen = std::strlen(optExt);
+-            if (sLen >= extLen)
+-            {
+-                bool extMatch = true;
+-                for (size_t i = 0; i < extLen; ++i)
+-                {
+-                    char a = s[sLen - extLen + i];
+-                    char b = optExt[i];
+-                    if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+-                    if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+-                    if (a != b) { extMatch = false; break; }
+-                }
+-                if (extMatch) sLen -= extLen;
+-            }
+-        }
+-        size_t sufLen = std::strlen(suffix);
+-        if (sLen < sufLen) return false;
+-        for (size_t i = 0; i < sufLen; ++i)
+-        {
+-            char a = s[sLen - sufLen + i];
+-            char b = suffix[i];
+-            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+-            if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+-            if (a != b) return false;
+-        }
+-        return true;
+-    }
+-
+     static bool IsKnownObjectComponentFolder(const char* folder, size_t len) noexcept
+     {
+         static const char* kFolders[] = {
+@@ -832,6 +995,14 @@ namespace wxl::scripts::equipextension
+     {
+         if (customFolder && *customFolder) return customFolder;
+         if (isCollection) return "Collections";
++        // Do NOT infer the folder from a "collections_" (or similar) filename prefix: the
++        // sidecar CSV (WXLItemDisplayModels.csv) proves that prefix is just a naming
++        // convention for the model's *set*, not its on-disk folder -- e.g. displayId=71052's
++        // "collections_leather_raiddruiddragon_d_01_shoulder_l.mdx" carries the "collections_"
++        // prefix but its authoritative Folder column says "Shoulder", not "Collections". The
++        // sidecar path (addSidecarModels) already passes that column through as customFolder,
++        // which is handled above; this fallback only ever applies to non-sidecar DBC-only rows,
++        // where slotFolder (the slot's own default) is the correct answer, not a name guess.
+         if (StartsWithCI(name, "lshoulder_") || StartsWithCI(name, "rshoulder_") ||
+             StartsWithCI(name, "shoulder_") || ContainsCI(name, "_shoulder_l") ||
+             ContainsCI(name, "_shoulder_r"))
+@@ -846,8 +1017,8 @@ namespace wxl::scripts::equipextension
+                                                uint32_t attach) noexcept
+     {
+         if (explicitAttach || isCollection) return attach;
+-        if (StartsWithCI(name, "lshoulder_") || ContainsCI(name, "_shoulder_l")) return 6;
+-        if (StartsWithCI(name, "rshoulder_") || ContainsCI(name, "_shoulder_r")) return 5;
++        if (ContainsCI(name, "lshoulder_") || ContainsCI(name, "_shoulder_l")) return 6;
++        if (ContainsCI(name, "rshoulder_") || ContainsCI(name, "_shoulder_r")) return 5;
+         // Custom shoulder models often aren't named with a "_shoulder_l"/"_shoulder_r" infix at
+         // all -- just a bare "_l"/"_r" side suffix right before the extension (e.g.
+         // "leather_raiddruidt2_d_01_shoulder_l.mdx" already matches above via the infix check,
+@@ -856,17 +1027,17 @@ namespace wxl::scripts::equipextension
+         // on unrelated "_l"/"_r"-suffixed models from other slots.
+         if (ContainsCI(name, "shoulder"))
+         {
+-            if (EndsWithCI(name, "_l", ".mdx") || EndsWithCI(name, "_l", ".m2")) return 6;
+-            if (EndsWithCI(name, "_r", ".mdx") || EndsWithCI(name, "_r", ".m2")) return 5;
++            if (ContainsCI(name, "_l.") || ContainsCI(name, "_l_")) return 6;
++            if (ContainsCI(name, "_r.") || ContainsCI(name, "_r_")) return 5;
+         }
+-        if (StartsWithCI(name, "collections_"))
++        if (ContainsCI(name, "collections_"))
+         {
+             if (ContainsCI(name, "_shoulder_l")) return 6;
+             if (ContainsCI(name, "_shoulder_r")) return 5;
+-            if (StartsWithCI(name, "collections_belt_") || ContainsCI(name, "_belt")) return 53;
++            if (ContainsCI(name, "collections_belt_") || ContainsCI(name, "_belt")) return 53;
+         }
+-        if (StartsWithCI(name, "cape_")) return 12;
+-        if (StartsWithCI(name, "tabard_")) return 34;
++        if (ContainsCI(name, "cape_")) return 12;
++        if (ContainsCI(name, "tabard_")) return 34;
+         return attach;
+     }
+ 
+@@ -911,6 +1082,23 @@ namespace wxl::scripts::equipextension
+         return e.geoFilter.count > 0 || IsCollectionObjectPath(e.keyBuf);
+     }
+ 
++    static bool IsRootSkinnedEntry(const AttachEntry& e) noexcept
++    {
++        // Retail ModelType=1 cape M2s are full character-space skinned models. The DB2
++        // builder marks them with the synthetic root attachment even though their path is
++        // under ObjectComponents\Cape rather than ObjectComponents\Collections.
++        return e.attachId == kCollectionAttach &&
++               (IsCollectionEntry(e) || e.equipSlot == 10);
++    }
++
++    static bool NeedsManualBoneRemap(const AttachEntry& e) noexcept
++    {
++        // Full-body collection overlays are attached to the character root and need their
++        // palette driven from the character skeleton. Dedicated helm/shoulder/belt models use
++        // native attachment points and must retain their own accessory-bone animation chains.
++        return IsRootSkinnedEntry(e);
++    }
++
+     static bool ShouldDetachDefaultAttachPoints(const AttachEntry& e) noexcept
+     {
+         if (e.equipSlot >= 11) return false;
+@@ -949,7 +1137,7 @@ namespace wxl::scripts::equipextension
+         if (!wxl::storage::ReadNative(path, raw) || raw.empty())
+         {
+             EquipLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
+-                path, wxl::WorkingDirectory());
++                     path, wxl::WorkingDirectory());
+             return false;
+         }
+         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
+@@ -1480,6 +1668,19 @@ namespace wxl::scripts::equipextension
+         // guarantees a cache miss on every distinct filter/texture combination, forcing a fresh
+         // async load and an OnM2SkinFinalize fire with the correct merged filter.
+         for (size_t i = 0; i < entries.size(); ++i)
++        {
++            AttachEntry& e = entries[i];
++            if (!NeedsVirtualModel(e)) continue;
++            // Reset every pass: AttachEntry persists across RebuildAllModels calls (it's mutated in
++            // place in g_attached[cmo], not reallocated), so a stale true here from a previous failed
++            // attempt would permanently skip this slot even after the underlying file/data problem is
++            // fixed and a later populate call succeeds. Only this pass's result should count. Done as
++            // its own pass (not inline below) because the group-dedup skip further down means a later
++            // sibling's turn in the main loop can run after the group owner already set this true for
++            // it -- resetting inline there would silently undo that.
++            e.virtualPopulateFailed = false;
++        }
++        for (size_t i = 0; i < entries.size(); ++i)
+         {
+             AttachEntry& e = entries[i];
+             if (!NeedsVirtualModel(e)) continue;
+@@ -1518,7 +1719,15 @@ namespace wxl::scripts::equipextension
+                      e.keyBuf, e.texBuf, e.matTexBuf, vpathReady ? mangled : "(disabled)",
+                      mergedCount, e.mergeKey);
+             if (!vpathReady)
++            {
++                // Real backing file could not be read (see the VPathPopulate log line just above).
++                // Mark this whole (keyBuf, attachId, texBuf) group so Phase1 skips it outright instead
++                // of silently retrying the same already-proven-bad raw path.
++                for (auto& e2 : entries)
++                    if (NeedsVirtualModel(e2) && SameAttachModelGroup(e2, e))
++                        e2.virtualPopulateFailed = true;
+                 continue;
++            }
+ 
+             // Propagate the mangled key to all entries in this (keyBuf, attachId, texBuf) group.
+             for (auto& e2 : entries)
+@@ -1545,6 +1754,18 @@ namespace wxl::scripts::equipextension
+         {
+             AttachEntry& e = entries[i];
+             if (e.renderCtx) continue;  // already set by a sibling
++            if (e.virtualPopulateFailed)
++            {
++                // The real backing file for this entry was already proven unreadable when the
++                // virtual-path population pass ran above -- do not retry via e.keyBuf. The native
++                // GetRenderCtx can return a non-null placeholder/error-model context for a path it
++                // can't actually load, and that placeholder's internal layout does not match what
++                // BuildBoneRemap/the geoset filter downstream assumes for this slot, which is what
++                // was crashing here. Skip the attach entirely instead: no model for this slot this
++                // frame is a visible miss, not a memory-safety violation.
++                EquipLog("  Phase1 SKIP (virtual populate failed) key='%s'", e.keyBuf);
++                continue;
++            }
+ 
+             const char* p1Key = e.mangledKeyBuf[0] ? e.mangledKeyBuf : e.keyBuf;
+             void* rctx = SafeGetRenderCtx(owner28, p1Key);
+@@ -1569,7 +1790,9 @@ namespace wxl::scripts::equipextension
+         auto detachOnce = [&](uint32_t aid) {
+             if (aid == static_cast<uint32_t>(-1) || nDetached >= 22) return;
+             for (uint32_t i = 0; i < nDetached; ++i) if (detached[i] == aid) return;
+-            eng::DetachSlot(subObj, aid);
++            EquipLog("  Phase2 DetachSlot attachId=%u subObj=%p", aid, subObj);
++            SafeDetachSlot(subObj, aid);
++            EquipLog("  Phase2 DetachSlot attachId=%u done", aid);
+             detached[nDetached++] = aid;
+         };
+         for (auto& e : entries)
+@@ -1623,7 +1846,9 @@ namespace wxl::scripts::equipextension
+ 
+             if (e.texBuf[0])
+             {
+-                void* tex = eng::LoadResource(e.texBuf);
++                EquipLog("  Phase3[%zu] LoadResource tex='%s'", i, e.texBuf);
++                void* tex = SafeLoadResource(e.texBuf, 0);
++                EquipLog("  Phase3[%zu] LoadResource -> 0x%p", i, tex);
+                 if (!tex)
+                 {
+                     EquipLog("  Phase3[%zu] texture load failed '%s', skip attach", i, e.texBuf);
+@@ -1634,7 +1859,9 @@ namespace wxl::scripts::equipextension
+                 }
+                 else
+                 {
+-                    eng::BindTexSlot(rctx, tex);
++                    EquipLog("  Phase3[%zu] BindTexSlot rctx=0x%p tex=0x%p", i, rctx, tex);
++                    SafeBindTexSlot(rctx, tex);
++                    EquipLog("  Phase3[%zu] BindTexSlot done", i);
+                     // Do not release here. TextureCreate returns a handle that the render context
+                     // continues to use after BindTexSlot; releasing immediately can recycle it and
+                     // leave the attached M2 sampling the client's missing-texture green.
+@@ -1649,8 +1876,6 @@ namespace wxl::scripts::equipextension
+             EquipLog("  Phase3[%zu] attach=%u rctx=0x%p subObj_initFlags=0x%X isCollection=%d",
+                      i, e.attachId, rctx, subInitFlags, (int)isCollection);
+             eng::AttachToScene(rctx, subObj, e.attachId, isCollection);
+-            EquipLog("  Phase3[%zu] attached: child flags=0x%X shared=0x%p parent flags=0x%X (child bit 0x40000 = force-attached collection)",
+-                     i, eng::ModelFlags(rctx), eng::ModelShared(rctx), eng::ModelFlags(subObj));
+ 
+ //            void* nativeParent = NativeParentGuarded(rctx);
+             BoneRemap remap = BuildBoneRemapGuarded(rctx, subObj);
+@@ -1750,8 +1975,91 @@ namespace wxl::scripts::equipextension
+         LoadSidecarModels(); // no-op after the first call
+     }
+ 
++    // Offhand weapon-mirror override. This client has no native offhand model mirroring (a weapon
++    // dual-wielded in the offhand renders identically to mainhand, backwards-looking blade/hilt and
++    // all). Two mirror sources, in priority order:
++    //   1. WXLWeaponModels.csv's Model1OffhandPath/Model2OffhandPath/Geoset1Offhand/Geoset2Offhand
++    //      -- a correctly pre-baked mirrored model, authored and supplied externally. Always wins
++    //      when present (e.g. for a weapon whose hilt/engraving detail an automatic mirror gets
++    //      visibly wrong).
++    //   2. Otherwise, WeaponExtension.cpp's BakeWeaponDisplayOffhand auto-mirrors the mainhand
++    //      model on the spot (VirtualPath.cpp's MirrorWeaponForOffhand: every vertex, normal,
++    //      triangle winding, bone pivot, and translation/rotation keyframe across every animation
++    //      sequence, plus attachment point offsets), so an offhand weapon is never left unmirrored
++    //      by default.
++    // Either way, WeaponGetOffhandVirtualPath is the single entry point this function calls --
++    // (WXLWeaponModels.csv's Model1OffhandPath/Model2OffhandPath/Geoset1Offhand/Geoset2Offhand).
++    //
++    // ASSUMPTION FLAGGED FOR VERIFICATION: attach IDs 0 (mainhand/ITEM_VISUAL0) and 1
++    // (offhand/ITEM_VISUAL1) below are the standard WoW client attachment-point convention, not
++    // something confirmed against this specific client build/offset table the way every other
++    // attach ID in this file (kSlotConfig, InferObjectComponentAttach) has been. If the offhand
++    // weapon doesn't swap to the mirrored model, or swaps but attaches to the wrong hand bone, this
++    // is the first thing to check.
++    [[maybe_unused]] constexpr uint32_t kWeaponAttachMainHand = 0; // documents the pairing; only
++                                                                     // kWeaponAttachOffHand is used below
++    constexpr uint32_t kWeaponAttachOffHand  = 1;
++
++    static void HandleOffhandWeaponOverride(void* cmo, void* subObj, uint32_t displayId)
++    {
++        if (!subObj || displayId == 0) return; // unequip: nothing to override, native detach handles it
++
++        char vPath[2][280] = {};
++        const bool has0 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(displayId, 0, vPath[0], sizeof(vPath[0]));
++        const bool has1 = wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(displayId, 1, vPath[1], sizeof(vPath[1]));
++        if (!has0 && !has1) return; // no offhand-mirror configured for this weapon -- leave native
++                                     // vanilla attach (the mainhand bake) exactly as it already is
++
++        EquipLog("  HandleOffhandWeaponOverride: displayId=%u col0='%s' col1='%s'",
++                 displayId, has0 ? vPath[0] : "(none)", has1 ? vPath[1] : "(none)");
++
++        // hkSlotDispatch already ran vanilla first (same ordering as every other slot -- see the
++        // comment above Phase1 in RebuildAllModels) and attached the WRONG (mainhand-baked) model
++        // at the offhand attach point before this handler ever runs. Detach it, then attach the
++        // correct mirrored bake(s) in its place. Get our ref before detaching, same rationale as
++        // Phase1/Phase2 for armor -- see that comment for the full explanation of why the ordering
++        // matters.
++        void* rctx[2] = { nullptr, nullptr };
++        if (has0) rctx[0] = SafeGetRenderCtx(subObj, vPath[0]);
++        if (has1) rctx[1] = SafeGetRenderCtx(subObj, vPath[1]);
++        if (!rctx[0] && !rctx[1])
++        {
++            EquipLog("  HandleOffhandWeaponOverride: GetRenderCtx failed for both columns, aborting");
++            return;
++        }
++
++        SafeDetachSlot(subObj, kWeaponAttachOffHand);
++
++        if (rctx[0]) eng::AttachToScene(rctx[0], subObj, kWeaponAttachOffHand, false);
++        if (rctx[1]) eng::AttachToScene(rctx[1], subObj, kWeaponAttachOffHand, false);
++        EquipLog("  HandleOffhandWeaponOverride: attached mirrored model(s) at offhand attach point");
++    }
++
+     void EquipExtension::OnItemSlotChange(const ev::ItemSlotChangeArgs& a)
+     {
++        // DIAG (temporary -- weapon mainhand/offhand investigation): logged unconditionally, before
++        // any of this function's existing branches/early-returns, specifically because the
++        // modelSlot >= 14 cutoff further down means slots 15 (MainHand) and 17 (Ranged) currently
++        // produce NO log output at all past this point -- only 16 (OffHand) reaches the "---
++        // OnItemSlotChange" line below, via HandleOffhandWeaponOverride's own EquipLog calls. If
++        // this line never appears for a mainhand/ranged equip, that's proof this event doesn't fire
++        // for that slot at all (supporting the CharAddHandItem-instead-of-CharModelSlotDispatch
++        // theory); if it DOES appear, the event fires but this function's own early-return is why
++        // nothing further gets logged for those two slots today.
++        EquipLog("[DIAG seq=%u tick=%u] OnItemSlotChange ENTRY cmo=0x%p slot=%u itemDataPtr=0x%p",
++                 NextDiagSeq(), GetTickCount(), a.charModelObj, a.modelSlot, a.itemDataPtr);
++
++        if (a.modelSlot == 16) // OffHand -- see HandleOffhandWeaponOverride's own comment. Handled
++                                // separately from, and before, the armor-only cutoff just below:
++                                // a weapon slot has exactly one attach point and none of the
++                                // multi-entry/geoset-merge machinery below (entries/Phase1-3) applies.
++                                // Purely additive on top of whatever native/WeaponExtension handling
++                                // already happens for this slot -- falls through to the cutoff after.
++        {
++            void* subObjEarly = eng::CmoModel(a.charModelObj);
++            uint32_t displayIdEarly = a.itemDataPtr ? GuardedReadU32(a.itemDataPtr) : 0;
++            HandleOffhandWeaponOverride(a.charModelObj, subObjEarly, displayIdEarly);
++        }
+         if (a.modelSlot >= 14) return;
+         const SlotConfig& cfg = kSlotConfig[a.modelSlot];
+ 
+@@ -1774,10 +2082,14 @@ namespace wxl::scripts::equipextension
+             return;
+         }
+ 
+-        // Look up the ItemDisplayInfo record. Uses the native trampoline, not the live-hooked
+-        // kLookup address, for the same reason as PatchWeaponModelByDisplayId above -- this needs
+-        // the true native fields, not whatever a weapon-slot override may have substituted for some
+-        // other display id.
++        // Look up the ItemDisplayInfo record. Calls the native storage lookup directly by address
++        // (offsets::itemdisplayinfo::kLookup) rather than through the core's internal
++        // wxl::runtime::game::ItemDisplayInfoLookupNative trampoline, which extensions cannot reach
++        // (see PORTING_GUIDE.md: "Extensions cannot call core functions directly"). This is a direct
++        // call into the client's own already-mapped code -- the same category as an SDK facade
++        // reading the fixed-base image -- not a hook, so no HookAttach/original chain is involved.
++        // Needs the true native fields, not whatever a weapon-slot override may have substituted for
++        // some other display id, same reasoning as PatchWeaponModelByDisplayId above.
+         ItemDisplayInfoRec dispRec;
+         const bool ok = g_itemDisplayInfoDB.GetRecord(static_cast<int32_t>(displayId), &dispRec);
+         const char* modelName1 = nullptr;
+@@ -1844,10 +2156,9 @@ namespace wxl::scripts::equipextension
+             return;
+         }
+ 
+-        // The gender token in object-component file names is a single letter: "M" or "F". It is the same table the
+-        // client uses for its own helm paths (s_fileDecorations at 0x00AC46A0 = { "M", "F", "U" }); the old
+-        // offsets file mislabelled that address as "Male"/"Female", which produced names like _Be_Female.mdx
+-        // that no file has, so every collection and helm model failed to load.
++        // The gender token in object-component file names is a single letter, "M" or "F": the same table the
++        // client uses for its own helm paths (s_fileDecorations at 0x00AC46A0 = { "M", "F", "U" }). The old offsets
++        // file mislabelled that address "Male"/"Female", which produced names no file has (_Be_Female.mdx).
+         static const char* const kGenderStrings[2] = { "M", "F" };
+         const char* raceCode  = chrRec->m_clientPrefix;
+         uint32_t    genderIdx = eng::CmoGender(cmo);
+@@ -2095,6 +2406,12 @@ namespace wxl::scripts::equipextension
+ 
+     void EquipExtension::OnItemSlotClear(const ev::ItemSlotClearArgs& a)
+     {
++        // DIAG (temporary -- weapon mainhand/offhand investigation): see OnItemSlotChange's
++        // matching comment. equipSlotWow here is the WoW slot index directly (15/16/17 for
++        // weapons), not yet translated through kEquipToModelSlot.
++        EquipLog("[DIAG seq=%u tick=%u] OnItemSlotClear ENTRY cmo=0x%p equipSlotWow=%u",
++                 NextDiagSeq(), GetTickCount(), a.charModelObj, a.equipSlotWow);
++
+         if (a.equipSlotWow >= 19) return;
+         uint32_t modelSlot = kEquipToModelSlot[a.equipSlotWow];
+         if (modelSlot == static_cast<uint32_t>(-1)) return;
+@@ -2158,7 +2475,7 @@ namespace wxl::scripts::equipextension
+             {
+                 for (auto& entry : entries)
+                 {
+-                    if (!IsCollectionEntry(entry)) continue;
++                    if (!NeedsManualBoneRemap(entry)) continue;
+                     if (!entry.renderCtx || entry.boneRemap.count == 0) continue;
+                     auto* collBuf = reinterpret_cast<uint8_t*>(
+                         eng::ModelBonePalette(entry.renderCtx));
+@@ -2172,20 +2489,15 @@ namespace wxl::scripts::equipextension
+                         entry.charSweepApplied = true;
+                     }
+                     const BoneRemap& remap = entry.boneRemap;
+-																							  
+-																						
+-                    if (!CopyRemappedBonesGuarded(collBuf, charBuf, remap))
+-																					 
++                    const uint32_t collBoneCount = RenderCtxBoneCountGuarded(entry.renderCtx);
++                    const uint32_t charBoneCount = RenderCtxBoneCountGuarded(renderCtx);
++                    if (!CopyRemappedBonesGuarded(collBuf, collBoneCount, charBuf, charBoneCount,
++                                                  remap, entry.renderCtx, renderCtx))
+                     {
+                         EquipLog("  CharSweep(bone): guarded copy failed rctx=0x%p count=%u",
+                                  entry.renderCtx, (uint32_t)remap.count);
+-														  
+-													 
+-						 
+-																		 
++                        entry.boneRemap = {};
+                         entry.renderCtx = nullptr;
+-												   
+-
+                     }
+                 }
+             }
+@@ -2343,19 +2655,15 @@ namespace wxl::scripts::equipextension
+ 
+                     if (charBuf && collBuf)
+                     {
+-																							
+-																						  
+-                        if (!CopyRemappedBonesGuarded(collBuf, charBuf, remap))
+-																				 
++                        const uint32_t collBoneCount = RenderCtxBoneCountGuarded(renderCtx);
++                        const uint32_t charBoneCount = RenderCtxBoneCountGuarded(charCtx);
++                        if (!CopyRemappedBonesGuarded(collBuf, collBoneCount, charBuf, charBoneCount,
++                                                      remap, renderCtx, charCtx))
+                         {
+                             EquipLog("  PerFrame(copy): guarded copy failed rctx=0x%p count=%u",
+                                      renderCtx, (uint32_t)remap.count);
+-														 
+-							 
+-																			 
++                            entry.boneRemap = {};
+                             entry.renderCtx = nullptr;
+-													   
+-
+                         }
+                     }
+                 }
+@@ -2377,7 +2685,7 @@ namespace wxl::scripts::equipextension
+         {
+             for (auto& entry : entries)
+             {
+-                if (!entry.renderCtx || !IsCollectionEntry(entry)) continue;
++                if (!entry.renderCtx || !NeedsManualBoneRemap(entry)) continue;
+                 void* entryModel = eng::ModelShared(entry.renderCtx);
+                 if (entryModel != model) continue;
+ 
+@@ -2431,20 +2739,15 @@ namespace wxl::scripts::equipextension
+                              (charBuf && collBuf) ? "APPLIED" : "DEFERRED-to-PerFrame");
+                     if (charBuf && collBuf)
+                         {
+-																									  
+-																							  
+-                            if (!CopyRemappedBonesGuarded(collBuf, charBuf, remap))
+-																						   
++                            const uint32_t collBoneCount = RenderCtxBoneCountGuarded(entry.renderCtx);
++                            const uint32_t charBoneCount = RenderCtxBoneCountGuarded(charCtx);
++                            if (!CopyRemappedBonesGuarded(collBuf, collBoneCount, charBuf, charBoneCount,
++                                                          remap, entry.renderCtx, charCtx))
+                             {
+                                 EquipLog("  OnM2SkinFinalize(copy): guarded copy failed rctx=0x%p count=%u",
+                                          entry.renderCtx, (uint32_t)remap.count);
+-																  
+-															 
+-								 
+-																				 
++                                entry.boneRemap = {};
+                                 entry.renderCtx = nullptr;
+-														   
+-								 
+                             }
+                         }
+                     }
+@@ -2527,49 +2830,75 @@ namespace wxl::scripts::equipextension
+     // Re-apply the character remap after the engine's native palette build. ModelFrame clones do not fire
+     // equip-slot events, but preserve the shared collection/character model pair, so handle those too.
+     void EquipExtension::OnBuildBonePalette(const ev::BuildBonePaletteArgs& a)
+-   {
+-        if (g_attached.empty()) return;
++    {
++        if (g_attached.empty() || !a.renderCtx) return;
+         void* renderCtx = a.renderCtx;
++        void* childModel = eng::ModelShared(renderCtx);
++        AttachEntry* cloneCandidate = nullptr;
++        void* clonePoseSource = nullptr;
+ 
+-        // Fast reject: only collection models need manual bone driving.
+-        uint32_t initF = eng::ModelFlags(renderCtx);
+-        if (!(initF & 0x40000)) return;
+-										
+-
++        // Handle exact tracked instances immediately while remembering at most one validated
++        // ModelFrame clone candidate. This keeps the hot callback to one g_attached traversal.
+         for (auto& [cmo, entries] : g_attached)
+         {
+-																									
++            void* charRctx = eng::CmoModel(cmo);
++
+             for (auto& entry : entries)
+             {
+-                if (entry.renderCtx != renderCtx) continue;
+-                if (entry.geoFilter.count == 0) continue;
+-				 
+-																							  
+-                if (entry.boneRemap.count == 0) continue;
+-                void* charRctx = eng::CmoModel(cmo);
+-                if (!charRctx) continue;
+-                auto* charBuf = reinterpret_cast<uint8_t*>(
+-                    eng::ModelBonePalette(charRctx));
+-                if (!charBuf) continue;
++                if (!NeedsManualBoneRemap(entry)) continue;
++
++                if (entry.renderCtx != renderCtx)
++                {
++                    if (!cloneCandidate && childModel &&
++                        BoneRemapHasMatch(entry.boneRemap) &&
++                        entry.boneRemap.collectionModel == childModel &&
++                        entry.boneRemap.characterModel)
++                    {
++                        void* candidateSource = FindAncestorWithModelGuarded(
++                            renderCtx, entry.boneRemap.characterModel);
++                        if (candidateSource)
++                        {
++                            cloneCandidate = &entry;
++                            clonePoseSource = candidateSource;
++                        }
++                    }
++                    continue;
++                }
++
++                // The native parent is authoritative after attachment. Resolve by model identity
++                // so a mounted character is selected instead of an outer vehicle/root instance.
++                void* poseSource = FindAncestorWithModelGuarded(
++                    renderCtx, entry.boneRemap.characterModel);
++                if (!poseSource) poseSource = NativeParentGuarded(renderCtx);
++                if (!poseSource) poseSource = charRctx;
++                if (!poseSource || poseSource == renderCtx) return;
++
++                if (!BoneRemapMatchesContextsGuarded(
++                        entry.boneRemap, renderCtx, poseSource))
++                {
++                    BoneRemap rebuilt = BuildBoneRemapGuarded(renderCtx, poseSource);
++                    if (!BoneRemapHasMatch(rebuilt)) return;
++                    for (auto& sibling : entries)
++                        if (sibling.renderCtx == renderCtx) sibling.boneRemap = rebuilt;
++                }
++
++                const BoneRemap& remap = entry.boneRemap;
++                auto* charBuf = reinterpret_cast<uint8_t*>(eng::ModelBonePalette(poseSource));
+                 auto* collBuf = reinterpret_cast<uint8_t*>(
+                     eng::ModelBonePalette(renderCtx));
+-                if (!collBuf) continue;
+-                const BoneRemap& remap = entry.boneRemap;
+-
+-																										   
+-																			 
+-													   
+-																   
++                if (!charBuf || !collBuf) return;
+ 
+                 if (!entry.bbpLogDone)
+                 {
++                    uint32_t initF = eng::ModelFlags(renderCtx);
+                     uint32_t xff = 0;
+                     for (uint32_t bi = 0; bi < remap.count; ++bi)
+                         if (remap.collToChar[bi] == 0xFF) ++xff;
+-                    float m00 = *reinterpret_cast<const float*>(charBuf); // [0,0] of char bone 0
+-                    EquipLog("  OnBBP[first] collRctx=0x%p initF=0x%X count=%u xff=%u"
+-                             " map0-7=[%u %u %u %u %u %u %u %u] charBuf[0][0]=%.4f",
+-                             renderCtx, initF, (uint32_t)remap.count, xff,
++                    EquipLog("  OnBBP[first] collRctx=0x%p cmoParent=0x%p nativeSource=0x%p"
++                             " initF=0x%X count=%u xff=%u"
++                             " map0-7=[%u %u %u %u %u %u %u %u]",
++                             renderCtx, charRctx, poseSource,
++                             initF, (uint32_t)remap.count, xff,
+                              remap.count>0 ? (uint32_t)remap.collToChar[0] : 255u,
+                              remap.count>1 ? (uint32_t)remap.collToChar[1] : 255u,
+                              remap.count>2 ? (uint32_t)remap.collToChar[2] : 255u,
+@@ -2577,46 +2906,56 @@ namespace wxl::scripts::equipextension
+                              remap.count>4 ? (uint32_t)remap.collToChar[4] : 255u,
+                              remap.count>5 ? (uint32_t)remap.collToChar[5] : 255u,
+                              remap.count>6 ? (uint32_t)remap.collToChar[6] : 255u,
+-                             remap.count>7 ? (uint32_t)remap.collToChar[7] : 255u,
+-                             m00);
++                             remap.count>7 ? (uint32_t)remap.collToChar[7] : 255u);
+                     entry.bbpLogDone = true;
+                 }
+ 
+-														 
+-																		  
+-																					   
+-																		  
+-																					  
+-												 
+-                if (!CopyRemappedBonesGuarded(collBuf, charBuf, remap))
+-																							 
+-																			
++                const uint32_t collBoneCount = RenderCtxBoneCountGuarded(renderCtx);
++                const uint32_t charBoneCount = RenderCtxBoneCountGuarded(poseSource);
++                if (!CopyRemappedBonesGuarded(collBuf, collBoneCount,
++                                              charBuf, charBoneCount, remap,
++                                              renderCtx, poseSource))
+                 {
+                     EquipLog("  OnBBP(copy): guarded copy failed rctx=0x%p count=%u",
+                              renderCtx, (uint32_t)remap.count);
+-												 
+-					 
+-																	 
+-											   
+-                    entry.renderCtx = nullptr;
+-					 
++                    const bool staleDestination =
++                        eng::ModelShared(renderCtx) != remap.collectionModel;
++                    for (auto& sibling : entries)
++                    {
++                        if (sibling.renderCtx != renderCtx) continue;
++                        sibling.boneRemap = {};
++                        if (staleDestination) sibling.renderCtx = nullptr;
++                    }
+                 }
+                 return; // renderCtx is unique per (keyBuf,attachId,texBuf) group; one copy suffices
+-					   
+             }
+         }
+ 
+-														
+-														   
+-																  
+-																					
+-																  
+-																			  
+-										 
+-																				   
+-																						
+-																	   
+-												   
++        // CharacterModelFrame/PlayerModel duplicates the complete character M2 tree. Those clone
++        // children never pass through CharModelSlotDispatch and therefore have new renderCtx
++        // pointers absent from g_attached. DuplicateModel does preserve both shared model pointers,
++        // so the (collection model, character ancestor model) pair safely identifies the clone.
++        if (!cloneCandidate || !clonePoseSource) return;
++        const BoneRemap& remap = cloneCandidate->boneRemap;
++        auto* charBuf = reinterpret_cast<uint8_t*>(eng::ModelBonePalette(clonePoseSource));
++        auto* collBuf = reinterpret_cast<uint8_t*>(eng::ModelBonePalette(renderCtx));
++        if (!charBuf || !collBuf) return;
++
++        const uint32_t collBoneCount = RenderCtxBoneCountGuarded(renderCtx);
++        const uint32_t charBoneCount = RenderCtxBoneCountGuarded(clonePoseSource);
++        if (!CopyRemappedBonesGuarded(collBuf, collBoneCount,
++                                      charBuf, charBoneCount, remap,
++                                      renderCtx, clonePoseSource))
++            return;
++
++        if (!cloneCandidate->cloneBbpLogDone)
++        {
++            EquipLog("  OnBBP[clone] collRctx=0x%p source=0x%p collModel=0x%p"
++                     " charModel=0x%p count=%u",
++                     renderCtx, clonePoseSource, remap.collectionModel,
++                     remap.characterModel, (uint32_t)remap.count);
++            cloneCandidate->cloneBbpLogDone = true;
++        }
+     }
+     // ─── Constructor ──────────────────────────────────────────────────────────────
+ 
+@@ -2624,8 +2963,8 @@ namespace wxl::scripts::equipextension
+     {
+         if (GetFileAttributesA("WarcraftXL_equip-extension.disable") != INVALID_FILE_ATTRIBUTES)
+         {
+-            wxl::Log("equip-extension: disabled by client flag");
+-            return;
++//    api->Log(WXL_LOG_WARN, "equip-extension", "disabled by client flag");
++    return;
+         }
+         on<&EquipExtension::OnItemSlotChange>(ev::Event::OnItemSlotChange);
+         on<&EquipExtension::OnItemSlotClear>(ev::Event::OnItemSlotClear);
+@@ -2637,6 +2976,68 @@ namespace wxl::scripts::equipextension
+         // resolution moved to WeaponExtension, which patches ItemModelData.dbc at the data level
+         // instead. Nothing subscribes to either event any more: with the virtual path named
+         // directly in the data, the native loader never needs a live substitution hook to catch.
++        g_equipInstance = this;
++    }
++
++    // OLD: file-scope self-registering global (constructed at DLL load, before EventScript::Bind
++    // could ever have run). Construction now happens inside WXL_Load(), below, after Bind() --
++    // see PORTING_GUIDE.md Step 9.
++
++    // ─── Hand-item (weapon) model override ───────────────────────────────────────
++    //
++    // The client resolves a held weapon's model file from the ItemDisplayInfo record's Model1 name and loads
++    // it straight from the archives. A weapon the sidecar changes (texture rows, geoset filter, or a distinct
++    // offhand/mirrored model) only works if the client asks for the baked VIRTUAL model instead of the plain
++    // one, so CCharacterComponent::AddHandItem asks this resolver for a replacement file name first.
++    //
++    // This replaces the injected build's two detours (ItemDisplayInfoLookup + CharAddHandItem), which had to
++    // stash the display id by call-site return address because the already-resolved record carries none the
++    // detour could see. In source the display id is simply the record's own id.
++    namespace
++    {
++        // WoW equipment slot numbers as AddHandItem receives them.
++        constexpr uint32_t kEquipSlotMainHand = 15;
++        constexpr uint32_t kEquipSlotOffHand  = 16;
++        constexpr uint32_t kEquipSlotRanged   = 17;
++
++        bool ResolveHandItemModelFile(uint32_t displayId, uint32_t invSlot, char* out, size_t outSz)
++        {
++            if (invSlot != kEquipSlotMainHand && invSlot != kEquipSlotOffHand && invSlot != kEquipSlotRanged)
++                return false;
++
++            const bool isOffhand = (invSlot == kEquipSlotOffHand);
++            char vkey[280] = {};
++
++            // Column 0 == Model1/Model1Path: the only column AddHandItem reads from the record. Offhand
++            // overrides only when the sidecar configures an offhand model (Model1OffhandPath, or an
++            // auto-mirrored bake); mainhand and ranged use the ordinary mainhand bake.
++            const bool overridden = isOffhand
++                ? wxl::scripts::weaponextension::WeaponGetOffhandVirtualPath(displayId, 0, vkey, sizeof(vkey))
++                : wxl::scripts::weaponextension::WeaponGetVirtualPath(displayId, 0, vkey, sizeof(vkey));
++
++            if (!overridden)
++            {
++                if (wxl::LogThrottle("equip.handitem.none", 40, 200))
++                    EquipLog("[HANDITEM] displayId=%u slot=%u (%s): no sidecar model, the client loads the record's own model",
++                             displayId, invSlot, isOffhand ? "offhand" : (invSlot == kEquipSlotRanged ? "ranged" : "mainhand"));
++                return false;
++            }
++
++            // The record's Model1 is a bare file name; the client prepends "Item\ObjectComponents\Weapon\"
++            // (or ...\Shield\) itself. The baked virtual key is the full directory-qualified path, so hand back
++            // only its file name or the client would double the prefix and miss the virtual file.
++            const char* filename = vkey;
++            for (const char* p = vkey; *p; ++p)
++                if (*p == '\\' || *p == '/')
++                    filename = p + 1;
++
++            std::strncpy(out, filename, outSz - 1);
++            out[outSz - 1] = '\0';
++            EquipLog("[HANDITEM] displayId=%u slot=%u (%s): Model1 <- '%s' (virtual key '%s')",
++                     displayId, invSlot, isOffhand ? "offhand" : (invSlot == kEquipSlotRanged ? "ranged" : "mainhand"),
++                     out, vkey);
++            return true;
++        }
+     }
+ 
+     void Create()
+@@ -2645,5 +3046,6 @@ namespace wxl::scripts::equipextension
+         // discarded by the linker, and its handlers would silently never bind.
+         static EquipExtension s_equipExtension;
+         (void)s_equipExtension;
++        wxl::hooks::SetHandItemModelResolver(&ResolveHandItemModelFile);
+     }
+ }
+diff --git a/Engine/Source/WXLEquip/EquipExtension.hpp b/Engine/Source/WXLEquip/EquipExtension.hpp
+index c74ff2c..f29f1fb 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.hpp
++++ b/Engine/Source/WXLEquip/EquipExtension.hpp
+@@ -17,14 +17,39 @@
+ #pragma once
+ #include "Engine/Source/WXL/EventScript.h"
+ 
++#include "Engine/Source/WXL/Event.h"
++
++#include <cstdint>
++
+ namespace wxl::scripts::equipextension
+ {
++    // Forward-declared so the friend grants below bind to these exact entities (not to new,
++    // distinct functions the friend declarations would otherwise silently introduce into this
++    // namespace, since M2PerFrameUpdateDetour/BuildBonePaletteDetour aren't visible yet at this
++    // point in the header). Defined in EquipExtension.cpp, directly in this namespace (not in an
++    // anonymous namespace, so this forward declaration and that definition refer to the same
++    // function).
++    void __fastcall M2PerFrameUpdateDetour(void* renderCtx, void* edx);
++    void __fastcall BuildBonePaletteDetour(void* renderCtx, void* edx,
++        void* sa1, void* sa2, void* sa3, uint32_t sa4, uint32_t sa5);
++
+     class EquipExtension : public wxl::events::EventScript
+     {
+     public:
+         EquipExtension();
+ 
+     private:
++        // M2PerFrameUpdateDetour/BuildBonePaletteDetour (EquipExtension.cpp) call OnM2PerFrameUpdate/
++        // OnBuildBonePalette directly via g_equipInstance -- the core's own hook for these two events
++        // was dropped when GameHooks.cpp was retired during the 1.1 port (never carved into a
++        // replacement file, unlike CharModelSlotDispatch/Clear which moved to CharModel.cpp), so this
++        // extension installs its own raw HookAttach on kM2PerFrameUpdate/kBuildBonePalette instead of
++        // relying on ev::Emit ever firing for them. See WxlOffsets.hpp's m2hooks namespace.
++        friend void __fastcall M2PerFrameUpdateDetour(void* renderCtx, void* edx);
++        friend void __fastcall BuildBonePaletteDetour(void* renderCtx, void* edx,
++            void* sa1, void* sa2, void* sa3, uint32_t sa4, uint32_t sa5);
++
++
+         void OnItemSlotChange(const wxl::events::ItemSlotChangeArgs& a);
+         void OnItemSlotClear(const wxl::events::ItemSlotClearArgs& a);
+         void OnM2SkinFinalize(const wxl::events::M2SkinFinalizeArgs& a);
+@@ -49,6 +74,6 @@ namespace wxl::scripts::equipextension
+         void OnModelLoadPre(const wxl::events::ModelLoadArgs& a);
+     };
+ 
+-    /// Constructs the extension so its handlers bind to the event bus. Called once from wxl::equip::Init().
++    /// Constructs the extension and installs the hand-item model resolver. Called once from wxl::equip::Init().
+     void Create();
+ }
+diff --git a/Engine/Source/WXLEquip/M2Format.hpp b/Engine/Source/WXLEquip/M2Format.hpp
+index 7569fa9..1c33b12 100644
+--- a/Engine/Source/WXLEquip/M2Format.hpp
++++ b/Engine/Source/WXLEquip/M2Format.hpp
+@@ -103,7 +103,10 @@ namespace wxl::structure::m2
+      * @brief One animation sequence, 0x40 bytes.
+      *
+      * The loader reads a single u32 duration at 0x04 and a single u32 blendTime at 0x1C. flags bit
+-     * 0x20 = data embedded in the model; clear = streamed from a sequence file.
++     * 0x20 = data embedded in the model; clear = streamed from a sequence file. flags bit 0x40 = the
++     * record carries no keyframes of its own: aliasNext is the INDEX of the next member of a circular
++     * ring of sequences that all play one key set, and the engine walks that ring both to name the
++     * sequence file and to bind it to every member.
+      */
+     struct M2Sequence
+     {
+@@ -118,8 +121,8 @@ namespace wxl::structure::m2
+         uint32_t replayMax;      // 0x18
+         uint32_t blendTime;      // 0x1C
+         uint8_t  _bounds[0x1C];  // 0x20
+-        int16_t  variationNext;  // 0x3C
+-        uint16_t aliasNext;      // 0x3E
++        int16_t  variationNext;  // 0x3C  index of the next variation of this id, -1 = none
++        uint16_t aliasNext;      // 0x3E  index of the next ring member (see flags bit 0x40)
+     };
+ 
+     /**
+@@ -134,10 +137,13 @@ namespace wxl::structure::m2
+         M2Array  filename; // 0x08
+     };
+ 
+-    // Common texture.type values used by the 3.3.5 client.
++    // Common texture.type values used by the target client.
+     constexpr uint32_t kTexTypeHardcoded = 0;
+     constexpr uint32_t kTexTypeObjectSkin = 2;
+     constexpr uint32_t kTexTypeWeaponBlade = 3;
++    // Character hair and facial hair. Never named by the file: the character code hands the handle to
++    // the model's texture-replace entry, which writes it at every texture index of this type.
++    constexpr uint32_t kTexTypeCharHair = 6;
+ 
+     /**
+      * @brief One render batch (texunit), 0x18 bytes.
+@@ -202,8 +208,8 @@ namespace wxl::structure::m2
+     };
+ 
+     /**
+-     * @brief One M2Track<T> animation block: interpolation/global-sequence header plus the pre-Legion,
+-     *        per-sequence-indexed timestamp and value tables.
++     * @brief One M2Track<T> animation block: interpolation/global-sequence header plus the legacy,
++     *        per-sequence-indexed timestamp and value tables that predate the modern single-array layout.
+      *
+      * timestamps/values are each an array of arrays: outer entry i holds sequence i's own timestamp (or
+      * value) list, so a track with no global sequence still needs one outer entry per animation sequence
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index 7cd1828..b7c62c6 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -28,12 +28,15 @@
+ 
+ #include <cstdarg>
+ #include <cstdint>
++#include <cstddef>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <cctype>
++#include <memory>
++#include <mutex>
+ #include <string>
+ #include <unordered_map>
+-#include <mutex>
+ #include <vector>
+ 
+ #ifdef _WIN32
+@@ -50,13 +53,13 @@ namespace wxl::scripts::equipextension
+             wxl::LogCatV("VPATH", fmt, ap);
+             va_end(ap);
+         }
+-        // Guards every table below. The injected build documented these as main-thread-only, but the
+-        // client opens model files from loader threads, and VirtualProvide runs inside that open.
+-        // Recursive because a populate reads real files through SFile::OpenEx, which re-enters
+-        // VirtualProvide on the same thread.
++        // Guards every table below. The injected build documented these as main-thread-only, but the client
++        // opens model files from loader threads, and VirtualProvide runs inside that open. Recursive because
++        // a populate reads real files through SFile::OpenEx, which re-enters VirtualProvide on the same thread.
+         std::recursive_mutex g_vpMutex;
+ 
+         // virtual path -> raw file bytes (both .mdx and 00.skin entries per model).
++        // Accessed from the game's main thread only; no mutex needed.
+         std::unordered_map<std::string, std::vector<uint8_t>> g_virtualBytes;
+ 
+         // cmo -> list of virtual paths it owns, for O(n) cleanup on eviction.
+@@ -340,13 +343,13 @@ namespace wxl::scripts::equipextension
+         // Uses kOpenWholeFile so the handle buffer holds the full content immediately.
+         static bool ReadGameFile(const char* path, std::vector<uint8_t>& out) noexcept
+         {
+-            // Goes through the client's own SFile::OpenEx (installed by wxl::equip::Init), so loose
+-            // files and archives resolve exactly as for the game itself. Our own provider sees this
+-            // open too and must not, and does not, claim a real path.
++            // Through the client's own SFile::OpenEx (installed by wxl::equip::Init), so archives and loose
++            // files resolve exactly as for the game. Our provider sees this open too and does not claim a
++            // real path.
+             out.clear();
+             const bool ok = wxl::storage::ReadNative(path, out) && !out.empty();
+             if (!ok)
+-                VPathLog("ReadGameFile('%s') FAILED: the source model/skin could not be read from the game files", path);
++                VPathLog("ReadGameFile('%s') FAILED: not found or unreadable through the game's file layer", path);
+             return ok;
+         }
+ 
+@@ -714,7 +717,8 @@ namespace wxl::scripts::equipextension
+ 
+         static bool VirtualProvide(const char* name, std::vector<uint8_t>& out)
+         {
+-        std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
++
++            std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
+             if (!name) return false;
+ 
+             // Global overrides apply to every loader, not just our own mangled paths, so this
+@@ -773,10 +777,705 @@ namespace wxl::scripts::equipextension
+             return true;
+         }
+ 
++        // OLD: self-registering global (constructed at DLL load, calling straight into the core's
++        // internal wxl::runtime::storage::RegisterClientProvider). Extensions cannot call core
++        // functions directly (see PORTING_GUIDE.md Step 9 / troubleshooting), and confirmed against
++        // the real wxl/PluginApi.h: WXL_Api has no storage/provider registration member at all --
++        // Log/Subscribe/Emit/HookAttach/PublishInterface/GetInterface/Ui*, nothing else. So this
++        // module now hooks the archive file-I/O primitives itself, the same four addresses the core's
++        // own StorageHook does (offsets::io::kFileOpen/kFileRead/kFileSize/kFileClose in
++        // WxlOffsets.hpp), via api->HookAttach -- "alongside any party already detouring it" is
++        // exactly this case: the core's own IPC-backed host provider chains behind this one.
++        // See detail::InstallFileHooks / VPathRegisterStorageProvider below.
++    }
++
++    // ─── Model offset / scale (WXLHelmOffsets.csv) ──────────────────────────────────────────────
++    // Ported from wxl-modern-assets' host/models/m2/EquipmentFixes.cpp (ApplyHelmOffset /
++    // ApplyHelmOffsetIfConfigured), which targets exactly this WotLK-compatible M2 layout already
++    // (it downports modern models INTO this format), so the struct shapes and append-a-synthesized-
++    // single-key-track technique carry over directly -- this just adds a Kind column (Helm/Other)
++    // to gate the automatic per-race/gender default, and a Scale column doing the same append-and-
++    // relink trick against each bone's scale track instead of (well, alongside) its translation track.
++    namespace fmt = wxl::structure::m2;
++
++#pragma pack(push, 1)
++    // A synthesized single-key track, appended past the model's original bytes and pointed to by
++    // one bone's M2CompBone::translation or ::scale. The outer M2Array in track.timestamps/
++    // track.values always holds exactly one M2Array<T> descriptor (the pre-Legion per-sequence
++    // indirection this client's loader expects); that inner descriptor holds the one actual key.
++    struct AppendedModelTrack
++    {
++        fmt::M2Array innerTimestamps; // 0x00 -> timestampValue
++        uint32_t     timestampValue;  // 0x08  (left at 0: the single key sits at t=0)
++        fmt::M2Array innerValues;     // 0x0C -> value
++        float        value[3];        // 0x14
++    };
++#pragma pack(pop)
++    static_assert(sizeof(AppendedModelTrack) == 0x20, "AppendedModelTrack");
++
++    // Every playable race's 2-letter model-name code; shared by ModelRaceId (which race a model's
++    // "<code><m|f>" filename suffix names) and StripRaceGenderSuffix (which trailing "_<code><m|f>"
++    // a CSV rule's model key strips).
++    constexpr const char* kRaceCodes[] = {
++        "be", "dr", "dw", "gn", "hu", "ni", "or", "sc", "ta", "tr", "sk", "go"
++    };
++
++    static bool IsRaceCode(const char* race) noexcept
++    {
++        if (!race) return false;
++        for (const char* r : kRaceCodes) if (std::strcmp(race, r) == 0) return true;
++        return false;
++    }
++
++    // Parses the trailing "<race><m|f>" (3 chars, e.g. "bef") or "<race>_<m|f>" (4 chars incl.
++    // underscore, e.g. "be_f") suffix off a model's file-name stem (before the extension). Returns
++    // false (and leaves id empty) if the name doesn't end in a recognizable race/gender suffix --
++    // callers treat that as "not a per-race-suffixed model" rather than an error.
++    static bool ModelRaceId(const char* name, char* id, size_t idSz) noexcept
++    {
++        if (!name || !id || idSz < 4) return false;
++        id[0] = '\0';
++        const size_t len = std::strlen(name);
++        const char* slash = nullptr;
++        for (const char* p = name; *p; ++p) if (*p == '\\' || *p == '/') slash = p;
++        const char* base = slash ? slash + 1 : name;
++        const char* dot = nullptr;
++        for (const char* p = base; *p; ++p) if (*p == '.') dot = p;
++        const char* end = dot ? dot : base + std::strlen(base);
++        if (end - base < 3) return false;
++
++        char raceBuf[3] = {};
++        char genderBuf = '\0';
++        if (end - base >= 4 && end[-2] == '_')
++        {
++            raceBuf[0] = end[-4]; raceBuf[1] = end[-3]; genderBuf = end[-1];
++        }
++        else
++        {
++            raceBuf[0] = end[-3]; raceBuf[1] = end[-2]; genderBuf = end[-1];
++        }
++        raceBuf[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(raceBuf[0])));
++        raceBuf[1] = static_cast<char>(std::tolower(static_cast<unsigned char>(raceBuf[1])));
++        genderBuf  = static_cast<char>(std::tolower(static_cast<unsigned char>(genderBuf)));
++        if (genderBuf != 'm' && genderBuf != 'f') return false;
++        if (!IsRaceCode(raceBuf)) return false;
++        id[0] = raceBuf[0]; id[1] = raceBuf[1]; id[2] = genderBuf; id[3] = '\0';
++        return true;
++    }
++
++    struct ModelOffsetRule
++    {
++        char   model[128] = {};
++        char   raceSex[8] = {};
++        float  x = 0.0f, y = 0.0f, z = 0.0f, scale = 0.0f;
++        bool   hasX = false, hasY = false, hasZ = false, hasScale = false;
++        bool   add = true, disable = false;
++        bool   isHelm = false; // Kind column: "Helm" enables the automatic per-race/gender default
++                                // offset below; anything else ("Other"/blank) only ever applies this
++                                // row's own explicit X/Y/Z/Scale, matching ApplyHelmOffsetIfConfigured.
++    };
++
++    static bool g_modelOffsetsLoaded = false;
++    static std::vector<ModelOffsetRule> g_modelOffsetRules;
++
++    static void NormalizeOffsetKey(const char* in, char* out, size_t outSz) noexcept
++    {
++        size_t o = 0;
++        for (const char* p = in; *p && o + 1 < outSz; ++p)
++        {
++            char c = static_cast<char>(std::tolower(static_cast<unsigned char>(*p)));
++            if (c == '/') c = '\\';
++            out[o++] = c;
++        }
++        out[o] = '\0';
++        // strip a trailing .m2/.mdx extension
++        const size_t len = std::strlen(out);
++        if (len >= 3 && std::strcmp(out + len - 3, ".m2") == 0) out[len - 3] = '\0';
++        else if (len >= 4 && std::strcmp(out + len - 4, ".mdx") == 0) out[len - 4] = '\0';
++    }
++
++    static void StripRaceGenderSuffixInPlace(char* stem) noexcept
++    {
++        const size_t n = std::strlen(stem);
++        if (n >= 5 && stem[n - 5] == '_' && stem[n - 2] == '_' &&
++            (stem[n - 1] == 'm' || stem[n - 1] == 'f'))
++        {
++            char race[3] = { stem[n - 4], stem[n - 3], '\0' };
++            race[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(race[0])));
++            race[1] = static_cast<char>(std::tolower(static_cast<unsigned char>(race[1])));
++            if (IsRaceCode(race)) { stem[n - 5] = '\0'; return; }
++        }
++        if (n >= 4 && stem[n - 4] == '_' && (stem[n - 1] == 'm' || stem[n - 1] == 'f'))
++        {
++            char race[3] = { stem[n - 3], stem[n - 2], '\0' };
++            race[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(race[0])));
++            race[1] = static_cast<char>(std::tolower(static_cast<unsigned char>(race[1])));
++            if (IsRaceCode(race)) stem[n - 4] = '\0';
++        }
++    }
++
++    static void FileNamePart(const char* in, char* out, size_t outSz) noexcept
++    {
++        const char* slash = nullptr;
++        for (const char* p = in; *p; ++p) if (*p == '\\') slash = p;
++        const char* base = slash ? slash + 1 : in;
++        std::strncpy(out, base, outSz - 1);
++        out[outSz - 1] = '\0';
+     }
+ 
++    static void LoadModelOffsetsText(const char* source, const std::string& text)
++    {
++        std::vector<std::string> header;
++        size_t pos = 0;
++        {
++            const size_t nl = text.find_first_of("\r\n");
++            const std::string headerLine = text.substr(0, nl == std::string::npos ? text.size() : nl);
++            std::string field; bool quoted = false;
++            for (char c : headerLine)
++            {
++                if (quoted) { if (c == '"') quoted = false; else field.push_back(c); }
++                else if (c == '"') quoted = true;
++                else if (c == ',') { header.push_back(field); field.clear(); }
++                else field.push_back(c);
++            }
++            header.push_back(field);
++            pos = (nl == std::string::npos) ? text.size() : nl + 1;
++        }
++        auto findCol = [&](const char* name) -> int {
++            for (size_t i = 0; i < header.size(); ++i)
++            {
++                std::string h = header[i];
++                for (auto& c : h) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++                std::string want = name;
++                for (auto& c : want) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++                if (h == want) return static_cast<int>(i);
++            }
++            return -1;
++        };
++        const int cModel = findCol("Model");
++        const int cRaceSex = findCol("RaceSex");
++        const int cMode = findCol("Mode");
++        const int cKind = findCol("Kind");
++        const int cX = findCol("X");
++        const int cY = findCol("Y");
++        const int cZ = findCol("Z");
++        const int cScale = findCol("Scale");
++        if (cModel < 0)
++        {
++            VPathLog("  WXLHelmOffsets '%s': missing Model column, skipped", source);
++            return;
++        }
++
++        uint32_t loaded = 0;
++        while (pos < text.size())
++        {
++            const size_t nl = text.find_first_of("\r\n", pos);
++            std::string line = text.substr(pos, (nl == std::string::npos ? text.size() : nl) - pos);
++            pos = (nl == std::string::npos) ? text.size() : nl + 1;
++            if (line.empty()) continue;
++
++            std::vector<std::string> row;
++            std::string field; bool quoted = false;
++            for (char c : line)
++            {
++                if (quoted) { if (c == '"') quoted = false; else field.push_back(c); }
++                else if (c == '"') quoted = true;
++                else if (c == ',') { row.push_back(field); field.clear(); }
++                else field.push_back(c);
++            }
++            row.push_back(field);
++            auto get = [&](int col) -> std::string {
++                return (col >= 0 && static_cast<size_t>(col) < row.size()) ? row[col] : std::string();
++            };
++
++            ModelOffsetRule rule;
++            char modelKey[128];
++            NormalizeOffsetKey(get(cModel).c_str(), modelKey, sizeof(modelKey));
++            if (!modelKey[0]) continue;
++            std::strncpy(rule.model, modelKey, sizeof(rule.model) - 1);
++
++            std::string raceSex = get(cRaceSex);
++            for (auto& c : raceSex) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            if (raceSex == "all") raceSex = "*";
++            std::strncpy(rule.raceSex, raceSex.c_str(), sizeof(rule.raceSex) - 1);
++
++            std::string mode = get(cMode);
++            for (auto& c : mode) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            rule.disable = (mode == "disable" || mode == "disabled" || mode == "none" || mode == "skip");
++            rule.add = !(mode == "set" || mode == "absolute" || mode == "override");
++
++            std::string kind = get(cKind);
++            for (auto& c : kind) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            rule.isHelm = (kind == "helm");
++
++            auto parseF = [](const std::string& s, float& out) -> bool {
++                if (s.empty()) return false;
++                char* end = nullptr;
++                const float v = std::strtof(s.c_str(), &end);
++                if (end == s.c_str()) return false;
++                out = v; return true;
++            };
++            rule.hasX = parseF(get(cX), rule.x);
++            rule.hasY = parseF(get(cY), rule.y);
++            rule.hasZ = parseF(get(cZ), rule.z);
++            rule.hasScale = parseF(get(cScale), rule.scale);
++            if (!rule.disable && !rule.hasX && !rule.hasY && !rule.hasZ && !rule.hasScale && !rule.isHelm)
++                continue;
++
++            g_modelOffsetRules.push_back(rule);
++            ++loaded;
++        }
++        if (loaded) VPathLog("  WXLHelmOffsets loaded '%s' rows=%u", source, loaded);
++    }
++
++    static void LoadModelOffsets()
++    {
++        if (g_modelOffsetsLoaded) return;
++        g_modelOffsetsLoaded = true;
++        std::vector<uint8_t> bytes;
++        if (ReadGameFile("DBFilesClient\\WXLHelmOffsets.csv", bytes) && !bytes.empty())
++            LoadModelOffsetsText("DBFilesClient\\WXLHelmOffsets.csv",
++                std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
++        if (!g_modelOffsetRules.empty())
++            VPathLog("  WXLHelmOffsets ready rules=%zu", g_modelOffsetRules.size());
++    }
++
++    // Per-race/gender default (x, z) helm-bone offset, ported verbatim from wxl-modern-assets
++    // (calibrated by eye against each race's head proportions there). A race/gender with no entry
++    // here falls back to the human default at the table's end. y is always 0 by default.
++    struct ModelOffsetDefault { const char* id; float x, z; };
++    constexpr ModelOffsetDefault kHelmOffsetDefaults[] = {
++        { "drf", -0.0587258f, -0.195f },
++        { "drm", -0.0587258f, -0.245f },
++        { "taf", -0.13f,      -0.1f },
++        { "tam", -0.2f,       -0.1f },
++        { "nim", -0.09f,      -0.18f },
++        { "nif", -0.08f,      -0.195f },
++        { "orf", -0.08f,      -0.171f },
++        { "orm", -0.13f,      -0.21f },
++        { "trf", -0.0887258f, -0.08623257f },
++        { "trm", -0.13f,      -0.16f },
++        { "bef",  0.01f,      -0.2f },
++        { "bem", -0.08f,      -0.165f },
++        { "huf", -0.09f,      -0.18f },
++        { "scm", -0.12f,      -0.12623256f },
++        { "scf", -0.01f,      -0.15f },
++        { "gnf", -0.015f,     -0.263f },
++        { "gnm", -0.009f,     -0.23f },
++        { "dwm", -0.0227258f, -0.1725f },
++        { "dwf",  0.01f,      -0.195f },
++    };
++    constexpr ModelOffsetDefault kHelmOffsetHumanDefault{ "", -0.0587258f, -0.18623257f };
++
++    static void HelmOffsetForId(const char* id, float& x, float& z) noexcept
++    {
++        const ModelOffsetDefault* found = &kHelmOffsetHumanDefault;
++        for (const auto& entry : kHelmOffsetDefaults)
++            if (std::strcmp(entry.id, id) == 0) { found = &entry; break; }
++        x = found->x;
++        z = found->z;
++    }
++
++    static int ModelRuleScore(const ModelOffsetRule& rule, const char* pathStem, const char* pathBase,
++                              const char* fileStem, const char* fileBase, const char* raceSex) noexcept
++    {
++        if (rule.raceSex[0] && std::strcmp(rule.raceSex, "*") != 0 &&
++            std::strcmp(rule.raceSex, raceSex) != 0) return -1;
++        int score = -1;
++        if (std::strchr(rule.model, '\\'))
++        {
++            if (std::strcmp(rule.model, pathStem) == 0) score = 40;
++            else if (std::strcmp(rule.model, pathBase) == 0) score = 30;
++        }
++        else
++        {
++            if (std::strcmp(rule.model, fileStem) == 0) score = 20;
++            else if (std::strcmp(rule.model, fileBase) == 0) score = 10;
++        }
++        if (score >= 0 && rule.raceSex[0] && std::strcmp(rule.raceSex, "*") != 0) score += 5;
++        return score;
++    }
++
++    // Appends a synthesized single-key track per bone for translation and/or scale, nudging/resizing
++    // the whole model. Ported from wxl-modern-assets' InjectHelmBoneOffset, extended to also cover
++    // scale (that module only ever needed translation).
++    static bool InjectModelOffsetAndScale(const char* name, std::vector<uint8_t>& model,
++                                          bool doTranslate, float x, float y, float z,
++                                          bool doScale, float scale)
++    {
++        if (model.size() < sizeof(fmt::M2Header)) return false;
++        auto* md = reinterpret_cast<fmt::M2Header*>(model.data());
++        if (md->magic != fmt::kMagicMD20 || !md->bones.count || !md->bones.offset) return false;
++        const uint64_t bonesEnd = uint64_t(md->bones.offset) +
++                                   uint64_t(md->bones.count) * sizeof(fmt::M2CompBone);
++        const uint32_t tracksPerBone = (doTranslate ? 1u : 0u) + (doScale ? 1u : 0u);
++        if (bonesEnd > model.size() || bonesEnd < md->bones.offset || tracksPerBone == 0 ||
++            uint64_t(model.size()) + uint64_t(md->bones.count) * tracksPerBone * sizeof(AppendedModelTrack)
++                > 0xffffffffu)
++            return false;
++
++        const uint32_t boneCount = md->bones.count;
++        const uint32_t boneOffset = md->bones.offset;
++        auto boneAt = [&](uint32_t i) {
++            return reinterpret_cast<fmt::M2CompBone*>(model.data() + boneOffset + i * sizeof(fmt::M2CompBone));
++        };
++
++        for (uint32_t i = 0; i < boneCount; ++i)
++        {
++            boneAt(i)->flags |= fmt::kBoneFlagTransformed;
++
++            if (doTranslate)
++            {
++                const uint32_t trackOffset = static_cast<uint32_t>(model.size());
++                model.resize(model.size() + sizeof(AppendedModelTrack), 0);
++                auto* bone = boneAt(i);
++                auto* track = reinterpret_cast<AppendedModelTrack*>(model.data() + trackOffset);
++                bone->translation.timestamps = { 1, trackOffset };
++                track->innerTimestamps = { 1, trackOffset + offsetof(AppendedModelTrack, timestampValue) };
++                bone->translation.values = { 1, trackOffset + offsetof(AppendedModelTrack, innerValues) };
++                track->innerValues = { 1, trackOffset + offsetof(AppendedModelTrack, value) };
++                track->value[0] = x; track->value[1] = y; track->value[2] = z;
++            }
++            if (doScale)
++            {
++                const uint32_t trackOffset = static_cast<uint32_t>(model.size());
++                model.resize(model.size() + sizeof(AppendedModelTrack), 0);
++                auto* bone = boneAt(i);
++                auto* track = reinterpret_cast<AppendedModelTrack*>(model.data() + trackOffset);
++                bone->scale.timestamps = { 1, trackOffset };
++                track->innerTimestamps = { 1, trackOffset + offsetof(AppendedModelTrack, timestampValue) };
++                bone->scale.values = { 1, trackOffset + offsetof(AppendedModelTrack, innerValues) };
++                track->innerValues = { 1, trackOffset + offsetof(AppendedModelTrack, value) };
++                track->value[0] = scale; track->value[1] = scale; track->value[2] = scale;
++            }
++        }
++        VPathLog("  ModelOffset: '%s' translate=%d(%.4f,%.4f,%.4f) scale=%d(%.4f) bones=%u",
++                 name, doTranslate ? 1 : 0, x, y, z, doScale ? 1 : 0, scale, boneCount);
++        return true;
++    }
++
++    // Public entry point: called from VPathPopulate right after the real .m2 bytes are read. name
++    // is the real (pre-normalization) DBC-style path, e.g. 'Item\ObjectComponents\Head\foo_Be_F.mdx'.
++    // No-op (returns without modifying model) if nothing in WXLHelmOffsets.csv applies and the
++    // model's own filename doesn't parse as a per-race helm suffix -- i.e. touching zero bytes and
++    // zero bone flags for every model that was never meant to be offset/scaled at all.
++    static void ApplyModelOffsetAndScale(const char* name, std::vector<uint8_t>& model)
++    {
++        LoadModelOffsets();
++        if (g_modelOffsetRules.empty()) return;
++
++        char id[8] = {};
++        const bool hasRaceId = ModelRaceId(name, id, sizeof(id));
++
++        char pathStem[264]; NormalizeOffsetKey(name, pathStem, sizeof(pathStem));
++        char pathBase[264]; std::strncpy(pathBase, pathStem, sizeof(pathBase) - 1);
++        pathBase[sizeof(pathBase) - 1] = '\0'; StripRaceGenderSuffixInPlace(pathBase);
++        char fileStemBuf[264]; FileNamePart(pathStem, fileStemBuf, sizeof(fileStemBuf));
++        char fileBase[264]; std::strncpy(fileBase, fileStemBuf, sizeof(fileBase) - 1);
++        fileBase[sizeof(fileBase) - 1] = '\0'; StripRaceGenderSuffixInPlace(fileBase);
++
++        const ModelOffsetRule* best = nullptr;
++        int bestScore = -1;
++        for (const auto& rule : g_modelOffsetRules)
++        {
++            const int score = ModelRuleScore(rule, pathStem, pathBase, fileStemBuf, fileBase,
++                                             hasRaceId ? id : "");
++            if (score > bestScore) { best = &rule; bestScore = score; }
++        }
++        if (!best) return;               // no CSV row at all for this model: do nothing (opt-in)
++        if (best->disable) return;        // explicit disable: do nothing
++
++        float x = 0.0f, y = 0.0f, z = 0.0f, scale = 1.0f;
++        bool haveOffset = false, haveScale = false;
++
++        if (best->isHelm && hasRaceId)
++        {
++            float dx, dz;
++            HelmOffsetForId(id, dx, dz);
++            x = dx; z = dz; haveOffset = true;
++        }
++
++        if (best->add)
++        {
++            if (best->hasX) { x += best->x; haveOffset = true; }
++            if (best->hasY) { y += best->y; haveOffset = true; }
++            if (best->hasZ) { z += best->z; haveOffset = true; }
++        }
++        else
++        {
++            if (best->hasX) { x = best->x; haveOffset = true; }
++            if (best->hasY) { y = best->y; haveOffset = true; }
++            if (best->hasZ) { z = best->z; haveOffset = true; }
++        }
++        if (best->hasScale) { scale = best->scale; haveScale = true; }
++
++        if (!haveOffset && !haveScale) return;
++        InjectModelOffsetAndScale(name, model, haveOffset, x, y, z, haveScale, scale);
++    }
++
++    // ─── Full geometric weapon mirroring (auto offhand fallback) ───────────────────────────────
++    // Mirrors a mainhand weapon's .m2 + .skin bytes across the X axis for correct offhand display,
++    // used only when WXLWeaponModels.csv has no explicit Model1OffhandPath/Model2OffhandPath for
++    // this displayId -- an explicit hand-baked override always wins (see WeaponGetOffhandVirtualPath
++    // in WeaponExtension.cpp). Struct layouts below cross-checked against M2AlastorOne.bt (010
++    // Editor template, "Tested on 3.3.5 / 7.0.1 / 8.0.1 / 9.0.1 / 9.2.0"), the parts core's own
++    // M2Format.hpp doesn't define (M2Vertex, M2Attachment, the compressed rotation quaternion).
++
++#pragma pack(push, 1)
++    // 0x30 bytes, unchanged since Classic. Position@0x00, BoneWeight@0x0C, BoneIndices@0x10,
++    // Normal@0x14, TexCoord1@0x20, TexCoord2@0x28.
++    struct M2VertexRaw
++    {
++        float   position[3];    // 0x00
++        uint8_t boneWeight[4];  // 0x0C
++        uint8_t boneIndices[4]; // 0x10
++        float   normal[3];      // 0x14
++        float   texCoord1[2];   // 0x20
++        float   texCoord2[2];   // 0x28
++    };
++    static_assert(sizeof(M2VertexRaw) == 0x30, "M2VertexRaw");
++
++    // ID(u32) + ParentBone(u32) + Position(C3Vector) + an int M2Track ("has been 1 on all models",
++    // per the template's own comment -- never touched here, only Position is).
++    struct M2AttachmentRaw
++    {
++        uint32_t id;                 // 0x00
++        uint32_t parentBone;         // 0x04
++        float    position[3];        // 0x08
++        fmt::M2TrackHeader data;     // 0x14 (untouched)
++    };
++    static_assert(sizeof(M2AttachmentRaw) == 0x14 + sizeof(fmt::M2TrackHeader), "M2AttachmentRaw");
++
++    // Raw on-disk .skin file header. Stable, well-documented WotLK+ layout: magic "SKIN", then five
++    // M2Array blocks (vertex-lookup indices, triangle indices, vertex properties, submeshes, texture
++    // units), then a bone-influence cap. NOTE: unlike the vertex/attachment/quaternion structs above,
++    // this one isn't independently re-derived from the uploaded .bt template in this session (that
++    // template only covers .m2, not .skin) -- it's from established prior knowledge of the format,
++    // not a fresh source check the way everything else here was. If mirrored weapons render with
++    // visibly inside-out faces, this is the first thing to re-verify.
++    struct M2SkinHeaderRaw
++    {
++        char     magic[4];       // "SKIN"
++        fmt::M2Array indices;    // 0x04  vertex-lookup table (uint16, -> m2 vertex array)
++        fmt::M2Array triangles;  // 0x0C  uint16 triples, indices INTO the table above (not m2 verts)
++        fmt::M2Array properties; // 0x14  uint8 per entry in indices[]
++        fmt::M2Array submeshes;  // 0x1C
++        fmt::M2Array textureUnits; // 0x24
++        uint32_t boneCountMax;   // 0x2C
++    };
++    static_assert(sizeof(M2SkinHeaderRaw) == 0x30, "M2SkinHeaderRaw");
++#pragma pack(pop)
++
++    // Mirrors a compressed rotation quaternion (4x uint16, decoded as (v/32767.0)-1.0) across the X
++    // axis. Derivation: mirroring negates the X component of every vector; for a rotation R to look
++    // correctly mirrored we need R' = m*R*m (m = diag(-1,1,1)), which works out to negating the two
++    // quaternion components NOT on the mirrored axis, leaving the mirrored-axis component and w
++    // unchanged: q' = (qx, -qy, -qz, qw). Checked against two cases: a Z-axis rotation correctly
++    // flips to -theta (mirrors reverse in-plane rotation handedness); a rotation about X itself (the
++    // mirror's own axis) comes out unchanged (the axis-flip and handedness-reversal cancel).
++    static void MirrorCompressedQuatX(uint16_t& x, uint16_t& y, uint16_t& z, uint16_t& /*w*/) noexcept
++    {
++        constexpr float kMaxShort = 32767.0f;
++        auto stf = [&](uint16_t v) { return (static_cast<float>(v) / kMaxShort) - 1.0f; };
++        auto fts = [&](float f) {
++            float v = (f + 1.0f) * kMaxShort;
++            if (v < 0.0f) v = 0.0f;
++            if (v > 65535.0f) v = 65535.0f;
++            return static_cast<uint16_t>(v + 0.5f);
++        };
++        y = fts(-stf(y));
++        z = fts(-stf(z));
++        // x, w untouched
++    }
++
++    // Negates the X component of every value in a translation (C3Vector) or rotation (compressed
++    // quaternion) track, across every sequence -- walks the same nested M2Array-of-M2Array
++    // indirection the offset-injection code above appends new data into, except here the data
++    // already exists in the model and is being rewritten in place (no resize, no relinking).
++    static void MirrorTranslationTrack(std::vector<uint8_t>& model, const fmt::M2TrackHeader& track)
++    {
++        if (!track.timestamps.count || !track.values.count) return;
++        const uint64_t outerEnd = uint64_t(track.values.offset) +
++                                   uint64_t(track.values.count) * sizeof(fmt::M2Array);
++        if (outerEnd > model.size()) return;
++        auto* outer = reinterpret_cast<fmt::M2Array*>(model.data() + track.values.offset);
++        for (uint32_t s = 0; s < track.values.count; ++s)
++        {
++            const uint64_t innerEnd = uint64_t(outer[s].offset) +
++                                       uint64_t(outer[s].count) * (sizeof(float) * 3);
++            if (!outer[s].count || innerEnd > model.size()) continue;
++            auto* vals = reinterpret_cast<float*>(model.data() + outer[s].offset);
++            for (uint32_t k = 0; k < outer[s].count; ++k) vals[k * 3 + 0] = -vals[k * 3 + 0];
++        }
++    }
++
++    static void MirrorRotationTrack(std::vector<uint8_t>& model, const fmt::M2TrackHeader& track)
++    {
++        if (!track.timestamps.count || !track.values.count) return;
++        const uint64_t outerEnd = uint64_t(track.values.offset) +
++                                   uint64_t(track.values.count) * sizeof(fmt::M2Array);
++        if (outerEnd > model.size()) return;
++        auto* outer = reinterpret_cast<fmt::M2Array*>(model.data() + track.values.offset);
++        for (uint32_t s = 0; s < track.values.count; ++s)
++        {
++            const uint64_t innerEnd = uint64_t(outer[s].offset) +
++                                       uint64_t(outer[s].count) * (sizeof(uint16_t) * 4);
++            if (!outer[s].count || innerEnd > model.size()) continue;
++            auto* vals = reinterpret_cast<uint16_t*>(model.data() + outer[s].offset);
++            for (uint32_t k = 0; k < outer[s].count; ++k)
++                MirrorCompressedQuatX(vals[k * 4 + 0], vals[k * 4 + 1], vals[k * 4 + 2], vals[k * 4 + 3]);
++        }
++    }
++
++    // Mirrors vertex positions/normals, bone pivots + translation/rotation keyframes (every
++    // sequence, not just a synthesized key), attachment offsets, and bounding volumes. Does NOT
++    // touch scale tracks (scale is an unsigned magnitude, not a signed direction -- the mirror is
++    // already fully expressed by the position/rotation changes above it). Returns false (model left
++    // untouched) on any bounds-check failure, matching the append-side injection code's own
++    // fail-closed convention.
++    static bool MirrorModelBytes(const char* name, std::vector<uint8_t>& model) noexcept
++    {
++        if (model.size() < sizeof(fmt::M2Header)) return false;
++        auto* md = reinterpret_cast<fmt::M2Header*>(model.data());
++        if (md->magic != fmt::kMagicMD20) return false;
++
++        __try
++        {
++            // Vertices
++            if (md->vertices.count)
++            {
++                const uint64_t end = uint64_t(md->vertices.offset) +
++                                      uint64_t(md->vertices.count) * sizeof(M2VertexRaw);
++                if (end > model.size()) return false;
++                auto* v = reinterpret_cast<M2VertexRaw*>(model.data() + md->vertices.offset);
++                for (uint32_t i = 0; i < md->vertices.count; ++i)
++                {
++                    v[i].position[0] = -v[i].position[0];
++                    v[i].normal[0]   = -v[i].normal[0];
++                }
++            }
++
++            // Bones: pivot + every translation/rotation keyframe in every sequence
++            if (md->bones.count)
++            {
++                const uint64_t end = uint64_t(md->bones.offset) +
++                                      uint64_t(md->bones.count) * sizeof(fmt::M2CompBone);
++                if (end > model.size()) return false;
++                for (uint32_t i = 0; i < md->bones.count; ++i)
++                {
++                    // Re-fetch the bone pointer each iteration: model.data() can move if a track
++                    // walk below ever needed to resize, though none currently do (in-place rewrite
++                    // only) -- kept defensive since this loop mutates the same buffer it reads from.
++                    auto* bone = reinterpret_cast<fmt::M2CompBone*>(
++                        model.data() + md->bones.offset + i * sizeof(fmt::M2CompBone));
++                    bone->pivot[0] = -bone->pivot[0];
++                    MirrorTranslationTrack(model, bone->translation);
++                    MirrorRotationTrack(model, bone->rotation);
++                }
++            }
++
++            // Attachments (the actual "held in hand" point, plus any particle/trail attach points)
++            if (md->attachments.count)
++            {
++                const uint64_t end = uint64_t(md->attachments.offset) +
++                                      uint64_t(md->attachments.count) * sizeof(M2AttachmentRaw);
++                if (end > model.size()) return false;
++                auto* a = reinterpret_cast<M2AttachmentRaw*>(model.data() + md->attachments.offset);
++                for (uint32_t i = 0; i < md->attachments.count; ++i)
++                    a[i].position[0] = -a[i].position[0];
++            }
++
++            // Bounding/collision volumes: min/max X swap-and-negate (a min becomes the new max and
++            // vice versa once negated), sphere/box centers unaffected by a symmetric-radius model.
++            // boundingBox/collisionBox are [minX,minY,minZ,maxX,maxY,maxZ].
++            {
++                float newMinX = -md->boundingBox[3];
++                float newMaxX = -md->boundingBox[0];
++                md->boundingBox[0] = newMinX;
++                md->boundingBox[3] = newMaxX;
++                float newCMinX = -md->collisionBox[3];
++                float newCMaxX = -md->collisionBox[0];
++                md->collisionBox[0] = newCMinX;
++                md->collisionBox[3] = newCMaxX;
++            }
++            if (md->collisionPositions.count)
++            {
++                const uint64_t end = uint64_t(md->collisionPositions.offset) +
++                                      uint64_t(md->collisionPositions.count) * sizeof(float) * 3;
++                if (end <= model.size())
++                {
++                    auto* p = reinterpret_cast<float*>(model.data() + md->collisionPositions.offset);
++                    for (uint32_t i = 0; i < md->collisionPositions.count; ++i) p[i * 3] = -p[i * 3];
++                }
++            }
++            if (md->collisionNormals.count)
++            {
++                const uint64_t end = uint64_t(md->collisionNormals.offset) +
++                                      uint64_t(md->collisionNormals.count) * sizeof(float) * 3;
++                if (end <= model.size())
++                {
++                    auto* n = reinterpret_cast<float*>(model.data() + md->collisionNormals.offset);
++                    for (uint32_t i = 0; i < md->collisionNormals.count; ++i) n[i * 3] = -n[i * 3];
++                }
++            }
++        }
++        __except (EXCEPTION_EXECUTE_HANDLER)
++        {
++            VPathLog("  MirrorModelBytes CRASH CAUGHT '%s'", name ? name : "(null)");
++            return false;
++        }
++
++        VPathLog("  MirrorModelBytes: '%s' vertices=%u bones=%u attachments=%u", name ? name : "?",
++                 md->vertices.count, md->bones.count, md->attachments.count);
++        return true;
++    }
++
++    // Reverses triangle winding in the raw .skin file bytes: for every 3 consecutive uint16 in the
++    // triangles array, swap the last two indices. A mirror flips the sign of the transform's
++    // determinant, which flips every triangle's front/back facing under the same cull convention --
++    // this is what keeps faces from rendering inside-out after MirrorModelBytes.
++    static bool MirrorSkinWinding(const char* name, std::vector<uint8_t>& skin) noexcept
++    {
++        if (skin.size() < sizeof(M2SkinHeaderRaw)) return false;
++        auto* sh = reinterpret_cast<M2SkinHeaderRaw*>(skin.data());
++        if (std::memcmp(sh->magic, "SKIN", 4) != 0) return false;
++        if (sh->triangles.count % 3 != 0) return false;
++
++        __try
++        {
++            const uint64_t end = uint64_t(sh->triangles.offset) +
++                                  uint64_t(sh->triangles.count) * sizeof(uint16_t);
++            if (end > skin.size()) return false;
++            auto* tri = reinterpret_cast<uint16_t*>(skin.data() + sh->triangles.offset);
++            for (uint32_t t = 0; t + 2 < sh->triangles.count; t += 3)
++                std::swap(tri[t + 1], tri[t + 2]);
++        }
++        __except (EXCEPTION_EXECUTE_HANDLER)
++        {
++            VPathLog("  MirrorSkinWinding CRASH CAUGHT '%s'", name ? name : "(null)");
++            return false;
++        }
++
++        VPathLog("  MirrorSkinWinding: '%s' triangles=%u", name ? name : "?", sh->triangles.count / 3);
++        return true;
++    }
++
++    // MirrorWeaponForOffhand / VPathPopulateGlobalMirrored (auto-mirror offhand bake) removed --
++    // this client's own axis-mirror transform was crashing on equip, and the feature is no longer
++    // used: WeaponGetOffhandVirtualPath now only ever bakes an offhand model when
++    // WXLWeaponModels.csv gives it an explicit Model1OffhandPath/Model2OffhandPath (see
++    // BakeWeaponDisplayOffhand in WeaponExtension.cpp). The low-level MirrorModelBytes/
++    // MirrorSkinWinding routines above are no longer called by anything and are left in place
++    // only because other math in this file may still reference their neighbors; say the word if
++    // you want those stripped out too.
++
+     // ─── Public API ───────────────────────────────────────────────────────────
+ 
++    // Replaces the old self-registering `detail::Registrar` global above. Must be called from
++    // WXL_Load(), AFTER wxl::ext::EventScript::Bind(api), same ordering requirement as constructing
++    // the EquipExtension/CreatureExtension/WeaponExtension instances -- HookAttach itself is safe
++    // any time after WXL_Load starts, but keeping every setup call in one place after Bind avoids a
++    // second "did I call this early enough" question to answer later.
+     void VPathRegister()
+     {
+         static bool s_done = false;
+@@ -838,6 +1537,10 @@ namespace wxl::scripts::equipextension
+         }
+         VPathLog("  VPathPopulate: mdx '%s' -> %zu bytes", normPath, mdxBytes.size());
+ 
++        // Model position offset / scale (WXLHelmOffsets.csv). No-op for any model with no matching
++        // CSV row -- see ApplyModelOffsetAndScale's own comment for the opt-in rationale.
++        ApplyModelOffsetAndScale(realMdxPath, mdxBytes);
++
+         // Read real 00.skin bytes.
+         char rSkin[264];
+         RealSkinPath(rSkin, sizeof(rSkin), normPath);
+@@ -893,14 +1596,14 @@ namespace wxl::scripts::equipextension
+                              const char* texPath, const char* materialPatchSpec,
+                              const uint16_t* geoIds, uint32_t geoCount, bool evictable,
+                              char* outVirtualPath, size_t outVirtualPathSz,
+-                             const char* evictionPool)
++                             const char* evictionPool, bool forceBake)
+     {
+         std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
+         if (!realMdxPath || !*realMdxPath) return false;
+         const bool hasTexPath = texPath && *texPath;
+         const bool hasMatSpec = materialPatchSpec && *materialPatchSpec;
+         const bool hasGeoFilter = geoIds && geoCount > 0;
+-        if (!hasTexPath && !hasMatSpec && !hasGeoFilter) return false;
++        if (!forceBake && !hasTexPath && !hasMatSpec && !hasGeoFilter) return false;
+ 
+         // Normalise to the same lowercase/.m2 form the host uses for real file I/O -- this is
+         // still what gets read off disk below -- then mangle in itemDisplayId to get the actual
+@@ -983,6 +1686,85 @@ namespace wxl::scripts::equipextension
+         return true;
+     }
+ 
++    // Reads/patches byteSourcePath's bytes exactly like VPathPopulateGlobal, but derives the cache
++    // key from keySourcePath instead, and ALWAYS overwrites any existing entry under that key
++    // (unlike every other bake function here, which is "first bake wins"). Built specifically for
++    // the offhand-weapon case: this client's native weapon display resolves BOTH mainhand and
++    // offhand attach points from the SAME static ItemModelData.dbc field, so a distinctly-keyed
++    // offhand bake (see VPathPopulateGlobalMirrored) never actually gets used by native code -- the
++    // only way an offhand weapon visibly differs from mainhand is for the SHARED key mainhand
++    // already resolves through to hold the offhand's bytes instead, swapped in at the moment the
++    // offhand attach happens. Caller (WeaponExtension.cpp's BakeWeaponDisplayOffhand, from
++    // EquipExtension's per-instance offhand equip handling, never from eager startup preload) is
++    // responsible for re-asserting this swap every time, since it's inherently last-write-wins
++    // against whatever else last populated the same key.
++    bool VPathPopulateGlobalSharedKey(const char* keySourcePath, const char* byteSourcePath,
++                                      uint32_t itemDisplayId, const char* texPath,
++                                      const char* materialPatchSpec, const uint16_t* geoIds,
++                                      uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz)
++    {
++        std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
++        if (!keySourcePath || !*keySourcePath || !byteSourcePath || !*byteSourcePath) return false;
++
++        char keyNormPath[264];
++        NormalizeRealPath(keyNormPath, sizeof(keyNormPath), keySourcePath);
++        char vKey[280];
++        BuildGlobalVirtualKey(vKey, sizeof(vKey), keyNormPath, itemDisplayId);
++
++        if (outVirtualPath && outVirtualPathSz)
++        {
++            size_t n = std::strlen(vKey);
++            if (n >= outVirtualPathSz) n = outVirtualPathSz - 1;
++            std::memcpy(outVirtualPath, vKey, n);
++            outVirtualPath[n] = '\0';
++        }
++
++        char byteNormPath[264];
++        NormalizeRealPath(byteNormPath, sizeof(byteNormPath), byteSourcePath);
++
++        std::vector<uint8_t> mdxBytes;
++        if (!ReadGameFile(byteNormPath, mdxBytes))
++        {
++            VPathLog("  VPathPopulateGlobalSharedKey: mdx READ FAILED '%s' (key from '%s')",
++                     byteNormPath, keyNormPath);
++            return false;
++        }
++
++        char rSkin[264];
++        RealSkinPath(rSkin, sizeof(rSkin), byteNormPath);
++        std::vector<uint8_t> skinBytes;
++        ReadGameFile(rSkin, skinBytes); // skin may be absent; that is OK
++
++        if (geoIds && geoCount > 0)
++            ApplySkinByteFilter(skinBytes, geoIds, geoCount);
++        if (materialPatchSpec && *materialPatchSpec)
++            PatchTargetedMaterialTextures(mdxBytes, materialPatchSpec);
++        if (texPath && *texPath)
++            PatchReplaceableTextureTypes(mdxBytes, texPath);
++
++        char vSkin[280];
++        VirtualSkinPath(vSkin, sizeof(vSkin), vKey);
++
++        // operator[] assignment, not emplace: emplace is a no-op if vKey already exists, and the
++        // entire point here is to overwrite whatever's already there (almost certainly mainhand's
++        // own bake, from whenever it was last resolved).
++        g_globalOverrides[vKey] = std::move(mdxBytes);
++        if (!skinBytes.empty())
++            g_globalOverrides[vSkin] = std::move(skinBytes);
++        else
++            g_globalOverrides.erase(vSkin); // previous occupant of this key may have had a skin
++
++        // Deliberately not registered in any eviction pool: this key must never be evicted and
++        // silently regenerated from keySourcePath's own bytes by some other caller mid-session,
++        // which would quietly undo the swap without anything re-asserting it until the next equip
++        // event happens to touch this slot again.
++
++        VPathLog("  VPathPopulateGlobalSharedKey: key from '%s' bytes from '%s' (displayId=%u) -> "
++                 "vkey='%s' mdx=%zu skin=%zu",
++                 keyNormPath, byteNormPath, itemDisplayId, vKey, mdxBytes.size(), skinBytes.size());
++        return true;
++    }
++
+     void VPathRegisterLazyResolver(VPathLazyResolver resolver)
+     {
+         std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
+diff --git a/Engine/Source/WXLEquip/VirtualPath.hpp b/Engine/Source/WXLEquip/VirtualPath.hpp
+index a1d3cce..3c8c34f 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.hpp
++++ b/Engine/Source/WXLEquip/VirtualPath.hpp
+@@ -18,15 +18,15 @@
+ 
+ #include <cstddef>
+ #include <cstdint>
++#include <vector>
++
+ 
+ namespace wxl::scripts::equipextension
+ {
+     /**
+      * @brief Registers this table as a virtual-file provider with the client's storage layer
+      *        (wxl::storage), so a populated virtual path is served when the engine opens it.
+-     *
+-     * Replaces the injected build's file-scope registrar: a self-registering object in a static
+-     * library is dropped by the linker when nothing references it. Idempotent.
++     *        Idempotent. Replaces the injected build's detours on the Storm file functions.
+      */
+     void VPathRegister();
+ 
+@@ -169,7 +169,40 @@ namespace wxl::scripts::equipextension
+                              const uint16_t* geoIds = nullptr, uint32_t geoCount = 0,
+                              bool evictable = false,
+                              char* outVirtualPath = nullptr, size_t outVirtualPathSz = 0,
+-                             const char* evictionPool = "Creature");
++                             const char* evictionPool = "Creature",
++                             bool forceBake = false);
++    // forceBake: bypasses the "nothing to change" guard (normally, a call with no texPath, no
++    // materialPatchSpec, and no geoset filter is a no-op, since there'd be nothing to actually
++    // patch versus just naming the real file directly). Set true when the caller's whole reason for
++    // baking is to serve a DIFFERENT real file under its own virtual key -- e.g. an offhand-mirrored
++    // weapon model with identical textures to its mainhand counterpart -- where the point isn't to
++    // patch anything, just to mint a distinct virtual name pointing at different bytes on disk.
++
++    /**
++     * @brief Reads/patches byteSourcePath's bytes like VPathPopulateGlobal, but derives the virtual
++     *        key from keySourcePath instead, and ALWAYS overwrites any existing entry under that
++     *        key -- the only bake function here that isn't "first bake wins". Exists because this
++     *        client's native weapon display resolves both mainhand and offhand attach points from
++     *        the SAME static ItemModelData.dbc field, so a distinctly-keyed offhand bake is never
++     *        actually read by native code; the only way to make an offhand weapon look different is
++     *        for the key mainhand already resolves through to hold the offhand's bytes instead, at
++     *        the moment the offhand attach happens. Must only ever be called live, per equip event
++     *        (from EquipExtension's offhand handling) -- never from eager startup preload, which
++     *        would permanently overwrite the shared key before anyone had equipped anything.
++     * @param keySourcePath  Real path whose virtual key this bake will occupy -- normally the
++     *                       MAINHAND model's own path, so the key matches what native code already
++     *                       resolves through for this displayId.
++     * @param byteSourcePath Real path to actually read bytes from -- normally the OFFHAND model.
++     * @param itemDisplayId  Folded into the key exactly as in VPathPopulateGlobal.
++     * @param texPath/materialPatchSpec/geoIds/geoCount  Same meaning as VPathPopulateGlobal, applied
++     *                       to byteSourcePath's bytes before storing.
++     * @param outVirtualPath/outVirtualPathSz  Receives the (shared) virtual path.
++     * @return true if the bake succeeded (byteSourcePath's file was read and the key was written).
++     */
++    bool VPathPopulateGlobalSharedKey(const char* keySourcePath, const char* byteSourcePath,
++                                      uint32_t itemDisplayId, const char* texPath,
++                                      const char* materialPatchSpec, const uint16_t* geoIds,
++                                      uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz);
+ 
+     /**
+      * @brief Signature for a lazy-bake resolver registered via VPathRegisterLazyResolver.
+diff --git a/Engine/Source/WXLEquip/WeaponExtension.cpp b/Engine/Source/WXLEquip/WeaponExtension.cpp
+index ae330ee..6320ab4 100644
+--- a/Engine/Source/WXLEquip/WeaponExtension.cpp
++++ b/Engine/Source/WXLEquip/WeaponExtension.cpp
+@@ -241,7 +241,19 @@ namespace wxl::scripts::weaponextension
+     // the same "sidecar-only" convention as WXLCreatureModels.csv.
+     struct WeaponModelPaths
+     {
+-        std::string path[2]; // [0]=Model1Path, [1]=Model2Path; empty string = column not in use
++        std::string path[2];        // [0]=Model1Path, [1]=Model2Path; empty string = column not in use
++        std::string offhandPath[2]; // [0]=Model1OffhandPath, [1]=Model2OffhandPath; empty = no
++            // explicit hand-baked offhand model for this column -- BakeWeaponDisplayOffhand then
++            // has no offhand model at all -- auto-mirroring was removed (crashed on equip), so an
++            // explicit value here is now the only way a displayId/column gets an offhand bake.
++        bool noAutoMirror = false; // NoAutoMirror column: true suppresses the auto-mirror fallback
++            // above entirely for this displayId (offhandPath still wins if explicitly set). For
++            // items that are inherently offhand-only and never meant to be mirrored -- shields
++            // above all: a shield's Model1Path IS its offhand model already, there's no "mainhand
++            // shield" this would be mirroring FROM, and mirroring its emblem/boss/heraldry would
++            // just render it backwards for no reason. Defaults to false (auto-mirror stays on) so
++            // existing rows are unaffected; set true on any row that occupies the OffHand slot by
++            // its own nature rather than as a genuine mirrored dual-wield of a one-handed weapon.
+     };
+     static std::unordered_map<uint32_t, WeaponModelPaths> g_sidecarWeaponModelPath;
+ 
+@@ -255,7 +267,9 @@ namespace wxl::scripts::weaponextension
+     };
+     struct WeaponGeosetSpecs
+     {
+-        WeaponGeosetSpec spec[2]; // [0]=Geoset1 (for Model1Path), [1]=Geoset2 (for Model2Path)
++        WeaponGeosetSpec spec[2];        // [0]=Geoset1 (for Model1Path), [1]=Geoset2 (for Model2Path)
++        WeaponGeosetSpec offhandSpec[2]; // [0]=Geoset1Offhand (for Model1OffhandPath),
++                                          // [1]=Geoset2Offhand (for Model2OffhandPath)
+     };
+     static std::unordered_map<uint32_t, WeaponGeosetSpecs> g_sidecarWeaponGeoset;
+ 
+@@ -329,6 +343,13 @@ namespace wxl::scripts::weaponextension
+         const int cModel2  = FindCsvColumn(header, "Model2Path"); // optional -- blank column is fine
+         const int cGeoset1 = FindCsvColumn(header, "Geoset1");    // optional -- absent is fine, not an error
+         const int cGeoset2 = FindCsvColumn(header, "Geoset2");    // optional -- absent is fine, not an error
++        const int cModel1Oh = FindCsvColumn(header, "Model1OffhandPath"); // optional -- see
++        const int cModel2Oh = FindCsvColumn(header, "Model2OffhandPath"); // WeaponModelPaths::offhandPath
++        const int cGeoset1Oh = FindCsvColumn(header, "Geoset1Offhand");   // optional -- see
++        const int cGeoset2Oh = FindCsvColumn(header, "Geoset2Offhand");   // WeaponGeosetSpecs::offhandSpec
++        const int cNoAutoMirror = FindCsvColumn(header, "NoAutoMirror");  // optional -- see
++            // WeaponModelPaths::noAutoMirror. Absent column = false for every row (unchanged
++            // behavior for CSVs written before this column existed).
+ 
+         if (cDisplay < 0 || cModel1 < 0)
+         {
+@@ -363,14 +384,34 @@ namespace wxl::scripts::weaponextension
+                 CopyString(model2, sizeof(model2), CsvField(row, cModel2));
+                 entry.path[1] = model2; // stays empty if the column is blank/absent
+             }
++            if (cModel1Oh >= 0)
++            {
++                char model1Oh[264] = {};
++                CopyString(model1Oh, sizeof(model1Oh), CsvField(row, cModel1Oh));
++                entry.offhandPath[0] = model1Oh; // stays empty if blank/absent -- no offhand
++                                                   // override for column 0, mainhand bake used as-is
++            }
++            if (cModel2Oh >= 0)
++            {
++                char model2Oh[264] = {};
++                CopyString(model2Oh, sizeof(model2Oh), CsvField(row, cModel2Oh));
++                entry.offhandPath[1] = model2Oh;
++            }
++            if (cNoAutoMirror >= 0)
++            {
++                const std::string v = NormalizeCsvName(CsvField(row, cNoAutoMirror));
++                entry.noAutoMirror = (v == "true" || v == "yes" || v == "1" || v == "shield");
++            }
+ 
+             g_sidecarWeaponModelPath.emplace(displayId, std::move(entry));
+ 
+-            if (cGeoset1 >= 0 || cGeoset2 >= 0)
++            if (cGeoset1 >= 0 || cGeoset2 >= 0 || cGeoset1Oh >= 0 || cGeoset2Oh >= 0)
+             {
+                 WeaponGeosetSpecs geo;
+                 if (cGeoset1 >= 0) geo.spec[0] = ParseWeaponGeosetSpec(CsvField(row, cGeoset1));
+                 if (cGeoset2 >= 0) geo.spec[1] = ParseWeaponGeosetSpec(CsvField(row, cGeoset2));
++                if (cGeoset1Oh >= 0) geo.offhandSpec[0] = ParseWeaponGeosetSpec(CsvField(row, cGeoset1Oh));
++                if (cGeoset2Oh >= 0) geo.offhandSpec[1] = ParseWeaponGeosetSpec(CsvField(row, cGeoset2Oh));
+                 g_sidecarWeaponGeoset.emplace(displayId, geo);
+             }
+ 
+@@ -494,8 +535,8 @@ namespace wxl::scripts::weaponextension
+         // WxlIniGetBool's doc comment. Turning this off relies entirely on WeaponLazyResolve (see its
+         // own doc comment, and its registration in the constructor below) to still bake anything at
+         // all.
+-        if (WxlIniGetBool("EagerPreload", "Weapons", true))
+-            PreregisterSidecarWeapons();
++//        if (WxlIniGetBool("EagerPreload", "Weapons", true))
++//            PreregisterSidecarWeapons();
+     }
+ 
+     // Builds a "TextureType=TexturePath|TextureType=TexturePath|..." spec for (displayId,
+@@ -531,6 +572,19 @@ namespace wxl::scripts::weaponextension
+         }
+     }
+ 
++    // Cache of already-baked mainhand virtual paths, filled by BakeWeaponDisplay and read back by
++    // the public WeaponGetVirtualPath accessor below. This is the SAME string ItemModelData.dbc's
++    // Model1/Model2 field is patched to at the data level for a baked displayId/column (see this
++    // function's own doc comment) -- exposing it here as well lets CharAddHandItemDetour
++    // (EquipExtension.cpp) apply it directly to the resolved record at the runtime attach point,
++    // instead of relying solely on the static dbc patch, so mainhand/ranged go through the same
++    // override mechanism offhand already does (see WeaponGetVirtualPath's own doc comment for why).
++    static std::unordered_map<uint64_t, std::string> g_mainhandVirtualPath;
++    static uint64_t WeaponCacheKey(uint32_t displayId, uint32_t column) noexcept
++    {
++        return (static_cast<uint64_t>(displayId) << 8) | column;
++    }
++
+     // Bakes (displayId, modelColumn)'s patched bytes into the process-lifetime override table, if
+     // the sidecar tables know a model path for that column (WXLWeaponModels.csv) and there's at
+     // least one matching texture row (WXLWeaponTextures.csv) and/or a Geoset1/Geoset2 filter for
+@@ -594,9 +648,148 @@ namespace wxl::scripts::weaponextension
+         // BuildGlobalVirtualKey). E.g. sidecar Model1Path
+         // "Item\ObjectComponents\Weapon\Bloodfang\Bloodfang.mdx" with displayId 53212 bakes to
+         // "item\objectcomponents\weapon\bloodfang\bloodfang_53212.m2".
+-        return registered && vModelPath[0];
++        if (registered && vModelPath[0])
++        {
++            g_mainhandVirtualPath[WeaponCacheKey(displayId, modelColumn)] = vModelPath;
++            return true;
++        }
++        return false;
++    }
++
++    // Cache of already-baked offhand-mirror virtual paths, filled by BakeWeaponDisplayOffhand and
++    // read back by the public WeaponGetOffhandVirtualPath accessor (EquipExtension.cpp calls that,
++    // not this map, directly -- separate translation unit).
++    static std::unordered_map<uint64_t, std::string> g_offhandVirtualPath;
++    static uint64_t OffhandCacheKey(uint32_t displayId, uint32_t column) noexcept
++    {
++        return (static_cast<uint64_t>(displayId) << 8) | column;
++    }
++
++    // Offhand counterpart to BakeWeaponDisplay. Reads WeaponModelPaths::offhandPath /
++    // WeaponGeosetSpecs::offhandSpec instead of the mainhand columns. Auto-mirroring (generating a
++    // mirrored offhand model in-memory when WXLWeaponModels.csv gives no explicit
++    // Model1OffhandPath/Model2OffhandPath) has been removed -- it was crashing on equip. Only an
++    // explicit, author-supplied OffhandPath row is ever baked now; a displayId/column with no such
++    // row simply keeps whatever the native client already attaches at the offhand point.
++    // NoAutoMirror is therefore a no-op now (nothing left to suppress) but the column is left in
++    // WeaponModelPaths/the CSV parser for now in case auto-mirroring comes back later.
++    //
++    // No longer uses VPathPopulateGlobalSharedKey: that mechanism existed only because, on the old
++    // dbc-patch-only path, native code resolved BOTH hands from the SAME static ItemModelData.dbc
++    // field, so a distinctly-keyed offhand bake was never actually read -- the offhand bytes had to
++    // squat on the mainhand's own key. CharAddHandItemDetour (EquipExtension.cpp) now overrides
++    // Model1 independently per hand at the runtime attach point instead, so that constraint is
++    // gone: offhand bakes under its OWN virtual key here (derived from offhandPath itself, via a
++    // plain VPathPopulateGlobal call), genuinely distinct from whatever mainhand's key is. This
++    // also means mainhand and offhand can safely be baked/evicted/rebaked independently, with
++    // neither able to silently clobber the other's registered bytes.
++    static bool BakeWeaponDisplayOffhand(uint32_t displayId, uint32_t modelColumn)
++    {
++        auto pathIt = g_sidecarWeaponModelPath.find(displayId);
++        if (pathIt == g_sidecarWeaponModelPath.end()) return false;
++        if (modelColumn > 1) return false;
++
++        if (pathIt->second.offhandPath[modelColumn].empty())
++        {
++            WeaponLog("  bake(offhand): display=%u column=%u no explicit OffhandPath -- "
++                      "auto-mirror removed, leaving native attach as-is", displayId, modelColumn);
++            return false;
++        }
++
++        char matSpec[2048] = {};
++        BuildWeaponMaterialPatchSpec(matSpec, sizeof(matSpec), displayId, modelColumn);
++
++        const WeaponGeosetSpec* geoSpec = nullptr;
++        auto geoIt = g_sidecarWeaponGeoset.find(displayId);
++        if (geoIt != g_sidecarWeaponGeoset.end() && geoIt->second.offhandSpec[modelColumn].count > 0)
++            geoSpec = &geoIt->second.offhandSpec[modelColumn];
++
++        char vModelPath[280] = {};
++        // Keyed from the OFFHAND path itself now (not the mainhand's), so its virtual name is
++        // naturally distinct from BakeWeaponDisplay's mainhand bake for the same displayId/column
++        // -- different real source file in, different vkey out, no key collision possible.
++        // forceBake=true: the point of this call is to mint a distinct virtual name pointing at
++        // the offhand's own model bytes even when there's no texture/geoset change to actually
++        // patch (see VPathPopulateGlobal's own forceBake doc comment, which describes this exact
++        // offhand-mirrored-model case).
++        bool registered = VPathPopulateGlobal(pathIt->second.offhandPath[modelColumn].c_str(),
++                                               displayId, nullptr, matSpec,
++                                               geoSpec ? geoSpec->ids : nullptr,
++                                               geoSpec ? geoSpec->count : 0,
++                                               true, // evictable -- WeaponLazyResolve rebakes on miss
++                                               vModelPath, sizeof(vModelPath),
++                                               "Weapon",
++                                               true); // forceBake
++        WeaponLog("  bake(offhand): display=%u column=%u real='%s' vpath='%s' spec='%s' "
++                  "geoCount=%u registered=%d",
++                  displayId, modelColumn, pathIt->second.offhandPath[modelColumn].c_str(),
++                  vModelPath, matSpec, geoSpec ? geoSpec->count : 0u, registered ? 1 : 0);
++
++        if (registered && vModelPath[0])
++        {
++            g_offhandVirtualPath[OffhandCacheKey(displayId, modelColumn)] = vModelPath;
++            return true;
++        }
++        return false;
++    }
++
++    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz)
++    {
++        if (!out || outSz == 0 || column > 1) return false;
++        LoadWeaponSidecar(); // no-op after the first call; guards against this being called before
++                              // WeaponExtension's own OnModelLoadPre has ever fired
++
++        // Now an ordinary bake-and-cache accessor, same shape as WeaponGetVirtualPath: offhand
++        // bakes under its own distinct, never-shared key (see BakeWeaponDisplayOffhand's own doc
++        // comment for why the old shared-key special case is gone), so nothing else can silently
++        // overwrite it between calls -- a cached "already baked" result stays correct, and
++        // VPathPopulateGlobal is idempotent for an already-registered key, so re-calling
++        // BakeWeaponDisplayOffhand here is just a safe, cheap no-op once baked.
++        BakeWeaponDisplayOffhand(displayId, column);
++
++        auto it = g_offhandVirtualPath.find(OffhandCacheKey(displayId, column));
++        if (it == g_offhandVirtualPath.end()) return false;
++        if (it->second.size() >= outSz) return false;
++        std::memcpy(out, it->second.c_str(), it->second.size() + 1);
++        return true;
+     }
+ 
++    // Mainhand/ranged counterpart to WeaponGetOffhandVirtualPath. Unifies the weapon rendering
++    // pipeline: mainhand and ranged used to rely SOLELY on ItemModelData.dbc's data-level Model1/
++    // Model2 patch (see OnModelLoadPre's doc comment in WeaponExtension.hpp) with nothing runtime-
++    // side to call, while offhand needed a runtime override at CharAddHandItem because the native
++    // client resolves both hands from that one static dbc field. This accessor lets
++    // CharAddHandItemDetour (EquipExtension.cpp) apply the SAME baked virtual path to a1's Model1
++    // at the runtime attach point for every slot -- mainhand and ranged included -- instead of only
++    // offhand, so all three go through one mechanism rather than two.
++    //
++    // Simply an ordinary bake-and-cache accessor (no shared-key mechanics like the offhand
++    // counterpart): a mainhand/ranged bake's virtual key is never shared with anything else, so
++    // once baked it stays correct until evicted, and BakeWeaponDisplay is safe to call redundantly
++    // on every invocation here (VPathPopulateGlobal is idempotent for an already-registered key).
++    //
++    // @param column 0 = Model1Path, 1 = Model2Path.
++    // @return true and fills out/outSz if a baked virtual path exists for this (displayId, column)
++    //         (i.e. the sidecar has a texture row or geoset filter for it -- see BakeWeaponDisplay's
++    //         own doc comment); false (out left untouched) if this displayId/column has nothing to
++    //         bake, in which case the caller should leave the already-resolved record untouched --
++    //         it already names the correct base model, same as ItemModelData.dbc does statically.
++    bool WeaponGetVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz)
++    {
++        if (!out || outSz == 0 || column > 1) return false;
++        LoadWeaponSidecar(); // no-op after the first call; guards against this being called before
++                              // WeaponExtension's own OnModelLoadPre has ever fired
++
++        BakeWeaponDisplay(displayId, column); // no-op re-bake if already cached; see doc comment
++
++        auto it = g_mainhandVirtualPath.find(WeaponCacheKey(displayId, column));
++        if (it == g_mainhandVirtualPath.end()) return false;
++        if (it->second.size() >= outSz) return false;
++        std::memcpy(out, it->second.c_str(), it->second.size() + 1);
++        return true;
++    }
++
++
+     // Walks every displayId listed in WXLWeaponModels.csv and bakes both of its columns (whichever
+     // are non-empty and have a matching texture row and/or geoset filter -- see BakeWeaponDisplay)
+     // into the process-lifetime override table under the exact virtual .m2 names ItemModelData.dbc's
+@@ -625,6 +818,12 @@ namespace wxl::scripts::weaponextension
+             {
+                 if (paths.path[col].empty()) continue;
+                 if (BakeWeaponDisplay(displayId, col)) ++registeredCount;
++                // Deliberately NOT eager-baking offhand here: BakeWeaponDisplayOffhand now bakes
++                // under its own distinct key (see its doc comment -- the old shared-key mainhand-
++                // collision risk that used to justify this comment is gone), but eagerly baking a
++                // weapon's offhand model isn't worth the startup cost for the (likely common) case
++                // where that displayId never actually ends up dual-wielded. WeaponGetOffhandVirtual
++                // Path bakes it lazily instead, on the first actual offhand equip that needs it.
+             }
+         }
+ 
+@@ -701,6 +900,7 @@ namespace wxl::scripts::weaponextension
+         LoadWeaponSidecar(); // no-op after the first call; runs PreregisterSidecarWeapons at its end
+     }
+ 
++
+     void Create()
+     {
+         // Constructed explicitly from wxl::equip::Init(): a file-scope instance in a static library is
+diff --git a/Engine/Source/WXLEquip/WeaponExtension.hpp b/Engine/Source/WXLEquip/WeaponExtension.hpp
+index 80eb70d..da785c3 100644
+--- a/Engine/Source/WXLEquip/WeaponExtension.hpp
++++ b/Engine/Source/WXLEquip/WeaponExtension.hpp
+@@ -15,8 +15,13 @@
+ // along with this program. If not, see <https://www.gnu.org/licenses/>.
+ 
+ #pragma once
++#include <cstddef>
++#include <cstdint>
++
+ #include "Engine/Source/WXL/EventScript.h"
+ 
++#include "Engine/Source/WXL/Event.h"
++
+ namespace wxl::scripts::weaponextension
+ {
+     class WeaponExtension : public wxl::events::EventScript
+@@ -58,6 +63,40 @@ namespace wxl::scripts::weaponextension
+         void OnModelLoadPre(const wxl::events::ModelLoadArgs& a);
+     };
+ 
++    /**
++     * @brief Looks up the already-baked offhand-mirror virtual .m2 path for (displayId, column), if
++     *        WXLWeaponModels.csv's Model1OffhandPath/Model2OffhandPath supplied one for it. Baked
++     *        lazily, on first actual offhand equip (see WeaponGetOffhandVirtualPath's own doc
++     *        comment in WeaponExtension.cpp for why it isn't eager-baked alongside the mainhand
++     *        columns) -- by the time anything could call this after that, the answer is either
++     *        already cached or the sidecar genuinely has nothing for this column. Bakes under its
++     *        own distinct virtual key, separate from the mainhand bake for the same displayId/
++     *        column -- the two can never collide or overwrite each other.
++     * @param column 0 = Model1OffhandPath, 1 = Model2OffhandPath.
++     * @return true and fills out/outSz if a baked offhand virtual path exists for this
++     *         (displayId, column); false (out left untouched) if this weapon has no offhand-specific
++     *         model configured at all, in which case the caller should fall back to whatever
++     *         ItemModelData.dbc's Model1/Model2 already names (the mainhand bake, unchanged).
++     */
++    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz);
++
++    /**
++     * @brief Mainhand/ranged counterpart to WeaponGetOffhandVirtualPath -- looks up the already-
++     *        baked virtual .m2 path for (displayId, column) that ItemModelData.dbc's Model1/Model2
++     *        field is ALSO patched to at the data level for a baked entry (see PreregisterSidecar-
++     *        Weapons/BakeWeaponDisplay). Exposed here as well so the runtime attach point
++     *        (CharAddHandItemDetour, EquipExtension.cpp) can apply the same override directly to
++     *        the resolved record for every equip slot -- unifying mainhand, offhand, and ranged
++     *        onto one mechanism instead of leaving mainhand/ranged solely dependent on the static
++     *        dbc patch.
++     * @param column 0 = Model1Path, 1 = Model2Path.
++     * @return true and fills out/outSz if a baked virtual path exists for this (displayId, column);
++     *         false (out left untouched) if this displayId/column has nothing to bake (no texture
++     *         row or geoset filter -- see BakeWeaponDisplay's own doc comment), in which case the
++     *         caller should leave the already-resolved record untouched.
++     */
++    bool WeaponGetVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz);
++
+     /// Constructs the extension so its handlers bind to the event bus. Called once from wxl::equip::Init().
+     void Create();
+ }
+diff --git a/WoW/Common/ComponentCore/CharacterComponent.cpp b/WoW/Common/ComponentCore/CharacterComponent.cpp
+index 8538851..bcde9b1 100644
+--- a/WoW/Common/ComponentCore/CharacterComponent.cpp
++++ b/WoW/Common/ComponentCore/CharacterComponent.cpp
+@@ -49,6 +49,7 @@
+ #include "WoW/Source/DB/Rec/ParticleColorRec.h"
+ #include "WoW/Source/Object/ObjectClient/Player_C.h"
+ #include "Engine/Source/WXL/Hooks.h"
++#include "Engine/Source/WXL/HandItem.h"
+ 
+ // STATIC: 0x009F6A00
+ static int32_t s_itemPriority[NUM_ITEM_SLOTS][NUM_COMPONENT_SECTIONS] = {
+@@ -2159,8 +2160,18 @@ GEOCOMPONENTLINKS CCharacterComponent::AddHandItem(CM2Model* model, const ItemDi
+         return ATTACH_NONE;
+     }
+ 
++    // WXL: a sidecar weapon (texture rows, geoset filter, offhand/mirrored model) lives in a baked virtual model.
++    // Ask the resolver for its file name so the client loads that instead of the record's own Model1.
++    // The record carries its own id, so no call-site stash is needed.
++    const char* wxlModelName = displayRec->m_modelName[0];
++    char wxlVirtualName[280];
++    if (wxl::hooks::ResolveHandItemModel(static_cast<uint32_t>(displayRec->m_id), static_cast<uint32_t>(invSlot),
++                                         wxlVirtualName, sizeof(wxlVirtualName))) {
++        wxlModelName = wxlVirtualName;
++    }
++
+     strcpy(s_buffer, folder);
+-    strcat(s_buffer, displayRec->m_modelName[0]);
++    strcat(s_buffer, wxlModelName);
+     strcpy(s_pathEnd, s_buffer);
+ 
+     strcpy(s_buffer, folder);

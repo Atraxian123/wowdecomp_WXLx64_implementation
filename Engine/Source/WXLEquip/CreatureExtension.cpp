@@ -433,10 +433,8 @@ namespace wxl::scripts::creatureextension
         // its own doc comment, and its registration in the constructor below) to still bake anything
         // at all -- unlike weapons, there is no separate reactive per-equip hook for creature models
         // to fall back on.
-        const bool eagerCreatures = WxlIniGetBool("EagerPreload", "Creatures", true);
-        CreatureLog("EagerPreload Creatures=%d (set [EagerPreload] Creatures=0 in WXLExtendedEquipment.ini to bake lazily on first request instead)", eagerCreatures ? 1 : 0);
-        if (eagerCreatures)
-            PreregisterSidecarCreatures();
+//        if (WxlIniGetBool("EagerPreload", "Creatures", true))
+//            PreregisterSidecarCreatures();
     }
 
     // Builds a "TextureType=TexturePath|TextureType=TexturePath|..." spec for displayId, in the
@@ -495,8 +493,6 @@ namespace wxl::scripts::creatureextension
         }
 
         // No texPath (only materialPatchSpec) -- creature texture rows are all TextureType-keyed.
-        CreatureLog("  bake begin: display=%u real='%s' (the last line of the log names the display in progress if the client crashes here)",
-                    displayId, pathIt->second.c_str());
         char vModelPath[280] = {};
         bool registered = VPathPopulateGlobal(pathIt->second.c_str(), displayId, nullptr, matSpec,
                                                geoSpec ? geoSpec->ids : nullptr,
@@ -596,6 +592,7 @@ namespace wxl::scripts::creatureextension
         kicked = true;
         LoadCreatureSidecar(); // no-op after the first call; runs PreregisterSidecarCreatures at its end
     }
+
 
     void Create()
     {

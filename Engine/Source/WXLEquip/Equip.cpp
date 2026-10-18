@@ -63,6 +63,7 @@ namespace wxl::equip
                 "WXLItemDisplayModels.csv", "WXLItemDisplayModelMaterials.csv",
                 "WXLWeaponModels.csv",      "WXLWeaponTextures.csv",
                 "WXLCreatureModels.csv",    "WXLCreatureTextures.csv",
+                "WXLHelmOffsets.csv",
             };
             wxl::LogCat("SIDECAR", "working directory: %s", wxl::WorkingDirectory());
             for (const char* name : kNames)

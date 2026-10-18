@@ -49,6 +49,7 @@
 #include "WoW/Source/DB/Rec/ParticleColorRec.h"
 #include "WoW/Source/Object/ObjectClient/Player_C.h"
 #include "Engine/Source/WXL/Hooks.h"
+#include "Engine/Source/WXL/HandItem.h"
 
 // STATIC: 0x009F6A00
 static int32_t s_itemPriority[NUM_ITEM_SLOTS][NUM_COMPONENT_SECTIONS] = {
@@ -2159,8 +2160,18 @@ GEOCOMPONENTLINKS CCharacterComponent::AddHandItem(CM2Model* model, const ItemDi
         return ATTACH_NONE;
     }
 
+    // WXL: a sidecar weapon (texture rows, geoset filter, offhand/mirrored model) lives in a baked virtual model.
+    // Ask the resolver for its file name so the client loads that instead of the record's own Model1.
+    // The record carries its own id, so no call-site stash is needed.
+    const char* wxlModelName = displayRec->m_modelName[0];
+    char wxlVirtualName[280];
+    if (wxl::hooks::ResolveHandItemModel(static_cast<uint32_t>(displayRec->m_id), static_cast<uint32_t>(invSlot),
+                                         wxlVirtualName, sizeof(wxlVirtualName))) {
+        wxlModelName = wxlVirtualName;
+    }
+
     strcpy(s_buffer, folder);
-    strcat(s_buffer, displayRec->m_modelName[0]);
+    strcat(s_buffer, wxlModelName);
     strcpy(s_pathEnd, s_buffer);
 
     strcpy(s_buffer, folder);

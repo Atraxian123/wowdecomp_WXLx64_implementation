@@ -66,6 +66,11 @@ namespace wxl::equip::eng
     {
         return model ? reinterpret_cast<uint8_t*>(static_cast<CM2Model*>(model)->m_boneMatrices) : nullptr;
     }
+    /// The model this instance is attached to (CM2Model::m_attachParent), or null for a root.
+    inline void* ModelParent(void* model)
+    {
+        return model ? static_cast<CM2Model*>(model)->m_attachParent : nullptr;
+    }
     /// The loaded .m2 behind an instance. The model destructor nulls it, which is the extension's
     /// "this render context is dead" test.
     inline void* ModelShared(void* model)

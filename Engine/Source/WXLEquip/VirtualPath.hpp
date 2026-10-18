@@ -18,15 +18,15 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
+
 
 namespace wxl::scripts::equipextension
 {
     /**
      * @brief Registers this table as a virtual-file provider with the client's storage layer
      *        (wxl::storage), so a populated virtual path is served when the engine opens it.
-     *
-     * Replaces the injected build's file-scope registrar: a self-registering object in a static
-     * library is dropped by the linker when nothing references it. Idempotent.
+     *        Idempotent. Replaces the injected build's detours on the Storm file functions.
      */
     void VPathRegister();
 
@@ -169,7 +169,40 @@ namespace wxl::scripts::equipextension
                              const uint16_t* geoIds = nullptr, uint32_t geoCount = 0,
                              bool evictable = false,
                              char* outVirtualPath = nullptr, size_t outVirtualPathSz = 0,
-                             const char* evictionPool = "Creature");
+                             const char* evictionPool = "Creature",
+                             bool forceBake = false);
+    // forceBake: bypasses the "nothing to change" guard (normally, a call with no texPath, no
+    // materialPatchSpec, and no geoset filter is a no-op, since there'd be nothing to actually
+    // patch versus just naming the real file directly). Set true when the caller's whole reason for
+    // baking is to serve a DIFFERENT real file under its own virtual key -- e.g. an offhand-mirrored
+    // weapon model with identical textures to its mainhand counterpart -- where the point isn't to
+    // patch anything, just to mint a distinct virtual name pointing at different bytes on disk.
+
+    /**
+     * @brief Reads/patches byteSourcePath's bytes like VPathPopulateGlobal, but derives the virtual
+     *        key from keySourcePath instead, and ALWAYS overwrites any existing entry under that
+     *        key -- the only bake function here that isn't "first bake wins". Exists because this
+     *        client's native weapon display resolves both mainhand and offhand attach points from
+     *        the SAME static ItemModelData.dbc field, so a distinctly-keyed offhand bake is never
+     *        actually read by native code; the only way to make an offhand weapon look different is
+     *        for the key mainhand already resolves through to hold the offhand's bytes instead, at
+     *        the moment the offhand attach happens. Must only ever be called live, per equip event
+     *        (from EquipExtension's offhand handling) -- never from eager startup preload, which
+     *        would permanently overwrite the shared key before anyone had equipped anything.
+     * @param keySourcePath  Real path whose virtual key this bake will occupy -- normally the
+     *                       MAINHAND model's own path, so the key matches what native code already
+     *                       resolves through for this displayId.
+     * @param byteSourcePath Real path to actually read bytes from -- normally the OFFHAND model.
+     * @param itemDisplayId  Folded into the key exactly as in VPathPopulateGlobal.
+     * @param texPath/materialPatchSpec/geoIds/geoCount  Same meaning as VPathPopulateGlobal, applied
+     *                       to byteSourcePath's bytes before storing.
+     * @param outVirtualPath/outVirtualPathSz  Receives the (shared) virtual path.
+     * @return true if the bake succeeded (byteSourcePath's file was read and the key was written).
+     */
+    bool VPathPopulateGlobalSharedKey(const char* keySourcePath, const char* byteSourcePath,
+                                      uint32_t itemDisplayId, const char* texPath,
+                                      const char* materialPatchSpec, const uint16_t* geoIds,
+                                      uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz);
 
     /**
      * @brief Signature for a lazy-bake resolver registered via VPathRegisterLazyResolver.
