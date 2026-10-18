@@ -17,6 +17,7 @@
 #include "Engine/Source/WXLEquip/WeaponExtension.hpp"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 #include "Engine/Source/WXL/Event.h"
+#include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
 
 #include <windows.h>
@@ -46,34 +47,11 @@ namespace wxl::scripts::weaponextension
     // ─── Logging ────────────────────────────────────────────────────────────────
     // Same opt-in-file-log shape as EquipExtension's EquipLog / CreatureExtension's CreatureLog,
     // kept separate (own env var, own log file) so enabling one doesn't spam the others.
-    static bool WeaponLogEnabled() noexcept
-    {
-        static int enabled = []() noexcept -> int {
-#pragma warning(suppress: 4996)
-            const char* env = std::getenv("WXL_WEAPON_LOG");
-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
-                return 1;
-
-#pragma warning(suppress: 4996)
-            FILE* flag = std::fopen("WarcraftXL_weapon.log.enable", "rb");
-            if (!flag) return 0;
-            std::fclose(flag);
-            return 1;
-        }();
-        return enabled != 0;
-    }
-
     static void WeaponLog(const char* fmt, ...) noexcept
     {
-        if (!WeaponLogEnabled()) return;
-#pragma warning(suppress: 4996)
-        FILE* f = std::fopen("WarcraftXL_weapon.log", "a");
-        if (!f) return;
         va_list ap; va_start(ap, fmt);
-        std::vfprintf(f, fmt, ap);
+        wxl::LogCatV("WEAPON", fmt, ap);
         va_end(ap);
-        std::fputc('\n', f);
-        std::fclose(f);
     }
 
     // ─── CSV helpers ────────────────────────────────────────────────────────────
@@ -183,11 +161,17 @@ namespace wxl::scripts::weaponextension
             while (std::fgets(line, sizeof(line), f))
                 lines.emplace_back(line);
             std::fclose(f);
+            WeaponLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
             return !lines.empty();
         }
 
         std::vector<uint8_t> raw;
-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
+        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
+        {
+            WeaponLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
+                path, wxl::WorkingDirectory());
+            return false;
+        }
         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
         const bool ok = true;
         if (!ok) return false;
@@ -201,6 +185,7 @@ namespace wxl::scripts::weaponextension
             lines.push_back(line);
             start = i + 1;
         }
+        WeaponLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
         return !lines.empty();
     }
 
@@ -334,6 +319,11 @@ namespace wxl::scripts::weaponextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            WeaponLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay = FindCsvColumn(header, "DisplayID");
         const int cModel1  = FindCsvColumn(header, "Model1Path");
         const int cModel2  = FindCsvColumn(header, "Model2Path"); // optional -- blank column is fine
@@ -387,8 +377,9 @@ namespace wxl::scripts::weaponextension
             ++loaded;
         }
 
-        if (loaded)
-            WeaponLog("weapon model sidecar loaded '%s' rows=%u", path, loaded);
+        WeaponLog("weapon model sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     static void LoadWeaponTextureSidecarFile(const char* path)
@@ -397,6 +388,11 @@ namespace wxl::scripts::weaponextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            WeaponLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay = FindCsvColumn(header, "DisplayID");
         const int cColumn  = FindCsvColumn(header, "ModelColumn");
         const int cTexType = FindCsvColumn(header, "TextureType");
@@ -442,8 +438,9 @@ namespace wxl::scripts::weaponextension
             ++loaded;
         }
 
-        if (loaded)
-            WeaponLog("weapon texture sidecar loaded '%s' rows=%u", path, loaded);
+        WeaponLog("weapon texture sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     // Forward decl: full definition sits after BuildWeaponMaterialPatchSpec (needs it), but must be

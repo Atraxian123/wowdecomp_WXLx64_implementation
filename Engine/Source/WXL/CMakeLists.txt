@@ -20,3 +20,8 @@ target_include_directories(WXLCore
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/Blp
 )
+
+# Crash.cpp symbolizes call stacks with DbgHelp when the PDB is next to the exe.
+if(WIN32)
+    target_link_libraries(WXLCore PUBLIC dbghelp)
+endif()

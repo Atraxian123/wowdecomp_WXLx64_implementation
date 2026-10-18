@@ -105,7 +105,7 @@ namespace
             uint32_t edge = 256;
             if (level >= 9) edge = 1024;
             else if (level >= 8) edge = 512;
-            wxl::Log("blp: componentTextureLevel=%d componentMaxEdge=%u", level, edge);
+            wxl::LogCat("BLP", "componentTextureLevel=%d componentMaxEdge=%u", level, edge);
             return edge;
         }();
         return maxEdge;
@@ -120,15 +120,35 @@ namespace wxl::blp
 
         const uint8_t* bytes = static_cast<const uint8_t*>(data);
         const size_t   size  = Blp2Extent(bytes);
-        if (size == 0) return false;
+        if (size == 0)
+        {
+            if (wxl::LogThrottle("blp.notblp2", 20, 100))
+                wxl::LogCat("BLP", "component '%s': not a BLP2 (magic/version mismatch), left untouched", name);
+            return false;
+        }
+
+        // Header fields that decide what the client does with the file.
+        const unsigned encoding = bytes[8], alphaDepth = bytes[9], alphaType = bytes[10], hasMips = bytes[11];
+        const uint32_t width = Rd32(bytes + 0xC), height = Rd32(bytes + 0x10);
 
         const uint32_t maxEdge = ComponentTextureMaxEdge();
         std::vector<uint8_t> palettized;
         if (!transcode::TextureComponentToPaletted({ bytes, size }, palettized, maxEdge))
-            return false; // already palettized (native) or not a decodable DXT: serve as-is
+        {
+            // Encoding 1 is the native palettized format the client reads itself. Anything else that lands
+            // here is a DXT or other encoding the palettizer could not convert.
+            if (wxl::LogThrottle(encoding == 1 ? "blp.native" : "blp.cantconvert", 40, 100))
+                wxl::LogCat("BLP", "component '%s': %ux%u encoding=%u alphaDepth=%u alphaType=%u mips=%u -> %s", name,
+                            width, height, encoding, alphaDepth, alphaType, hasMips,
+                            encoding == 1 ? "already palettized, left as is"
+                                          : "NOT CONVERTED: encoding unsupported by the palettizer (the client will fall back to green if it needs palettized data)");
+            return false;
+        }
 
-        wxl::Log("blp: %s DXT component -> paletted maxEdge=%u (%u -> %u bytes)",
-                 name, maxEdge, uint32_t(size), uint32_t(palettized.size()));
+        wxl::LogCat("BLP", "component '%s': %ux%u encoding=%u alphaType=%u -> PALETTIZED (maxEdge=%u, %u -> %u bytes, out header enc=%u alphaDepth=%u alphaType=%u mips=%u %ux%u)",
+                    name, width, height, encoding, alphaType, maxEdge, uint32_t(size), uint32_t(palettized.size()),
+                    unsigned(palettized[8]), unsigned(palettized[9]), unsigned(palettized[10]), unsigned(palettized[11]),
+                    Rd32(palettized.data() + 0xC), Rd32(palettized.data() + 0x10));
         out = std::move(palettized);
         return true;
     }

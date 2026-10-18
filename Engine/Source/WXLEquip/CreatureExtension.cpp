@@ -17,6 +17,7 @@
 #include "Engine/Source/WXLEquip/CreatureExtension.hpp"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 #include "Engine/Source/WXL/Event.h"
+#include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
 
 #include <windows.h>
@@ -47,34 +48,11 @@ namespace wxl::scripts::creatureextension
     // ─── Logging ────────────────────────────────────────────────────────────────
     // Same opt-in-file-log shape as EquipExtension's EquipLog/EquipLogEnabled, kept separate (own
     // env var, own log file) so enabling one doesn't spam the other feature's log.
-    static bool CreatureLogEnabled() noexcept
-    {
-        static int enabled = []() noexcept -> int {
-#pragma warning(suppress: 4996)
-            const char* env = std::getenv("WXL_CREATURE_LOG");
-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
-                return 1;
-
-#pragma warning(suppress: 4996)
-            FILE* flag = std::fopen("WarcraftXL_creature.log.enable", "rb");
-            if (!flag) return 0;
-            std::fclose(flag);
-            return 1;
-        }();
-        return enabled != 0;
-    }
-
     static void CreatureLog(const char* fmt, ...) noexcept
     {
-        if (!CreatureLogEnabled()) return;
-#pragma warning(suppress: 4996)
-        FILE* f = std::fopen("WarcraftXL_creature.log", "a");
-        if (!f) return;
         va_list ap; va_start(ap, fmt);
-        std::vfprintf(f, fmt, ap);
+        wxl::LogCatV("CREATURE", fmt, ap);
         va_end(ap);
-        std::fputc('\n', f);
-        std::fclose(f);
     }
 
     // ─── CSV helpers ────────────────────────────────────────────────────────────
@@ -187,11 +165,17 @@ namespace wxl::scripts::creatureextension
             while (std::fgets(line, sizeof(line), f))
                 lines.emplace_back(line);
             std::fclose(f);
+            CreatureLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
             return !lines.empty();
         }
 
         std::vector<uint8_t> raw;
-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
+        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
+        {
+            CreatureLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
+                path, wxl::WorkingDirectory());
+            return false;
+        }
         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
         const bool ok = true;
         if (!ok) return false;
@@ -205,6 +189,7 @@ namespace wxl::scripts::creatureextension
             lines.push_back(line);
             start = i + 1;
         }
+        CreatureLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
         return !lines.empty();
     }
 
@@ -292,6 +277,11 @@ namespace wxl::scripts::creatureextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            CreatureLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay     = FindCsvColumn(header, "DisplayID");
         const int cTextureType = FindCsvColumn(header, "TextureType");
         const int cTexturePath = FindCsvColumn(header, "TexturePath");
@@ -334,8 +324,9 @@ namespace wxl::scripts::creatureextension
             ++loaded;
         }
 
-        if (loaded)
-            CreatureLog("creature texture sidecar loaded '%s' rows=%u", path, loaded);
+        CreatureLog("creature texture sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     static void LoadCreatureModelPathSidecarFile(const char* path)
@@ -344,6 +335,11 @@ namespace wxl::scripts::creatureextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            CreatureLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay = FindCsvColumn(header, "DisplayID");
         const int cModel   = FindCsvColumn(header, "CreatureModelPath");
         const int cGeoset  = FindCsvColumn(header, "Geoset"); // optional -- absent is fine, not an error
@@ -380,8 +376,9 @@ namespace wxl::scripts::creatureextension
             ++loaded;
         }
 
-        if (loaded)
-            CreatureLog("creature model-path sidecar loaded '%s' rows=%u", path, loaded);
+        CreatureLog("creature model-path sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     // Forward decl: full definition sits after BuildCreatureMaterialPatchSpec (needs it), but must
@@ -436,7 +433,9 @@ namespace wxl::scripts::creatureextension
         // its own doc comment, and its registration in the constructor below) to still bake anything
         // at all -- unlike weapons, there is no separate reactive per-equip hook for creature models
         // to fall back on.
-        if (WxlIniGetBool("EagerPreload", "Creatures", true))
+        const bool eagerCreatures = WxlIniGetBool("EagerPreload", "Creatures", true);
+        CreatureLog("EagerPreload Creatures=%d (set [EagerPreload] Creatures=0 in WXLExtendedEquipment.ini to bake lazily on first request instead)", eagerCreatures ? 1 : 0);
+        if (eagerCreatures)
             PreregisterSidecarCreatures();
     }
 
@@ -496,6 +495,8 @@ namespace wxl::scripts::creatureextension
         }
 
         // No texPath (only materialPatchSpec) -- creature texture rows are all TextureType-keyed.
+        CreatureLog("  bake begin: display=%u real='%s' (the last line of the log names the display in progress if the client crashes here)",
+                    displayId, pathIt->second.c_str());
         char vModelPath[280] = {};
         bool registered = VPathPopulateGlobal(pathIt->second.c_str(), displayId, nullptr, matSpec,
                                                geoSpec ? geoSpec->ids : nullptr,

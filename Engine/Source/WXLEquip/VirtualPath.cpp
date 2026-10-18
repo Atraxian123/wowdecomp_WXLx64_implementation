@@ -22,6 +22,7 @@
 
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
+#include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLEquip/M2Format.hpp"
 
@@ -43,34 +44,11 @@ namespace wxl::scripts::equipextension
 {
     namespace
     {
-        static bool EquipLogEnabled() noexcept
-        {
-            static int enabled = []() noexcept -> int {
-#pragma warning(suppress: 4996)
-                const char* env = std::getenv("WXL_EQUIP_LOG");
-                if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
-                    return 1;
-
-#pragma warning(suppress: 4996)
-                FILE* flag = std::fopen("WarcraftXL_equip.log.enable", "rb");
-                if (!flag) return 0;
-                std::fclose(flag);
-                return 1;
-            }();
-            return enabled != 0;
-        }
-
         static void VPathLog(const char* fmt, ...) noexcept
         {
-            if (!EquipLogEnabled()) return;
-#pragma warning(suppress: 4996)
-            FILE* f = std::fopen("WarcraftXL_equip.log", "a");
-            if (!f) return;
             va_list ap; va_start(ap, fmt);
-            std::vfprintf(f, fmt, ap);
+            wxl::LogCatV("VPATH", fmt, ap);
             va_end(ap);
-            std::fputc('\n', f);
-            std::fclose(f);
         }
         // Guards every table below. The injected build documented these as main-thread-only, but the
         // client opens model files from loader threads, and VirtualProvide runs inside that open.
@@ -366,7 +344,10 @@ namespace wxl::scripts::equipextension
             // files and archives resolve exactly as for the game itself. Our own provider sees this
             // open too and must not, and does not, claim a real path.
             out.clear();
-            return wxl::storage::ReadNative(path, out) && !out.empty();
+            const bool ok = wxl::storage::ReadNative(path, out) && !out.empty();
+            if (!ok)
+                VPathLog("ReadGameFile('%s') FAILED: the source model/skin could not be read from the game files", path);
+            return ok;
         }
 
         // Derives the real skin path: strip extension (.m2 or .mdx), append 00.skin.

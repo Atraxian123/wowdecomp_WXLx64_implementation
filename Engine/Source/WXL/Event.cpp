@@ -15,7 +15,9 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Engine/Source/WXL/Event.h"
+#include "Engine/Source/WXL/Log.h"
 
+#include <atomic>
 #include <vector>
 
 namespace
@@ -67,5 +69,62 @@ namespace wxl::events
     bool Any(Event e)
     {
         return e < Event::Count && !Bucket(e).empty();
+    }
+
+    uint32_t SubscriberCount(Event e)
+    {
+        return e < Event::Count ? static_cast<uint32_t>(Bucket(e).size()) : 0;
+    }
+
+    const char* EventName(Event e)
+    {
+        switch (e)
+        {
+            case Event::OnModelLoadPre:      return "OnModelLoadPre";
+            case Event::OnModelLoad:         return "OnModelLoad";
+            case Event::OnM2SkinFinalize:    return "OnM2SkinFinalize";
+            case Event::OnM2PerFrameUpdate:  return "OnM2PerFrameUpdate";
+            case Event::OnBuildBonePalette:  return "OnBuildBonePalette";
+            case Event::OnItemSlotChange:    return "OnItemSlotChange";
+            case Event::OnItemSlotClear:     return "OnItemSlotClear";
+            default:                         return "Event#?";
+        }
+    }
+
+    namespace
+    {
+        std::atomic<uint32_t>& Fired(Event e)
+        {
+            static std::atomic<uint32_t> counts[static_cast<size_t>(Event::Count)];
+            return counts[static_cast<size_t>(e)];
+        }
+    }
+
+    void NoteFired(Event e)
+    {
+        if (e >= Event::Count) return;
+        const uint32_t n = ++Fired(e);
+
+        // The first firings of each event say "this hook point is alive"; the rare, important events are
+        // also followed by a full counter dump so one glance shows the whole pipeline's state.
+        if (n <= 3)
+            wxl::LogCat("EVENT", "%s fired #%u (subscribers=%u)", EventName(e), n, SubscriberCount(e));
+
+        const bool rare = e == Event::OnItemSlotChange || e == Event::OnItemSlotClear;
+        if ((rare && n <= 6) || (e == Event::OnM2PerFrameUpdate && n % 50000 == 0))
+            DumpStats();
+    }
+
+    void DumpStats()
+    {
+        for (uint32_t i = 0; i < static_cast<uint32_t>(Event::Count); ++i)
+        {
+            const Event e = static_cast<Event>(i);
+            const uint32_t fired = Fired(e).load();
+            const uint32_t subs  = SubscriberCount(e);
+            if (fired == 0 && subs == 0) continue;
+            wxl::LogCat("EVENT", "  stats %-20s fired=%-8u subscribers=%u%s", EventName(e), fired, subs,
+                        (fired == 0 && subs != 0) ? "   <-- subscribed but the hook point has never run" : "");
+        }
     }
 }

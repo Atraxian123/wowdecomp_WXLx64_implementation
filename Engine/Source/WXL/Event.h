@@ -310,4 +310,22 @@ namespace wxl::events
      * @return true when Emit(e, ...) would invoke at least one handler.
      */
     bool Any(Event e);
+
+    /// Number of handlers subscribed to an event.
+    uint32_t SubscriberCount(Event e);
+
+    /// Name of an event for log lines ("OnModelLoadPre", ...); "Event#N" for unnamed ones.
+    const char* EventName(Event e);
+
+    /**
+     * @brief Counts one firing of an event at its hook point, whether or not anything listens.
+     *
+     * The decomp's hook sites call this so WXL.log can show which hooks the engine actually reaches:
+     * the first few firings of each event are logged, and the counters are dumped periodically. An event
+     * that never appears is a hook point the game never runs, which is the first thing to rule out.
+     */
+    void NoteFired(Event e);
+
+    /// Writes every event's fired count and subscriber count to WXL.log.
+    void DumpStats();
 }

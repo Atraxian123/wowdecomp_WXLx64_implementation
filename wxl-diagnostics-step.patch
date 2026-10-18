@@ -1,0 +1,1336 @@
+diff --git a/Engine/Source/BLPFile/blp.cpp b/Engine/Source/BLPFile/blp.cpp
+index 6ddeb9e..d48a608 100644
+--- a/Engine/Source/BLPFile/blp.cpp
++++ b/Engine/Source/BLPFile/blp.cpp
+@@ -9,6 +9,7 @@
+ #include "Engine/Source/Tempest/C2iVector.h"
+ #include <vector>
+ #include "Engine/Source/WXL/Blp.h"
++#include "Engine/Source/WXL/Log.h"
+ 
+ // STATIC: 0x00AD90B0
+ uint8_t CBLPFile::s_eightBitAlphaLookup[16] = { 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
+diff --git a/Engine/Source/Services/Texture.cpp b/Engine/Source/Services/Texture.cpp
+index a4b65d1..142c872 100644
+--- a/Engine/Source/Services/Texture.cpp
++++ b/Engine/Source/Services/Texture.cpp
+@@ -20,6 +20,7 @@
+ #include "Engine/Source/Tempest/C2Vector.h"
+ #include <vector>
+ #include "Engine/Source/WXL/Blp.h"
++#include "Engine/Source/WXL/Log.h"
+ 
+ // STATIC: 0x009F1028
+ static const uint16_t s_pixelFormatBytesPerBlock[NUM_PIXEL_FORMATS] = { 8, 16, 0, 0, 0, 0, 0, 16, 0, 0 };
+@@ -1772,13 +1773,16 @@ int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
+     // WXL: offer the file to the BLP pipeline (palettizes DXT character components). Declared before
+     // `image` so the replacement buffer outlives the parsed image that points into it.
+     std::vector<uint8_t> wxlBlp;
+-    if (wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp)) {
++    const bool wxlTransformed = wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp);
++    if (wxlTransformed) {
+         data = wxlBlp.data();
+     }
+ 
+     CBLPFile image;
+ 
+     if (!image.Source(data)) {
++        wxl::LogCat("BLP", "load FAILED at header validation: '%s' (WXL-transformed=%d). The client rejects it as an invalid BLP version/magic",
++                    texture->m_filename, wxlTransformed ? 1 : 0);
+         texture->m_status.Add(STATUS_FATAL, "BLP Texture failure: \"%s\" invalid file version\n", texture->m_filename);
+         return 0;
+     }
+@@ -1807,6 +1811,12 @@ int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
+ 
+     if (!image.LockChain2(texture->m_filename, pixelFormat, s_mipBits, texture->m_bestMip, 1)) {
+         s_pumping = 0;
++        wxl::LogCat("BLP", "load FAILED at decompression: '%s' (WXL-transformed=%d) colorEncoding=%u alphaSize=%u preferredFormat=%u hasMips=0x%X %ux%u -> pixelFormat=%d",
++                    texture->m_filename, wxlTransformed ? 1 : 0,
++                    static_cast<uint32_t>(image.m_header.m_colorEncoding), static_cast<uint32_t>(image.m_header.m_alphaSize),
++                    static_cast<uint32_t>(image.m_header.m_preferredFormat), static_cast<uint32_t>(image.m_header.m_hasMips),
++                    static_cast<uint32_t>(image.m_header.m_width), static_cast<uint32_t>(image.m_header.m_height),
++                    static_cast<int>(pixelFormat));
+         texture->m_status.Add(STATUS_FATAL, "BLP Texture failure: \"%s\" decompression failed.\n", texture->m_filename);
+         return 0;
+     }
+diff --git a/Engine/Source/WXL/Blp/BlpHost.cpp b/Engine/Source/WXL/Blp/BlpHost.cpp
+index de6d7e6..fdabe8b 100644
+--- a/Engine/Source/WXL/Blp/BlpHost.cpp
++++ b/Engine/Source/WXL/Blp/BlpHost.cpp
+@@ -105,7 +105,7 @@ namespace
+             uint32_t edge = 256;
+             if (level >= 9) edge = 1024;
+             else if (level >= 8) edge = 512;
+-            wxl::Log("blp: componentTextureLevel=%d componentMaxEdge=%u", level, edge);
++            wxl::LogCat("BLP", "componentTextureLevel=%d componentMaxEdge=%u", level, edge);
+             return edge;
+         }();
+         return maxEdge;
+@@ -120,15 +120,35 @@ namespace wxl::blp
+ 
+         const uint8_t* bytes = static_cast<const uint8_t*>(data);
+         const size_t   size  = Blp2Extent(bytes);
+-        if (size == 0) return false;
++        if (size == 0)
++        {
++            if (wxl::LogThrottle("blp.notblp2", 20, 100))
++                wxl::LogCat("BLP", "component '%s': not a BLP2 (magic/version mismatch), left untouched", name);
++            return false;
++        }
++
++        // Header fields that decide what the client does with the file.
++        const unsigned encoding = bytes[8], alphaDepth = bytes[9], alphaType = bytes[10], hasMips = bytes[11];
++        const uint32_t width = Rd32(bytes + 0xC), height = Rd32(bytes + 0x10);
+ 
+         const uint32_t maxEdge = ComponentTextureMaxEdge();
+         std::vector<uint8_t> palettized;
+         if (!transcode::TextureComponentToPaletted({ bytes, size }, palettized, maxEdge))
+-            return false; // already palettized (native) or not a decodable DXT: serve as-is
++        {
++            // Encoding 1 is the native palettized format the client reads itself. Anything else that lands
++            // here is a DXT or other encoding the palettizer could not convert.
++            if (wxl::LogThrottle(encoding == 1 ? "blp.native" : "blp.cantconvert", 40, 100))
++                wxl::LogCat("BLP", "component '%s': %ux%u encoding=%u alphaDepth=%u alphaType=%u mips=%u -> %s", name,
++                            width, height, encoding, alphaDepth, alphaType, hasMips,
++                            encoding == 1 ? "already palettized, left as is"
++                                          : "NOT CONVERTED: encoding unsupported by the palettizer (the client will fall back to green if it needs palettized data)");
++            return false;
++        }
+ 
+-        wxl::Log("blp: %s DXT component -> paletted maxEdge=%u (%u -> %u bytes)",
+-                 name, maxEdge, uint32_t(size), uint32_t(palettized.size()));
++        wxl::LogCat("BLP", "component '%s': %ux%u encoding=%u alphaType=%u -> PALETTIZED (maxEdge=%u, %u -> %u bytes, out header enc=%u alphaDepth=%u alphaType=%u mips=%u %ux%u)",
++                    name, width, height, encoding, alphaType, maxEdge, uint32_t(size), uint32_t(palettized.size()),
++                    unsigned(palettized[8]), unsigned(palettized[9]), unsigned(palettized[10]), unsigned(palettized[11]),
++                    Rd32(palettized.data() + 0xC), Rd32(palettized.data() + 0x10));
+         out = std::move(palettized);
+         return true;
+     }
+diff --git a/Engine/Source/WXL/CMakeLists.txt b/Engine/Source/WXL/CMakeLists.txt
+index 3cc32c1..7c2ccba 100644
+--- a/Engine/Source/WXL/CMakeLists.txt
++++ b/Engine/Source/WXL/CMakeLists.txt
+@@ -20,3 +20,8 @@ target_include_directories(WXLCore
+     PRIVATE
+         ${CMAKE_CURRENT_SOURCE_DIR}/Blp
+ )
++
++# Crash.cpp symbolizes call stacks with DbgHelp when the PDB is next to the exe.
++if(WIN32)
++    target_link_libraries(WXLCore PUBLIC dbghelp)
++endif()
+diff --git a/Engine/Source/WXL/Crash.cpp b/Engine/Source/WXL/Crash.cpp
+new file mode 100644
+index 0000000..0a963aa
+--- /dev/null
++++ b/Engine/Source/WXL/Crash.cpp
+@@ -0,0 +1,166 @@
++#include "Engine/Source/WXL/Crash.h"
++
++#ifdef _WIN32
++
++#include "Engine/Source/WXL/Log.h"
++
++#include <windows.h>
++#include <dbghelp.h>
++
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++
++namespace wxl
++{
++    namespace
++    {
++        std::mutex g_symMutex;
++        bool       g_symReady = false;
++
++        const char* BaseName(const char* path)
++        {
++            const char* slash = std::strrchr(path, '\\');
++            return slash ? slash + 1 : path;
++        }
++
++        /// "module+0xRVA" always, plus "function+0xOFF (file:line)" when DbgHelp finds the PDB.
++        void Describe(void* address, char* out, size_t outSize)
++        {
++            char moduleName[MAX_PATH] = "?";
++            HMODULE module = nullptr;
++            uintptr_t rva = 0;
++            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                   static_cast<LPCSTR>(address), &module) && module)
++            {
++                GetModuleFileNameA(module, moduleName, sizeof(moduleName));
++                rva = reinterpret_cast<uintptr_t>(address) - reinterpret_cast<uintptr_t>(module);
++            }
++
++            int n = std::snprintf(out, outSize, "%s+0x%llX", BaseName(moduleName), static_cast<unsigned long long>(rva));
++
++            std::lock_guard<std::mutex> lock(g_symMutex);
++            if (!g_symReady)
++            {
++                SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
++                g_symReady = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != FALSE;
++            }
++            if (!g_symReady || n <= 0 || static_cast<size_t>(n) >= outSize) return;
++
++            alignas(SYMBOL_INFO) char symBuf[sizeof(SYMBOL_INFO) + 256] = {};
++            SYMBOL_INFO* sym = reinterpret_cast<SYMBOL_INFO*>(symBuf);
++            sym->SizeOfStruct = sizeof(SYMBOL_INFO);
++            sym->MaxNameLen   = 255;
++            DWORD64 displacement = 0;
++            if (SymFromAddr(GetCurrentProcess(), reinterpret_cast<DWORD64>(address), &displacement, sym))
++            {
++                n += std::snprintf(out + n, outSize - n, "  %s+0x%llX", sym->Name, static_cast<unsigned long long>(displacement));
++                IMAGEHLP_LINE64 line = {};
++                line.SizeOfStruct = sizeof(line);
++                DWORD lineDisp = 0;
++                if (n > 0 && static_cast<size_t>(n) < outSize &&
++                    SymGetLineFromAddr64(GetCurrentProcess(), reinterpret_cast<DWORD64>(address), &lineDisp, &line))
++                    std::snprintf(out + n, outSize - n, "  (%s:%lu)", BaseName(line.FileName), line.LineNumber);
++            }
++        }
++
++        const char* CodeName(DWORD code)
++        {
++            switch (code)
++            {
++                case EXCEPTION_ACCESS_VIOLATION:      return "ACCESS_VIOLATION";
++                case EXCEPTION_STACK_OVERFLOW:        return "STACK_OVERFLOW";
++                case EXCEPTION_ILLEGAL_INSTRUCTION:   return "ILLEGAL_INSTRUCTION";
++                case EXCEPTION_INT_DIVIDE_BY_ZERO:    return "INT_DIVIDE_BY_ZERO";
++                case EXCEPTION_IN_PAGE_ERROR:         return "IN_PAGE_ERROR";
++                case 0xC0000374:                      return "HEAP_CORRUPTION";
++                case 0xC0000409:                      return "STACK_BUFFER_OVERRUN/FAST_FAIL";
++                case 0xC0000096:                      return "PRIVILEGED_INSTRUCTION";
++                default:                              return "EXCEPTION";
++            }
++        }
++
++        bool IsInteresting(DWORD code)
++        {
++            switch (code)
++            {
++                case EXCEPTION_ACCESS_VIOLATION:
++                case EXCEPTION_STACK_OVERFLOW:
++                case EXCEPTION_ILLEGAL_INSTRUCTION:
++                case EXCEPTION_INT_DIVIDE_BY_ZERO:
++                case EXCEPTION_IN_PAGE_ERROR:
++                case 0xC0000374:
++                case 0xC0000409:
++                case 0xC0000096:
++                    return true;
++                default:
++                    return false;
++            }
++        }
++
++        LONG CALLBACK Handler(PEXCEPTION_POINTERS info)
++        {
++            const EXCEPTION_RECORD* rec = info->ExceptionRecord;
++            if (!IsInteresting(rec->ExceptionCode)) return EXCEPTION_CONTINUE_SEARCH;
++
++            // Stack overflow leaves almost no stack: log the bare minimum, then let it propagate.
++            const bool stackOverflow = rec->ExceptionCode == EXCEPTION_STACK_OVERFLOW;
++
++            static std::mutex s_mutex;
++            static std::unordered_map<void*, unsigned> s_seen;
++            {
++                std::lock_guard<std::mutex> lock(s_mutex);
++                unsigned& n = s_seen[rec->ExceptionAddress];
++                if (++n > 4) return EXCEPTION_CONTINUE_SEARCH; // same spot again and again: already on record
++            }
++
++            if (stackOverflow)
++            {
++                wxl::LogCat("CRASH", "STACK_OVERFLOW at %p", rec->ExceptionAddress);
++                return EXCEPTION_CONTINUE_SEARCH;
++            }
++
++            char where[512];
++            Describe(rec->ExceptionAddress, where, sizeof(where));
++            wxl::LogCat("CRASH", "%s (0x%08lX) at %s  [first-chance: a __try guard may handle this]",
++                        CodeName(rec->ExceptionCode), rec->ExceptionCode, where);
++
++            if (rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2)
++            {
++                const ULONG_PTR kind = rec->ExceptionInformation[0];
++                wxl::LogCat("CRASH", "  %s address 0x%llX",
++                            kind == 0 ? "read of" : kind == 1 ? "write to" : kind == 8 ? "execute of" : "access to",
++                            static_cast<unsigned long long>(rec->ExceptionInformation[1]));
++            }
++
++            void* frames[32] = {};
++            const USHORT count = CaptureStackBackTrace(1, 32, frames, nullptr);
++            for (USHORT i = 0; i < count; ++i)
++            {
++                char line[512];
++                Describe(frames[i], line, sizeof(line));
++                wxl::LogCat("CRASH", "  #%u %s", static_cast<unsigned>(i), line);
++            }
++            return EXCEPTION_CONTINUE_SEARCH;
++        }
++    }
++
++    void InstallCrashLogger()
++    {
++        static bool s_done = false;
++        if (s_done) return;
++        s_done = true;
++        AddVectoredExceptionHandler(1, &Handler);
++        wxl::LogCat("CRASH", "crash logger installed");
++    }
++}
++
++#else
++
++namespace wxl
++{
++    void InstallCrashLogger() {}
++}
++
++#endif
+diff --git a/Engine/Source/WXL/Crash.h b/Engine/Source/WXL/Crash.h
+new file mode 100644
+index 0000000..6ee32f2
+--- /dev/null
++++ b/Engine/Source/WXL/Crash.h
+@@ -0,0 +1,16 @@
++// WXL crash logger: records where the client died, with function names when the PDB is present.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++#pragma once
++
++namespace wxl
++{
++    /**
++     * @brief Installs a first-chance exception logger (Windows only; a no-op elsewhere).
++     *
++     * Writes the exception code, faulting address, access type and a symbolized call stack to WXL.log.
++     * It never handles the exception, so the client's own crash handling still runs. Access violations
++     * are expected now and then (the equip code probes engine memory under __try on purpose), so each
++     * distinct faulting address is logged only a limited number of times and marked as possibly handled.
++     */
++    void InstallCrashLogger();
++}
+diff --git a/Engine/Source/WXL/Event.cpp b/Engine/Source/WXL/Event.cpp
+index e8648a3..86d44a5 100644
+--- a/Engine/Source/WXL/Event.cpp
++++ b/Engine/Source/WXL/Event.cpp
+@@ -15,7 +15,9 @@
+ // along with this program. If not, see <https://www.gnu.org/licenses/>.
+ 
+ #include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/Log.h"
+ 
++#include <atomic>
+ #include <vector>
+ 
+ namespace
+@@ -68,4 +70,61 @@ namespace wxl::events
+     {
+         return e < Event::Count && !Bucket(e).empty();
+     }
++
++    uint32_t SubscriberCount(Event e)
++    {
++        return e < Event::Count ? static_cast<uint32_t>(Bucket(e).size()) : 0;
++    }
++
++    const char* EventName(Event e)
++    {
++        switch (e)
++        {
++            case Event::OnModelLoadPre:      return "OnModelLoadPre";
++            case Event::OnModelLoad:         return "OnModelLoad";
++            case Event::OnM2SkinFinalize:    return "OnM2SkinFinalize";
++            case Event::OnM2PerFrameUpdate:  return "OnM2PerFrameUpdate";
++            case Event::OnBuildBonePalette:  return "OnBuildBonePalette";
++            case Event::OnItemSlotChange:    return "OnItemSlotChange";
++            case Event::OnItemSlotClear:     return "OnItemSlotClear";
++            default:                         return "Event#?";
++        }
++    }
++
++    namespace
++    {
++        std::atomic<uint32_t>& Fired(Event e)
++        {
++            static std::atomic<uint32_t> counts[static_cast<size_t>(Event::Count)];
++            return counts[static_cast<size_t>(e)];
++        }
++    }
++
++    void NoteFired(Event e)
++    {
++        if (e >= Event::Count) return;
++        const uint32_t n = ++Fired(e);
++
++        // The first firings of each event say "this hook point is alive"; the rare, important events are
++        // also followed by a full counter dump so one glance shows the whole pipeline's state.
++        if (n <= 3)
++            wxl::LogCat("EVENT", "%s fired #%u (subscribers=%u)", EventName(e), n, SubscriberCount(e));
++
++        const bool rare = e == Event::OnItemSlotChange || e == Event::OnItemSlotClear;
++        if ((rare && n <= 6) || (e == Event::OnM2PerFrameUpdate && n % 50000 == 0))
++            DumpStats();
++    }
++
++    void DumpStats()
++    {
++        for (uint32_t i = 0; i < static_cast<uint32_t>(Event::Count); ++i)
++        {
++            const Event e = static_cast<Event>(i);
++            const uint32_t fired = Fired(e).load();
++            const uint32_t subs  = SubscriberCount(e);
++            if (fired == 0 && subs == 0) continue;
++            wxl::LogCat("EVENT", "  stats %-20s fired=%-8u subscribers=%u%s", EventName(e), fired, subs,
++                        (fired == 0 && subs != 0) ? "   <-- subscribed but the hook point has never run" : "");
++        }
++    }
+ }
+diff --git a/Engine/Source/WXL/Event.h b/Engine/Source/WXL/Event.h
+index 6abaf26..003bcb6 100644
+--- a/Engine/Source/WXL/Event.h
++++ b/Engine/Source/WXL/Event.h
+@@ -310,4 +310,22 @@ namespace wxl::events
+      * @return true when Emit(e, ...) would invoke at least one handler.
+      */
+     bool Any(Event e);
++
++    /// Number of handlers subscribed to an event.
++    uint32_t SubscriberCount(Event e);
++
++    /// Name of an event for log lines ("OnModelLoadPre", ...); "Event#N" for unnamed ones.
++    const char* EventName(Event e);
++
++    /**
++     * @brief Counts one firing of an event at its hook point, whether or not anything listens.
++     *
++     * The decomp's hook sites call this so WXL.log can show which hooks the engine actually reaches:
++     * the first few firings of each event are logged, and the counters are dumped periodically. An event
++     * that never appears is a hook point the game never runs, which is the first thing to rule out.
++     */
++    void NoteFired(Event e);
++
++    /// Writes every event's fired count and subscriber count to WXL.log.
++    void DumpStats();
+ }
+diff --git a/Engine/Source/WXL/Hooks.h b/Engine/Source/WXL/Hooks.h
+index cdf2b91..641cda4 100644
+--- a/Engine/Source/WXL/Hooks.h
++++ b/Engine/Source/WXL/Hooks.h
+@@ -23,6 +23,7 @@ namespace wxl::events
+         EmitOnExit(Event e, const Args& args) : m_event(e), m_args(args) {}
+         ~EmitOnExit()
+         {
++            NoteFired(m_event);
+             if (Any(m_event)) Emit(m_event, &m_args);
+         }
+         EmitOnExit(const EmitOnExit&)            = delete;
+@@ -37,6 +38,7 @@ namespace wxl::events
+     template <class Args>
+     inline void EmitIfAny(Event e, const Args& args)
+     {
++        NoteFired(e);
+         if (Any(e)) Emit(e, &args);
+     }
+ }
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+index 141abbd..a0c90c4 100644
+--- a/Engine/Source/WXL/Log.cpp
++++ b/Engine/Source/WXL/Log.cpp
+@@ -1,24 +1,167 @@
+ #include "Engine/Source/WXL/Log.h"
+ 
+-#include <cstdarg>
+ #include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
+ #include <mutex>
++#include <string>
++#include <unordered_map>
++
++#ifdef _WIN32
++#include <windows.h>
++#else
++#include <functional>
++#include <thread>
++#include <unistd.h>
++#endif
+ 
+ namespace wxl
+ {
+-    void Log(const char* format, ...)
++    namespace
+     {
+-        static std::mutex s_mutex;
+-        std::lock_guard<std::mutex> lock(s_mutex);
++        constexpr long long kMaxLogBytes = 256ll * 1024 * 1024; // a runaway log stops here instead of filling the disk
++
++        std::mutex& LogMutex()
++        {
++            static std::mutex m;
++            return m;
++        }
++
++        unsigned ThreadId()
++        {
++#ifdef _WIN32
++            return static_cast<unsigned>(GetCurrentThreadId());
++#else
++            return static_cast<unsigned>(std::hash<std::thread::id>()(std::this_thread::get_id()) & 0xFFFFu);
++#endif
++        }
++
++        struct Timestamp
++        {
++            int h, m, s, ms;
++        };
++
++        Timestamp Now()
++        {
++            Timestamp t = {};
++#ifdef _WIN32
++            SYSTEMTIME st;
++            GetLocalTime(&st);
++            t.h = st.wHour; t.m = st.wMinute; t.s = st.wSecond; t.ms = st.wMilliseconds;
++#else
++            std::time_t now = std::time(nullptr);
++            std::tm* lt = std::localtime(&now);
++            if (lt) { t.h = lt->tm_hour; t.m = lt->tm_min; t.s = lt->tm_sec; }
++#endif
++            return t;
++        }
++
++        bool DecideEnabled()
++        {
++            const char* env = std::getenv("WXL_LOG");
++            if (env && (*env == '0' || *env == 'n' || *env == 'N' || *env == 'f' || *env == 'F')) return false;
++            if (FILE* flag = std::fopen("WXL.log.disable", "rb"))
++            {
++                std::fclose(flag);
++                return false;
++            }
++            return true;
++        }
++
++        struct Sink
++        {
++            FILE*     file    = nullptr;
++            long long written = 0;
++            bool      capped  = false;
++        };
++
++        Sink& GetSink()
++        {
++            static Sink s;
++            return s;
++        }
++
++        void WriteLine(const char* category, const char* format, va_list args)
++        {
++            std::lock_guard<std::mutex> lock(LogMutex());
++            Sink& sink = GetSink();
++            if (sink.capped) return;
++
++            if (!sink.file)
++            {
++                sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
++                if (!sink.file) { sink.capped = true; return; }
++                std::fprintf(sink.file, "==== WXL log opened (set WXL_LOG=0 or create WXL.log.disable to turn off) ====\n");
++            }
++
++            const Timestamp t = Now();
++            char body[2048];
++            std::vsnprintf(body, sizeof(body), format, args);
++
++            const int n = std::fprintf(sink.file, "[%02d:%02d:%02d.%03d] [T%u] [%s] %s\n",
++                                       t.h, t.m, t.s, t.ms, ThreadId(), category, body);
++            std::fflush(sink.file); // durable across a crash: the last line written is the last thing that happened
++            if (n > 0) sink.written += n;
++
++            if (sink.written > kMaxLogBytes)
++            {
++                std::fprintf(sink.file, "==== WXL log reached %lld MB, further lines dropped ====\n", kMaxLogBytes >> 20);
++                std::fflush(sink.file);
++                sink.capped = true;
++            }
++        }
++    }
++
++    bool LogEnabled()
++    {
++        static const bool enabled = DecideEnabled();
++        return enabled;
++    }
+ 
+-        FILE* f = std::fopen("WXL.log", "ab");
+-        if (!f) return;
++    void LogCatV(const char* category, const char* format, va_list args)
++    {
++        if (!LogEnabled()) return;
++        WriteLine(category ? category : "WXL", format, args);
++    }
+ 
++    void LogCat(const char* category, const char* format, ...)
++    {
+         va_list args;
+         va_start(args, format);
+-        std::vfprintf(f, format, args);
++        LogCatV(category, format, args);
+         va_end(args);
+-        std::fputc('\n', f);
+-        std::fclose(f);
++    }
++
++    void Log(const char* format, ...)
++    {
++        va_list args;
++        va_start(args, format);
++        LogCatV("WXL", format, args);
++        va_end(args);
++    }
++
++    bool LogThrottle(const char* key, unsigned first, unsigned every)
++    {
++        static std::mutex s_mutex;
++        static std::unordered_map<std::string, unsigned> s_counts;
++        std::lock_guard<std::mutex> lock(s_mutex);
++        const unsigned n = ++s_counts[key];
++        if (n <= first) return true;
++        return every != 0 && (n % every) == 0;
++    }
++
++    const char* WorkingDirectory()
++    {
++        static const std::string dir = []() {
++            char buf[1024] = {};
++#ifdef _WIN32
++            if (!GetCurrentDirectoryA(sizeof(buf), buf)) return std::string("(unknown)");
++#else
++            if (!getcwd(buf, sizeof(buf))) return std::string("(unknown)");
++#endif
++            return std::string(buf);
++        }();
++        return dir.c_str();
+     }
+ }
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+index 23d6de9..7f30883 100644
+--- a/Engine/Source/WXL/Log.h
++++ b/Engine/Source/WXL/Log.h
+@@ -1,9 +1,39 @@
+-// Minimal thread-safe log for in-tree WXL code (WXL.log next to the executable).
++// WXL log: one timestamped, thread-tagged, crash-durable file for every in-tree WXL module.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// Output goes to WXL.log in the working directory (the client's folder), truncated at each launch.
++// Every line is flushed as it is written, so the last line is the last thing that happened even when
++// the client crashes. Logging is ON by default; turn it off with env WXL_LOG=0 or by creating a file
++// named WXL.log.disable next to the exe.
++//
++// Line format:  [HH:MM:SS.mmm] [T<thread id>] [CATEGORY] message
+ #pragma once
+ 
++#include <cstdarg>
++
+ namespace wxl
+ {
+-    /// printf-style line appended to WXL.log in the working directory. Safe from loader threads.
++    /// Whether logging is on for this run (decided once, on first use).
++    bool LogEnabled();
++
++    /// printf-style line in category "WXL".
+     void Log(const char* format, ...);
++
++    /// printf-style line in an explicit category (EQUIP, WEAPON, CREATURE, VPATH, STORAGE, BLP, EVENT ...).
++    void LogCat(const char* category, const char* format, ...);
++
++    /// The process working directory (where WXL.log is written and relative sidecar paths resolve).
++    const char* WorkingDirectory();
++
++    /// va_list form of LogCat, for modules that wrap it in their own printf-style helper.
++    void LogCatV(const char* category, const char* format, va_list args);
++
++    /**
++     * @brief Rate limiter for lines that could fire every frame.
++     * @param key    stable string identifying the call site (compared by content).
++     * @param first  how many occurrences to allow before throttling starts.
++     * @param every  after that, allow one occurrence per this many.
++     * @return true when this occurrence should be logged.
++     */
++    bool LogThrottle(const char* key, unsigned first = 8, unsigned every = 1000);
+ }
+diff --git a/Engine/Source/WXL/Storage.cpp b/Engine/Source/WXL/Storage.cpp
+index 3f8b932..a71818e 100644
+--- a/Engine/Source/WXL/Storage.cpp
++++ b/Engine/Source/WXL/Storage.cpp
+@@ -1,5 +1,7 @@
+ #include "Engine/Source/WXL/Storage.h"
++#include "Engine/Source/WXL/Log.h"
+ 
++#include <atomic>
+ #include <vector>
+ 
+ namespace wxl::storage
+@@ -17,7 +19,9 @@ namespace wxl::storage
+ 
+     void RegisterProvider(ProviderFn fn)
+     {
+-        if (fn) Providers().push_back(fn);
++        if (!fn) return;
++        Providers().push_back(fn);
++        wxl::LogCat("STORAGE", "provider registered (total=%zu)", Providers().size());
+     }
+ 
+     bool HasProviders()
+@@ -25,24 +29,52 @@ namespace wxl::storage
+         return !Providers().empty();
+     }
+ 
++    namespace
++    {
++        std::atomic<uint32_t> g_opens{ 0 };
++        std::atomic<uint32_t> g_hits{ 0 };
++    }
++
+     bool TryServe(const char* name, std::vector<uint8_t>& out)
+     {
+         if (!name || !*name) return false;
++
++        const uint32_t opens = ++g_opens;
+         for (ProviderFn fn : Providers())
+         {
+             out.clear();
+-            if (fn(name, out)) return true;
++            if (fn(name, out))
++            {
++                const uint32_t hits = ++g_hits;
++                if (wxl::LogThrottle("storage.hit", 400, 100))
++                    wxl::LogCat("STORAGE", "SERVED virtual file '%s' (%zu bytes) [hit #%u of %u opens]",
++                                name, out.size(), hits, opens);
++                return true;
++            }
+         }
++
++        if (opens % 20000 == 0)
++            wxl::LogCat("STORAGE", "stats: %u opens offered to providers, %u served virtually", opens, g_hits.load());
+         return false;
+     }
+ 
+     void SetNativeReader(NativeReadFn fn)
+     {
+         g_nativeReader = fn;
++        wxl::LogCat("STORAGE", "native reader %s", fn ? "installed" : "cleared");
+     }
+ 
+     bool ReadNative(const char* name, std::vector<uint8_t>& out)
+     {
+-        return g_nativeReader && g_nativeReader(name, out);
++        if (!g_nativeReader)
++        {
++            if (wxl::LogThrottle("storage.noreader", 5, 0))
++                wxl::LogCat("STORAGE", "ReadNative('%s') FAILED: no native reader installed", name ? name : "(null)");
++            return false;
++        }
++        const bool ok = g_nativeReader(name, out);
++        if (!ok && wxl::LogThrottle("storage.readfail", 60, 200))
++            wxl::LogCat("STORAGE", "ReadNative('%s') -> not found or unreadable", name ? name : "(null)");
++        return ok;
+     }
+ }
+diff --git a/Engine/Source/WXL/WXL.cpp b/Engine/Source/WXL/WXL.cpp
+index c697d48..0034eaa 100644
+--- a/Engine/Source/WXL/WXL.cpp
++++ b/Engine/Source/WXL/WXL.cpp
+@@ -1,9 +1,13 @@
+ #include "Engine/Source/WXL/WXL.h"
++#include "Engine/Source/WXL/Crash.h"
++#include "Engine/Source/WXL/Log.h"
+ 
+ namespace wxl
+ {
+     void InitModules()
+     {
++        wxl::Log("InitModules: WXL core starting (event bus, storage layer, BLP transform)");
++        wxl::InstallCrashLogger();
+         // In-tree modules are constructed here, e.g. equip extension:
+         //     static wxl::scripts::equipextension::EquipExtension s_equip;
+     }
+diff --git a/Engine/Source/WXLEquip/CreatureExtension.cpp b/Engine/Source/WXLEquip/CreatureExtension.cpp
+index 7e538b1..2dd25cd 100644
+--- a/Engine/Source/WXLEquip/CreatureExtension.cpp
++++ b/Engine/Source/WXLEquip/CreatureExtension.cpp
+@@ -17,6 +17,7 @@
+ #include "Engine/Source/WXLEquip/CreatureExtension.hpp"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ #include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXL/Storage.h"
+ 
+ #include <windows.h>
+@@ -47,34 +48,11 @@ namespace wxl::scripts::creatureextension
+     // ─── Logging ────────────────────────────────────────────────────────────────
+     // Same opt-in-file-log shape as EquipExtension's EquipLog/EquipLogEnabled, kept separate (own
+     // env var, own log file) so enabling one doesn't spam the other feature's log.
+-    static bool CreatureLogEnabled() noexcept
+-    {
+-        static int enabled = []() noexcept -> int {
+-#pragma warning(suppress: 4996)
+-            const char* env = std::getenv("WXL_CREATURE_LOG");
+-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
+-                return 1;
+-
+-#pragma warning(suppress: 4996)
+-            FILE* flag = std::fopen("WarcraftXL_creature.log.enable", "rb");
+-            if (!flag) return 0;
+-            std::fclose(flag);
+-            return 1;
+-        }();
+-        return enabled != 0;
+-    }
+-
+     static void CreatureLog(const char* fmt, ...) noexcept
+     {
+-        if (!CreatureLogEnabled()) return;
+-#pragma warning(suppress: 4996)
+-        FILE* f = std::fopen("WarcraftXL_creature.log", "a");
+-        if (!f) return;
+         va_list ap; va_start(ap, fmt);
+-        std::vfprintf(f, fmt, ap);
++        wxl::LogCatV("CREATURE", fmt, ap);
+         va_end(ap);
+-        std::fputc('\n', f);
+-        std::fclose(f);
+     }
+ 
+     // ─── CSV helpers ────────────────────────────────────────────────────────────
+@@ -187,11 +165,17 @@ namespace wxl::scripts::creatureextension
+             while (std::fgets(line, sizeof(line), f))
+                 lines.emplace_back(line);
+             std::fclose(f);
++            CreatureLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
+             return !lines.empty();
+         }
+ 
+         std::vector<uint8_t> raw;
+-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
++        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
++        {
++            CreatureLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
++                path, wxl::WorkingDirectory());
++            return false;
++        }
+         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
+         const bool ok = true;
+         if (!ok) return false;
+@@ -205,6 +189,7 @@ namespace wxl::scripts::creatureextension
+             lines.push_back(line);
+             start = i + 1;
+         }
++        CreatureLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
+         return !lines.empty();
+     }
+ 
+@@ -292,6 +277,11 @@ namespace wxl::scripts::creatureextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            CreatureLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay     = FindCsvColumn(header, "DisplayID");
+         const int cTextureType = FindCsvColumn(header, "TextureType");
+         const int cTexturePath = FindCsvColumn(header, "TexturePath");
+@@ -334,8 +324,9 @@ namespace wxl::scripts::creatureextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            CreatureLog("creature texture sidecar loaded '%s' rows=%u", path, loaded);
++        CreatureLog("creature texture sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     static void LoadCreatureModelPathSidecarFile(const char* path)
+@@ -344,6 +335,11 @@ namespace wxl::scripts::creatureextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            CreatureLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay = FindCsvColumn(header, "DisplayID");
+         const int cModel   = FindCsvColumn(header, "CreatureModelPath");
+         const int cGeoset  = FindCsvColumn(header, "Geoset"); // optional -- absent is fine, not an error
+@@ -380,8 +376,9 @@ namespace wxl::scripts::creatureextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            CreatureLog("creature model-path sidecar loaded '%s' rows=%u", path, loaded);
++        CreatureLog("creature model-path sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     // Forward decl: full definition sits after BuildCreatureMaterialPatchSpec (needs it), but must
+@@ -436,7 +433,9 @@ namespace wxl::scripts::creatureextension
+         // its own doc comment, and its registration in the constructor below) to still bake anything
+         // at all -- unlike weapons, there is no separate reactive per-equip hook for creature models
+         // to fall back on.
+-        if (WxlIniGetBool("EagerPreload", "Creatures", true))
++        const bool eagerCreatures = WxlIniGetBool("EagerPreload", "Creatures", true);
++        CreatureLog("EagerPreload Creatures=%d (set [EagerPreload] Creatures=0 in WXLExtendedEquipment.ini to bake lazily on first request instead)", eagerCreatures ? 1 : 0);
++        if (eagerCreatures)
+             PreregisterSidecarCreatures();
+     }
+ 
+@@ -496,6 +495,8 @@ namespace wxl::scripts::creatureextension
+         }
+ 
+         // No texPath (only materialPatchSpec) -- creature texture rows are all TextureType-keyed.
++        CreatureLog("  bake begin: display=%u real='%s' (the last line of the log names the display in progress if the client crashes here)",
++                    displayId, pathIt->second.c_str());
+         char vModelPath[280] = {};
+         bool registered = VPathPopulateGlobal(pathIt->second.c_str(), displayId, nullptr, matSpec,
+                                                geoSpec ? geoSpec->ids : nullptr,
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index 160460f..b824d3e 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -1,13 +1,16 @@
+ #include "Engine/Source/WXLEquip/Equip.h"
+ 
+ #include "Engine/Source/BlizzardCore/SFile2-Core.h"
++#include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLEquip/CreatureExtension.hpp"
+ #include "Engine/Source/WXLEquip/EquipExtension.hpp"
+-#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
++#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+ 
+ #include <cstdint>
++#include <cstdio>
+ #include <vector>
+ 
+ namespace wxl::equip
+@@ -15,34 +18,87 @@ namespace wxl::equip
+     namespace
+     {
+         // Reads a whole file through the client's own open/size/read/close, the same calls the game uses.
++        // Tries archives only first (the injected build's behaviour), then archives plus loose files under
++        // Data\ (open flag 1), so a sidecar dropped loose into the client folder is found too.
+         bool ReadThroughSFile(const char* name, std::vector<uint8_t>& out)
+         {
+-            SFileImpl* file = nullptr;
+-            if (!SFile::OpenEx(nullptr, name, 0, &file) || !file) return false;
++            for (uint32_t flags = 0; flags <= 1; ++flags)
++            {
++                SFileImpl* file = nullptr;
++                if (!SFile::OpenEx(nullptr, name, flags, &file) || !file) continue;
+ 
+-            uint32_t sizeHigh = 0;
+-            const uint32_t size = SFileGetFileSize(file, &sizeHigh);
+-            bool ok = false;
++                uint32_t sizeHigh = 0;
++                const uint32_t size = SFileGetFileSize(file, &sizeHigh);
++                bool ok = false;
+ 
+-            if (size > 0 && sizeHigh == 0)
+-            {
+-                out.resize(size);
+-                uint32_t got = 0;
+-                ok = SFileReadFile(file, out.data(), size, &got, nullptr, 0) && got == size;
+-                if (!ok) out.clear();
++                if (size > 0 && sizeHigh == 0)
++                {
++                    out.resize(size);
++                    uint32_t got = 0;
++                    ok = SFileReadFile(file, out.data(), size, &got, nullptr, 0) && got == size;
++                    if (!ok)
++                    {
++                        wxl::LogCat("EQUIP", "native read of '%s' opened (flags=%u) but read failed: size=%u got=%u",
++                                    name, flags, size, got);
++                        out.clear();
++                    }
++                }
++                else
++                {
++                    wxl::LogCat("EQUIP", "native read of '%s' opened (flags=%u) but size is %u (high=%u): treated as empty",
++                                name, flags, size, sizeHigh);
++                }
++
++                SFileCloseFile(file);
++                if (ok) return true;
+             }
++            return false;
++        }
+ 
+-            SFileCloseFile(file);
+-            return ok;
++        // Where do the sidecars live right now? Answers "does it actually see my CSVs" before any model
++        // loads. Only the working directory can be checked this early: game archives are not mounted yet.
++        void ReportSidecarsOnDisk()
++        {
++            static const char* const kNames[] = {
++                "WXLItemDisplayModels.csv", "WXLItemDisplayModelMaterials.csv",
++                "WXLWeaponModels.csv",      "WXLWeaponTextures.csv",
++                "WXLCreatureModels.csv",    "WXLCreatureTextures.csv",
++            };
++            wxl::LogCat("SIDECAR", "working directory: %s", wxl::WorkingDirectory());
++            for (const char* name : kNames)
++            {
++                char path[512];
++                std::snprintf(path, sizeof(path), "%s", name);
++                bool found = false;
++                for (int pass = 0; pass < 2 && !found; ++pass)
++                {
++                    if (pass == 1) std::snprintf(path, sizeof(path), "DBFilesClient\\%s", name);
++                    if (FILE* f = std::fopen(path, "rb"))
++                    {
++                        std::fseek(f, 0, SEEK_END);
++                        const long size = std::ftell(f);
++                        std::fclose(f);
++                        wxl::LogCat("SIDECAR", "  %-34s found on disk as '%s' (%ld bytes)", name, path, size);
++                        found = true;
++                    }
++                }
++                if (!found)
++                    wxl::LogCat("SIDECAR", "  %-34s not in the working directory (it may still be inside a game archive or a Data\\*.MPQ folder: see the per-file lines at first model load)", name);
++            }
+         }
+     }
+ 
+     void Init()
+     {
++        wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and extensions");
+         wxl::storage::SetNativeReader(&ReadThroughSFile);
+         wxl::scripts::equipextension::VPathRegister();
+         wxl::scripts::equipextension::Create();
+         wxl::scripts::weaponextension::Create();
+         wxl::scripts::creatureextension::Create();
++        ReportSidecarsOnDisk();
++
++        // One glance at which events have handlers; "fired" counts follow once the game reaches each hook.
++        wxl::events::DumpStats();
+     }
+ }
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index a384f85..c22c4a9 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -198,36 +198,11 @@ namespace wxl::scripts::equipextension
+ 
+     // ─── Debug logging ───────────────────────────────────────────────────────────
+ 
+-    static bool EquipLogEnabled() noexcept
+-    {
+-        static int enabled = []() noexcept -> int {
+-#pragma warning(suppress: 4996)
+-            const char* env = std::getenv("WXL_EQUIP_LOG");
+-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
+-                return 1;
+-
+-#pragma warning(suppress: 4996)
+-            FILE* flag = std::fopen("WarcraftXL_equip.log.enable", "rb");
+-            if (!flag) return 0;
+-            std::fclose(flag);
+-            return 1;
+-        }();
+-        return enabled != 0;
+-    }
+-
+-    // Verbose equip diagnostics are opt-in. They touch very hot model/skin/per-frame paths, and opening
+-    // + flushing the log for every line can dominate frame time on HD-equipment-heavy scenes.
+     static void EquipLog(const char* fmt, ...) noexcept
+     {
+-        if (!EquipLogEnabled()) return;
+-#pragma warning(suppress: 4996)
+-        FILE* f = std::fopen("WarcraftXL_equip.log", "a");
+-        if (!f) return;
+         va_list ap; va_start(ap, fmt);
+-        std::vfprintf(f, fmt, ap);
++        wxl::LogCatV("EQUIP", fmt, ap);
+         va_end(ap);
+-        std::fputc('\n', f);
+-        std::fclose(f);
+     }
+ 
+     static bool SameAttachModelGroup(const AttachEntry& a, const AttachEntry& b) noexcept
+@@ -966,11 +941,17 @@ namespace wxl::scripts::equipextension
+             while (std::fgets(line, sizeof(line), f))
+                 lines.emplace_back(line);
+             std::fclose(f);
++            EquipLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
+             return !lines.empty();
+         }
+ 
+         std::vector<uint8_t> raw;
+-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
++        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
++        {
++            EquipLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
++                path, wxl::WorkingDirectory());
++            return false;
++        }
+         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
+         const bool ok = true;
+         if (!ok) return false;
+@@ -984,6 +965,7 @@ namespace wxl::scripts::equipextension
+             lines.push_back(line);
+             start = i + 1;
+         }
++        EquipLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
+         return !lines.empty();
+     }
+ 
+@@ -993,6 +975,11 @@ namespace wxl::scripts::equipextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            EquipLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay = FindCsvColumn(header, "DisplayID");
+         const int cSlot = FindCsvColumn(header, "Slot");
+         int cModel = FindCsvColumn(header, "Model");
+@@ -1051,8 +1038,9 @@ namespace wxl::scripts::equipextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            EquipLog("sidecar loaded '%s' rows=%u", path, loaded);
++        EquipLog("sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     static void LoadMaterialSidecarFile(const char* path)
+@@ -1061,6 +1049,11 @@ namespace wxl::scripts::equipextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            EquipLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay = FindCsvColumn(header, "DisplayID");
+         const int cModelIndex = FindCsvColumn(header, "ModelIndex");
+         const int cModelColumn = FindCsvColumn(header, "ModelColumn");
+@@ -1108,8 +1101,9 @@ namespace wxl::scripts::equipextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            EquipLog("material sidecar loaded '%s' rows=%u", path, loaded);
++        EquipLog("material sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     // WXLItemEntryDisplay.csv / LoadItemDisplaySidecarFile (ItemEntry -> DisplayID -> Folder,
+@@ -1655,6 +1649,8 @@ namespace wxl::scripts::equipextension
+             EquipLog("  Phase3[%zu] attach=%u rctx=0x%p subObj_initFlags=0x%X isCollection=%d",
+                      i, e.attachId, rctx, subInitFlags, (int)isCollection);
+             eng::AttachToScene(rctx, subObj, e.attachId, isCollection);
++            EquipLog("  Phase3[%zu] attached: child flags=0x%X shared=0x%p parent flags=0x%X (child bit 0x40000 = force-attached collection)",
++                     i, eng::ModelFlags(rctx), eng::ModelShared(rctx), eng::ModelFlags(subObj));
+ 
+ //            void* nativeParent = NativeParentGuarded(rctx);
+             BoneRemap remap = BuildBoneRemapGuarded(rctx, subObj);
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index 77eb762..7cd1828 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -22,6 +22,7 @@
+ 
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ 
++#include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLEquip/M2Format.hpp"
+ 
+@@ -43,34 +44,11 @@ namespace wxl::scripts::equipextension
+ {
+     namespace
+     {
+-        static bool EquipLogEnabled() noexcept
+-        {
+-            static int enabled = []() noexcept -> int {
+-#pragma warning(suppress: 4996)
+-                const char* env = std::getenv("WXL_EQUIP_LOG");
+-                if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
+-                    return 1;
+-
+-#pragma warning(suppress: 4996)
+-                FILE* flag = std::fopen("WarcraftXL_equip.log.enable", "rb");
+-                if (!flag) return 0;
+-                std::fclose(flag);
+-                return 1;
+-            }();
+-            return enabled != 0;
+-        }
+-
+         static void VPathLog(const char* fmt, ...) noexcept
+         {
+-            if (!EquipLogEnabled()) return;
+-#pragma warning(suppress: 4996)
+-            FILE* f = std::fopen("WarcraftXL_equip.log", "a");
+-            if (!f) return;
+             va_list ap; va_start(ap, fmt);
+-            std::vfprintf(f, fmt, ap);
++            wxl::LogCatV("VPATH", fmt, ap);
+             va_end(ap);
+-            std::fputc('\n', f);
+-            std::fclose(f);
+         }
+         // Guards every table below. The injected build documented these as main-thread-only, but the
+         // client opens model files from loader threads, and VirtualProvide runs inside that open.
+@@ -366,7 +344,10 @@ namespace wxl::scripts::equipextension
+             // files and archives resolve exactly as for the game itself. Our own provider sees this
+             // open too and must not, and does not, claim a real path.
+             out.clear();
+-            return wxl::storage::ReadNative(path, out) && !out.empty();
++            const bool ok = wxl::storage::ReadNative(path, out) && !out.empty();
++            if (!ok)
++                VPathLog("ReadGameFile('%s') FAILED: the source model/skin could not be read from the game files", path);
++            return ok;
+         }
+ 
+         // Derives the real skin path: strip extension (.m2 or .mdx), append 00.skin.
+diff --git a/Engine/Source/WXLEquip/WeaponExtension.cpp b/Engine/Source/WXLEquip/WeaponExtension.cpp
+index d331bf7..ae330ee 100644
+--- a/Engine/Source/WXLEquip/WeaponExtension.cpp
++++ b/Engine/Source/WXLEquip/WeaponExtension.cpp
+@@ -17,6 +17,7 @@
+ #include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ #include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXL/Storage.h"
+ 
+ #include <windows.h>
+@@ -46,34 +47,11 @@ namespace wxl::scripts::weaponextension
+     // ─── Logging ────────────────────────────────────────────────────────────────
+     // Same opt-in-file-log shape as EquipExtension's EquipLog / CreatureExtension's CreatureLog,
+     // kept separate (own env var, own log file) so enabling one doesn't spam the others.
+-    static bool WeaponLogEnabled() noexcept
+-    {
+-        static int enabled = []() noexcept -> int {
+-#pragma warning(suppress: 4996)
+-            const char* env = std::getenv("WXL_WEAPON_LOG");
+-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
+-                return 1;
+-
+-#pragma warning(suppress: 4996)
+-            FILE* flag = std::fopen("WarcraftXL_weapon.log.enable", "rb");
+-            if (!flag) return 0;
+-            std::fclose(flag);
+-            return 1;
+-        }();
+-        return enabled != 0;
+-    }
+-
+     static void WeaponLog(const char* fmt, ...) noexcept
+     {
+-        if (!WeaponLogEnabled()) return;
+-#pragma warning(suppress: 4996)
+-        FILE* f = std::fopen("WarcraftXL_weapon.log", "a");
+-        if (!f) return;
+         va_list ap; va_start(ap, fmt);
+-        std::vfprintf(f, fmt, ap);
++        wxl::LogCatV("WEAPON", fmt, ap);
+         va_end(ap);
+-        std::fputc('\n', f);
+-        std::fclose(f);
+     }
+ 
+     // ─── CSV helpers ────────────────────────────────────────────────────────────
+@@ -183,11 +161,17 @@ namespace wxl::scripts::weaponextension
+             while (std::fgets(line, sizeof(line), f))
+                 lines.emplace_back(line);
+             std::fclose(f);
++            WeaponLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
+             return !lines.empty();
+         }
+ 
+         std::vector<uint8_t> raw;
+-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
++        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
++        {
++            WeaponLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
++                path, wxl::WorkingDirectory());
++            return false;
++        }
+         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
+         const bool ok = true;
+         if (!ok) return false;
+@@ -201,6 +185,7 @@ namespace wxl::scripts::weaponextension
+             lines.push_back(line);
+             start = i + 1;
+         }
++        WeaponLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
+         return !lines.empty();
+     }
+ 
+@@ -334,6 +319,11 @@ namespace wxl::scripts::weaponextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            WeaponLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay = FindCsvColumn(header, "DisplayID");
+         const int cModel1  = FindCsvColumn(header, "Model1Path");
+         const int cModel2  = FindCsvColumn(header, "Model2Path"); // optional -- blank column is fine
+@@ -387,8 +377,9 @@ namespace wxl::scripts::weaponextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            WeaponLog("weapon model sidecar loaded '%s' rows=%u", path, loaded);
++        WeaponLog("weapon model sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     static void LoadWeaponTextureSidecarFile(const char* path)
+@@ -397,6 +388,11 @@ namespace wxl::scripts::weaponextension
+         if (!ReadSidecarLines(path, lines)) return;
+ 
+         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
++        {
++            std::string headerText = lines[0];
++            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
++            WeaponLog("sidecar '%s' header: %s", path, headerText.c_str());
++        }
+         const int cDisplay = FindCsvColumn(header, "DisplayID");
+         const int cColumn  = FindCsvColumn(header, "ModelColumn");
+         const int cTexType = FindCsvColumn(header, "TextureType");
+@@ -442,8 +438,9 @@ namespace wxl::scripts::weaponextension
+             ++loaded;
+         }
+ 
+-        if (loaded)
+-            WeaponLog("weapon texture sidecar loaded '%s' rows=%u", path, loaded);
++        WeaponLog("weapon texture sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
++            lines.size() - 1 - loaded,
++            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
+     }
+ 
+     // Forward decl: full definition sits after BuildWeaponMaterialPatchSpec (needs it), but must be

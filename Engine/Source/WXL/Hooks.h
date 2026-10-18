@@ -23,6 +23,7 @@ namespace wxl::events
         EmitOnExit(Event e, const Args& args) : m_event(e), m_args(args) {}
         ~EmitOnExit()
         {
+            NoteFired(m_event);
             if (Any(m_event)) Emit(m_event, &m_args);
         }
         EmitOnExit(const EmitOnExit&)            = delete;
@@ -37,6 +38,7 @@ namespace wxl::events
     template <class Args>
     inline void EmitIfAny(Event e, const Args& args)
     {
+        NoteFired(e);
         if (Any(e)) Emit(e, &args);
     }
 }

@@ -20,6 +20,7 @@
 #include "Engine/Source/Tempest/C2Vector.h"
 #include <vector>
 #include "Engine/Source/WXL/Blp.h"
+#include "Engine/Source/WXL/Log.h"
 
 // STATIC: 0x009F1028
 static const uint16_t s_pixelFormatBytesPerBlock[NUM_PIXEL_FORMATS] = { 8, 16, 0, 0, 0, 0, 0, 16, 0, 0 };
@@ -1772,13 +1773,16 @@ int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
     // WXL: offer the file to the BLP pipeline (palettizes DXT character components). Declared before
     // `image` so the replacement buffer outlives the parsed image that points into it.
     std::vector<uint8_t> wxlBlp;
-    if (wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp)) {
+    const bool wxlTransformed = wxl::blp::TransformForLoad(texture->m_filename, data, wxlBlp);
+    if (wxlTransformed) {
         data = wxlBlp.data();
     }
 
     CBLPFile image;
 
     if (!image.Source(data)) {
+        wxl::LogCat("BLP", "load FAILED at header validation: '%s' (WXL-transformed=%d). The client rejects it as an invalid BLP version/magic",
+                    texture->m_filename, wxlTransformed ? 1 : 0);
         texture->m_status.Add(STATUS_FATAL, "BLP Texture failure: \"%s\" invalid file version\n", texture->m_filename);
         return 0;
     }
@@ -1807,6 +1811,12 @@ int32_t PumpBlpTextureAsync(CTexture* texture, void* data) {
 
     if (!image.LockChain2(texture->m_filename, pixelFormat, s_mipBits, texture->m_bestMip, 1)) {
         s_pumping = 0;
+        wxl::LogCat("BLP", "load FAILED at decompression: '%s' (WXL-transformed=%d) colorEncoding=%u alphaSize=%u preferredFormat=%u hasMips=0x%X %ux%u -> pixelFormat=%d",
+                    texture->m_filename, wxlTransformed ? 1 : 0,
+                    static_cast<uint32_t>(image.m_header.m_colorEncoding), static_cast<uint32_t>(image.m_header.m_alphaSize),
+                    static_cast<uint32_t>(image.m_header.m_preferredFormat), static_cast<uint32_t>(image.m_header.m_hasMips),
+                    static_cast<uint32_t>(image.m_header.m_width), static_cast<uint32_t>(image.m_header.m_height),
+                    static_cast<int>(pixelFormat));
         texture->m_status.Add(STATUS_FATAL, "BLP Texture failure: \"%s\" decompression failed.\n", texture->m_filename);
         return 0;
     }

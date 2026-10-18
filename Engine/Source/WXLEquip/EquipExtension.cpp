@@ -198,36 +198,11 @@ namespace wxl::scripts::equipextension
 
     // ─── Debug logging ───────────────────────────────────────────────────────────
 
-    static bool EquipLogEnabled() noexcept
-    {
-        static int enabled = []() noexcept -> int {
-#pragma warning(suppress: 4996)
-            const char* env = std::getenv("WXL_EQUIP_LOG");
-            if (env && *env && *env != '0' && *env != 'n' && *env != 'N')
-                return 1;
-
-#pragma warning(suppress: 4996)
-            FILE* flag = std::fopen("WarcraftXL_equip.log.enable", "rb");
-            if (!flag) return 0;
-            std::fclose(flag);
-            return 1;
-        }();
-        return enabled != 0;
-    }
-
-    // Verbose equip diagnostics are opt-in. They touch very hot model/skin/per-frame paths, and opening
-    // + flushing the log for every line can dominate frame time on HD-equipment-heavy scenes.
     static void EquipLog(const char* fmt, ...) noexcept
     {
-        if (!EquipLogEnabled()) return;
-#pragma warning(suppress: 4996)
-        FILE* f = std::fopen("WarcraftXL_equip.log", "a");
-        if (!f) return;
         va_list ap; va_start(ap, fmt);
-        std::vfprintf(f, fmt, ap);
+        wxl::LogCatV("EQUIP", fmt, ap);
         va_end(ap);
-        std::fputc('\n', f);
-        std::fclose(f);
     }
 
     static bool SameAttachModelGroup(const AttachEntry& a, const AttachEntry& b) noexcept
@@ -966,11 +941,17 @@ namespace wxl::scripts::equipextension
             while (std::fgets(line, sizeof(line), f))
                 lines.emplace_back(line);
             std::fclose(f);
+            EquipLog("sidecar '%s': found on disk (%zu lines)", path, lines.size());
             return !lines.empty();
         }
 
         std::vector<uint8_t> raw;
-        if (!wxl::storage::ReadNative(path, raw) || raw.empty()) return false;
+        if (!wxl::storage::ReadNative(path, raw) || raw.empty())
+        {
+            EquipLog("sidecar '%s': NOT FOUND (not on disk relative to working dir '%s', not in game archives)",
+                path, wxl::WorkingDirectory());
+            return false;
+        }
         std::string bytes(reinterpret_cast<const char*>(raw.data()), raw.size());
         const bool ok = true;
         if (!ok) return false;
@@ -984,6 +965,7 @@ namespace wxl::scripts::equipextension
             lines.push_back(line);
             start = i + 1;
         }
+        EquipLog("sidecar '%s': found in game archives (%zu lines)", path, lines.size());
         return !lines.empty();
     }
 
@@ -993,6 +975,11 @@ namespace wxl::scripts::equipextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            EquipLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay = FindCsvColumn(header, "DisplayID");
         const int cSlot = FindCsvColumn(header, "Slot");
         int cModel = FindCsvColumn(header, "Model");
@@ -1051,8 +1038,9 @@ namespace wxl::scripts::equipextension
             ++loaded;
         }
 
-        if (loaded)
-            EquipLog("sidecar loaded '%s' rows=%u", path, loaded);
+        EquipLog("sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     static void LoadMaterialSidecarFile(const char* path)
@@ -1061,6 +1049,11 @@ namespace wxl::scripts::equipextension
         if (!ReadSidecarLines(path, lines)) return;
 
         const std::vector<std::string> header = ParseCsvLine(lines[0].c_str());
+        {
+            std::string headerText = lines[0];
+            while (!headerText.empty() && (headerText.back() == '\r' || headerText.back() == '\n')) headerText.pop_back();
+            EquipLog("sidecar '%s' header: %s", path, headerText.c_str());
+        }
         const int cDisplay = FindCsvColumn(header, "DisplayID");
         const int cModelIndex = FindCsvColumn(header, "ModelIndex");
         const int cModelColumn = FindCsvColumn(header, "ModelColumn");
@@ -1108,8 +1101,9 @@ namespace wxl::scripts::equipextension
             ++loaded;
         }
 
-        if (loaded)
-            EquipLog("material sidecar loaded '%s' rows=%u", path, loaded);
+        EquipLog("material sidecar '%s': data rows=%zu loaded=%u skipped=%zu%s", path, lines.size() - 1, loaded,
+            lines.size() - 1 - loaded,
+            loaded ? "" : "   <-- NOTHING LOADED: check the header column names and the row values");
     }
 
     // WXLItemEntryDisplay.csv / LoadItemDisplaySidecarFile (ItemEntry -> DisplayID -> Folder,
@@ -1655,6 +1649,8 @@ namespace wxl::scripts::equipextension
             EquipLog("  Phase3[%zu] attach=%u rctx=0x%p subObj_initFlags=0x%X isCollection=%d",
                      i, e.attachId, rctx, subInitFlags, (int)isCollection);
             eng::AttachToScene(rctx, subObj, e.attachId, isCollection);
+            EquipLog("  Phase3[%zu] attached: child flags=0x%X shared=0x%p parent flags=0x%X (child bit 0x40000 = force-attached collection)",
+                     i, eng::ModelFlags(rctx), eng::ModelShared(rctx), eng::ModelFlags(subObj));
 
 //            void* nativeParent = NativeParentGuarded(rctx);
             BoneRemap remap = BuildBoneRemapGuarded(rctx, subObj);
