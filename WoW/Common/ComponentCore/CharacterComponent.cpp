@@ -49,6 +49,7 @@
 #include "WoW/Source/DB/Rec/ParticleColorRec.h"
 #include "WoW/Source/Object/ObjectClient/Player_C.h"
 #include "Engine/Source/WXL/Hooks.h"
+#include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/HandItem.h"
 
 // STATIC: 0x009F6A00
@@ -2181,6 +2182,11 @@ GEOCOMPONENTLINKS CCharacterComponent::AddHandItem(CM2Model* model, const ItemDi
 
     CCharacterComponent::AddLink(model, link, s_path, s_path2, itemVisual ? itemVisual : displayRec->m_itemVisual, displayRec);
 
+    // WXL: the held item is attached; modules that replace or post-process it (offhand mirroring) react here.
+    wxl::events::EmitIfAny(wxl::events::Event::OnHandItemAttached,
+        wxl::events::HandItemAttachedArgs{ model, static_cast<uint32_t>(invSlot), static_cast<int32_t>(link),
+                                           static_cast<uint32_t>(displayRec->m_id), sheathed, false });
+
     return link;
 }
 
@@ -2215,6 +2221,10 @@ void CCharacterComponent::RemoveVisuals(CM2Model* model) {
 // VERIFY: eec03863 manual
 // OFFSET: 0x004EB070
 void CCharacterComponent::RemoveHandItem(CM2Model* model, INVENTORY_SLOTS invSlot, SHEATHE_TYPE sheatheType, bool shield) {
+    // WXL: lets modules forget per-item state tied to the instance that is about to be detached.
+    wxl::events::EmitIfAny(wxl::events::Event::OnHandItemAttached,
+        wxl::events::HandItemAttachedArgs{ model, static_cast<uint32_t>(invSlot), -1, 0u, false, true });
+
     if (!model || static_cast<uint32_t>(invSlot - INVSLOT_BACK) > 4) {
         return;
     }

@@ -134,4 +134,33 @@ namespace wxl::equip::eng
         CStatus status;
         return TextureCreate(path, flags, &status, 0);
     }
+
+    // --- Animation sequence control (used by the equip animation sync) ---
+
+    /// True when the model's own animation set carries sequence id (0x00825EE0, CM2Model::HasSequence).
+    /// Like the native it waits for the model to finish loading first.
+    inline bool HasSequence(void* model, uint32_t sequenceId)
+    {
+        return model && static_cast<CM2Model*>(model)->HasSequence(sequenceId) != 0;
+    }
+    /// The sequence id currently assigned to a bone; boneId 0xFFFFFFFF means the root/primary bone
+    /// (0x008267E0, CM2Model::GetBoneSequenceId).
+    inline uint32_t GetBoneSequenceId(void* model, uint32_t boneId)
+    {
+        return static_cast<CM2Model*>(model)->GetBoneSequenceId(boneId);
+    }
+    /// Starts a sequence on a bone (0x00832AB0, CM2Model::SetBoneSequence). Argument names follow the decomp:
+    /// variation (0xFFFFFFFF = pick randomly), start time offset, playback speed, blend flag, primary flag.
+    inline void SetBoneSequence(void* model, uint32_t boneId, uint32_t sequenceId, uint32_t variation,
+                                uint32_t time, float speed, int32_t blend, int32_t primary)
+    {
+        static_cast<CM2Model*>(model)->SetBoneSequence(boneId, sequenceId, variation, time, speed, blend, primary);
+    }
+    /// The sequence start anchor (absolute clock, ms) of bone 0: the engine rewrites it every time it (re-)arms a
+    /// sequence on that bone, including a same-id loop restart. Null-safe: 0 before the bone block exists.
+    inline int32_t SeqStartAnchor(void* model)
+    {
+        CM2Model* m = static_cast<CM2Model*>(model);
+        return (m && m->m_bones) ? static_cast<int32_t>(m->m_bones[0].m_sequence.m_startTime) : 0;
+    }
 }

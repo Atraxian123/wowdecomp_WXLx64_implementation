@@ -87,6 +87,7 @@ namespace wxl::events
             case Event::OnBuildBonePalette:  return "OnBuildBonePalette";
             case Event::OnItemSlotChange:    return "OnItemSlotChange";
             case Event::OnItemSlotClear:     return "OnItemSlotClear";
+            case Event::OnHandItemAttached:  return "OnHandItemAttached";
             default:                         return "Event#?";
         }
     }
@@ -110,7 +111,7 @@ namespace wxl::events
         if (n <= 3)
             wxl::LogCat("EVENT", "%s fired #%u (subscribers=%u)", EventName(e), n, SubscriberCount(e));
 
-        const bool rare = e == Event::OnItemSlotChange || e == Event::OnItemSlotClear;
+        const bool rare = e == Event::OnItemSlotChange || e == Event::OnItemSlotClear || e == Event::OnHandItemAttached;
         if ((rare && n <= 6) || (e == Event::OnM2PerFrameUpdate && n % 50000 == 0))
             DumpStats();
     }

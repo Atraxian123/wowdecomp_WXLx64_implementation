@@ -170,13 +170,40 @@ namespace wxl::scripts::equipextension
                              bool evictable = false,
                              char* outVirtualPath = nullptr, size_t outVirtualPathSz = 0,
                              const char* evictionPool = "Creature",
-                             bool forceBake = false);
+                             bool forceBake = false,
+                             bool mirrorAcrossY = false,
+                             const char* keySuffix = nullptr);
     // forceBake: bypasses the "nothing to change" guard (normally, a call with no texPath, no
     // materialPatchSpec, and no geoset filter is a no-op, since there'd be nothing to actually
     // patch versus just naming the real file directly). Set true when the caller's whole reason for
     // baking is to serve a DIFFERENT real file under its own virtual key -- e.g. an offhand-mirrored
     // weapon model with identical textures to its mainhand counterpart -- where the point isn't to
     // patch anything, just to mint a distinct virtual name pointing at different bytes on disk.
+    // mirrorAcrossY: applies a geometric Y-axis mirror to the read bytes before they're registered --
+    // VirtualPath.cpp's MirrorModelBytes (vertex positions/normals, bone pivots + every
+    // translation/rotation keyframe, attachment points, bounding volumes) on the .m2, and
+    // MirrorSkinWinding (reverses each triangle's last two indices, undoing the backface-culling
+    // flip a single-axis mirror otherwise causes) on the .skin, if one was read. Fails (returns
+    // false, nothing registered) if either mirror step fails its own internal bounds/format checks --
+    // this never silently registers a half-mirrored or unmirrored result. Default false: every
+    // existing caller is unaffected; WeaponExtension.cpp's BakeWeaponDisplayOffhand is the only
+    // caller that ever passes true, driven by WXLWeaponModels.csv's NoAutoMirror column (opt-in,
+    // despite the name -- see WeaponModelPaths::mirrorOffhand's own doc comment for the naming
+    // history).
+    // keySuffix: optional string (e.g. "_oh") inserted into the virtual key right after the model's
+    // stem, before the "_<itemDisplayId>" piece and extension (see BuildGlobalVirtualKey in
+    // VirtualPath.cpp), so the resulting vkey is distinct from the plain <stem>_<itemDisplayId>.m2
+    // form even when realMdxPath and itemDisplayId exactly match some other call's. MUST be
+    // lowercase -- VirtualProvide normalizes every incoming client request to lowercase before
+    // lookup, but the stored key is never re-normalized after this call builds it, so any uppercase
+    // character here produces a key the client can never actually match (silent MISS, model missing
+    // in-game, despite the bake itself succeeding). Default nullptr -- every existing caller keeps
+    // the original, unsuffixed key. WeaponExtension.cpp's BakeWeaponDisplayOffhand always passes
+    // "_oh" here, for BOTH the mirrored and non-mirrored offhand cases: without it, an OffhandPath
+    // row that names the exact same real file as the mainhand Model path for that displayId/column
+    // would derive the identical <stem>_<itemDisplayId>.m2 vkey as BakeWeaponDisplay's mainhand bake
+    // and silently collide with (and lose to, "first bake wins") whichever of the two bakes ran
+    // first.
 
     /**
      * @brief Reads/patches byteSourcePath's bytes like VPathPopulateGlobal, but derives the virtual

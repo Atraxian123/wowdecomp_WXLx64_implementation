@@ -243,17 +243,39 @@ namespace wxl::scripts::weaponextension
     {
         std::string path[2];        // [0]=Model1Path, [1]=Model2Path; empty string = column not in use
         std::string offhandPath[2]; // [0]=Model1OffhandPath, [1]=Model2OffhandPath; empty = no
-            // explicit hand-baked offhand model for this column -- BakeWeaponDisplayOffhand then
-            // has no offhand model at all -- auto-mirroring was removed (crashed on equip), so an
-            // explicit value here is now the only way a displayId/column gets an offhand bake.
-        bool noAutoMirror = false; // NoAutoMirror column: true suppresses the auto-mirror fallback
-            // above entirely for this displayId (offhandPath still wins if explicitly set). For
-            // items that are inherently offhand-only and never meant to be mirrored -- shields
-            // above all: a shield's Model1Path IS its offhand model already, there's no "mainhand
-            // shield" this would be mirroring FROM, and mirroring its emblem/boss/heraldry would
-            // just render it backwards for no reason. Defaults to false (auto-mirror stays on) so
-            // existing rows are unaffected; set true on any row that occupies the OffHand slot by
-            // its own nature rather than as a genuine mirrored dual-wield of a one-handed weapon.
+            // explicit hand-authored offhand model for this column. Does NOT by itself mean "no
+            // offhand bake at all" -- see mirrorOffhand just below: with it on, an empty
+            // offhandPath[] falls back to mirroring the MAINHAND model (path[]) into the offhand
+            // slot instead. With mirrorOffhand off, an empty offhandPath[] does mean "no offhand
+            // bake" -- the offhand slot simply keeps whatever the native client already attaches
+            // there (the mainhand model, verbatim).
+        bool mirrorOffhand = false; // NoAutoMirror column -- OPT-IN now, not opt-out (see below for
+            // why the column keeps its old name despite the inverted meaning). Combined with
+            // offhandPath[] above, this selects one of four behaviors for a given displayId/column:
+            //   offhandPath empty,  mirrorOffhand false -> offhand renders the mainhand model
+            //                                              verbatim (as if this row didn't exist)
+            //   offhandPath set,    mirrorOffhand false -> offhand renders offhandPath[] verbatim
+            //   offhandPath empty,  mirrorOffhand true  -> offhand renders path[] (mainhand),
+            //                                              Y-mirrored
+            //   offhandPath set,    mirrorOffhand true  -> offhand renders offhandPath[], Y-mirrored
+            // When a mirror does apply, it's a geometric Y-axis mirror (VirtualPath.cpp's
+            // MirrorModelBytes: vertex positions/normals, bone pivots/tracks, attachment points,
+            // bounding volumes) plus a .skin triangle-winding reversal (MirrorSkinWinding), applied
+            // to whichever model (offhandPath[] if set, otherwise path[]) is actually being baked
+            // for the offhand slot -- see BakeWeaponDisplayOffhand's own doc comment for the full
+            // case breakdown. Leave this false when a model already named here (offhandPath[] or,
+            // via fallback, path[]) is already correctly oriented for the offhand slot on its own
+            // (a genuinely separate hand-authored mirror asset, or an inherently-offhand item like
+            // a shield whose natural orientation would only look wrong if flipped).
+            //
+            // Naming history, for anyone diffing against an older sidecar: this column used to mean
+            // the opposite -- "true" suppressed a now-removed auto-mirror-from-mainhand fallback that
+            // ran by default. That fallback is gone, so the old meaning of "true" (suppress
+            // something) no longer applies to anything; "true" has been repurposed to mean "apply a
+            // Y-mirror to whichever model this row bakes for the offhand slot" instead. The CSV
+            // column name itself is
+            // left as "NoAutoMirror" (not renamed) to avoid a breaking sidecar-format change; only
+            // what "true" causes to happen has changed.
     };
     static std::unordered_map<uint32_t, WeaponModelPaths> g_sidecarWeaponModelPath;
 
@@ -347,9 +369,9 @@ namespace wxl::scripts::weaponextension
         const int cModel2Oh = FindCsvColumn(header, "Model2OffhandPath"); // WeaponModelPaths::offhandPath
         const int cGeoset1Oh = FindCsvColumn(header, "Geoset1Offhand");   // optional -- see
         const int cGeoset2Oh = FindCsvColumn(header, "Geoset2Offhand");   // WeaponGeosetSpecs::offhandSpec
-        const int cNoAutoMirror = FindCsvColumn(header, "NoAutoMirror");  // optional -- see
-            // WeaponModelPaths::noAutoMirror. Absent column = false for every row (unchanged
-            // behavior for CSVs written before this column existed).
+        const int cNoAutoMirror = FindCsvColumn(header, "AutoMirror");  // optional -- see
+            // WeaponModelPaths::mirrorOffhand's doc comment for this column's (inverted, opt-in)
+            // meaning. Absent column = false for every row, same as an explicit blank/false value.
 
         if (cDisplay < 0 || cModel1 < 0)
         {
@@ -400,7 +422,12 @@ namespace wxl::scripts::weaponextension
             if (cNoAutoMirror >= 0)
             {
                 const std::string v = NormalizeCsvName(CsvField(row, cNoAutoMirror));
-                entry.noAutoMirror = (v == "true" || v == "yes" || v == "1" || v == "shield");
+                // "shield" is deliberately NOT special-cased here anymore: under the old opt-out
+                // semantics it meant "this is a shield-like item, suppress the mirror-by-default
+                // fallback", which made sense when mirroring was the default. Under the new opt-in
+                // semantics the default (unset/false) already means "don't mirror", so a shield row
+                // needs no special value at all -- just leave the column blank.
+                entry.mirrorOffhand = (v == "true" || v == "yes" || v == "1");
             }
 
             g_sidecarWeaponModelPath.emplace(displayId, std::move(entry));
@@ -666,48 +693,151 @@ namespace wxl::scripts::weaponextension
     }
 
     // Offhand counterpart to BakeWeaponDisplay. Reads WeaponModelPaths::offhandPath /
-    // WeaponGeosetSpecs::offhandSpec instead of the mainhand columns. Auto-mirroring (generating a
-    // mirrored offhand model in-memory when WXLWeaponModels.csv gives no explicit
-    // Model1OffhandPath/Model2OffhandPath) has been removed -- it was crashing on equip. Only an
-    // explicit, author-supplied OffhandPath row is ever baked now; a displayId/column with no such
-    // row simply keeps whatever the native client already attaches at the offhand point.
-    // NoAutoMirror is therefore a no-op now (nothing left to suppress) but the column is left in
-    // WeaponModelPaths/the CSV parser for now in case auto-mirroring comes back later.
+    // WeaponGeosetSpecs::offhandSpec instead of the mainhand columns, gated on WeaponModelPaths::
+    // mirrorOffhand (the AutoMirror/NoAutoMirror CSV column). Four cases, driven by whether
+    // offhandPath[modelColumn] is set and whether mirrorOffhand is on:
+    //   1. No OffhandPath, AutoMirror off  -- this function does nothing (returns false); the
+    //      offhand slot keeps whatever the native client already attached there, i.e. the mainhand
+    //      model verbatim.
+    //   2. OffhandPath set, AutoMirror off -- the specified offhand model is baked (for its own
+    //      texture patch/geoset filter, if any) and attached completely unmirrored.
+    //   3. No OffhandPath, AutoMirror on   -- there's no separate offhand source to mirror, so this
+    //      mirrors the MAINHAND model (WeaponModelPaths::path[modelColumn]) into the offhand slot
+    //      instead.
+    //   4. OffhandPath set, AutoMirror on  -- the SPECIFIED offhand model is baked and then
+    //      Y-mirrored (never the mainhand model -- an explicit OffhandPath always wins as the
+    //      mirror source over falling back to mainhand).
+    // In every case that bakes anything (2/3/4), the geometric Y-mirror step itself (VirtualPath.cpp's
+    // MirrorModelBytes: vertex positions/normals, bone pivots/tracks, attachment points, bounding
+    // volumes) plus a .skin triangle-winding reversal (MirrorSkinWinding) only ever runs when
+    // mirrorOffhand is true -- see VPathPopulateGlobal's mirrorAcrossY parameter below.
     //
     // No longer uses VPathPopulateGlobalSharedKey: that mechanism existed only because, on the old
     // dbc-patch-only path, native code resolved BOTH hands from the SAME static ItemModelData.dbc
     // field, so a distinctly-keyed offhand bake was never actually read -- the offhand bytes had to
     // squat on the mainhand's own key. CharAddHandItemDetour (EquipExtension.cpp) now overrides
     // Model1 independently per hand at the runtime attach point instead, so that constraint is
-    // gone: offhand bakes under its OWN virtual key here (derived from offhandPath itself, via a
-    // plain VPathPopulateGlobal call), genuinely distinct from whatever mainhand's key is. This
-    // also means mainhand and offhand can safely be baked/evicted/rebaked independently, with
-    // neither able to silently clobber the other's registered bytes.
+    // gone: offhand bakes under its OWN virtual key here (derived from whichever real file is the
+    // actual mirror source -- offhandPath if set, otherwise mainhand path -- via a plain
+    // VPathPopulateGlobal call with keySuffix="_oh"), genuinely distinct from whatever mainhand's
+    // own key is. This also means mainhand and offhand can safely be baked/evicted/rebaked
+    // independently, with neither able to silently clobber the other's registered bytes.
+    // How an AutoMirror offhand is mirrored. Default (0): NOT in the baked bytes; EquipExtension mirrors the
+    // instance's bone palette every frame instead (ApplyOffhandAutoMirrorGuarded). Applying both would mirror
+    // twice and cancel out, so exactly one of the two runs. [Weapons] GeometricMirror=1 selects the old
+    // behaviour: mirror vertices, normals, bone data and triangle winding in the baked model (rewrites the
+    // model bytes, and was reported to crash on equip in one setup).
+    static bool GeometricMirror()
+    {
+        static const bool s_value = WxlIniGetBool("Weapons", "GeometricMirror", false);
+        return s_value;
+    }
+
     static bool BakeWeaponDisplayOffhand(uint32_t displayId, uint32_t modelColumn)
     {
         auto pathIt = g_sidecarWeaponModelPath.find(displayId);
         if (pathIt == g_sidecarWeaponModelPath.end()) return false;
         if (modelColumn > 1) return false;
 
-        if (pathIt->second.offhandPath[modelColumn].empty())
-        {
-            WeaponLog("  bake(offhand): display=%u column=%u no explicit OffhandPath -- "
-                      "auto-mirror removed, leaving native attach as-is", displayId, modelColumn);
-            return false;
-        }
-
         char matSpec[2048] = {};
         BuildWeaponMaterialPatchSpec(matSpec, sizeof(matSpec), displayId, modelColumn);
 
-        const WeaponGeosetSpec* geoSpec = nullptr;
         auto geoIt = g_sidecarWeaponGeoset.find(displayId);
+
+        if (pathIt->second.offhandPath[modelColumn].empty())
+        {
+            if (!pathIt->second.mirrorOffhand)
+            {
+                // Case 1: no OffhandPath, AutoMirror off -- nothing for this function to do. The
+                // offhand slot simply keeps whatever the native client already attached there,
+                // which for a plain mainhand-only weapon is the mainhand model verbatim (same file,
+                // same bytes, no baking involved at all).
+                WeaponLog("  bake(offhand): display=%u column=%u no OffhandPath, AutoMirror off -- "
+                          "leaving native attach as-is (renders mainhand verbatim)",
+                          displayId, modelColumn);
+                return false;
+            }
+
+            // Case 3: no OffhandPath, but AutoMirror IS on -- mirror the MAINHAND model itself into
+            // the offhand slot, since there's no separate offhand source to mirror instead. Reads
+            // from WeaponModelPaths::path[] (the mainhand real file), not offhandPath[] (empty
+            // here by definition of this branch).
+            if (pathIt->second.path[modelColumn].empty())
+            {
+                WeaponLog("  bake(offhand): display=%u column=%u AutoMirror on but no mainhand "
+                          "Model%uPath to mirror either -- nothing to bake",
+                          displayId, modelColumn, modelColumn + 1);
+                return false;
+            }
+
+            // Geoset filter: prefer an explicit offhand-specific filter if the sidecar happens to
+            // supply one even with no OffhandPath (unusual but not invalid), otherwise fall back to
+            // the mainhand column's own filter, since that's the geometry actually being mirrored.
+            const WeaponGeosetSpec* geoSpec = nullptr;
+            if (geoIt != g_sidecarWeaponGeoset.end())
+            {
+                if (geoIt->second.offhandSpec[modelColumn].count > 0)
+                    geoSpec = &geoIt->second.offhandSpec[modelColumn];
+                else if (geoIt->second.spec[modelColumn].count > 0)
+                    geoSpec = &geoIt->second.spec[modelColumn];
+            }
+
+            char vModelPath[280] = {};
+            // keySuffix="_oh" is required here too, for exactly the same reason as the explicit-
+            // OffhandPath case below: the source real path is the MAINHAND file, so without a
+            // distinguishing suffix this bake's vkey would collide with (and be shadowed by, or
+            // shadow) BakeWeaponDisplay's own mainhand bake for this exact displayId/column.
+            bool registered = VPathPopulateGlobal(pathIt->second.path[modelColumn].c_str(),
+                                                   displayId, nullptr, matSpec,
+                                                   geoSpec ? geoSpec->ids : nullptr,
+                                                   geoSpec ? geoSpec->count : 0,
+                                                   true, // evictable
+                                                   vModelPath, sizeof(vModelPath),
+                                                   "Weapon",
+                                                   true, // forceBake -- mirroring is itself the
+                                                         // reason to bake, even with no tex/geoset
+                                                         // change to patch
+                                                   GeometricMirror(), // mirrorAcrossY: see GeometricMirror(); the
+                                                         // render-time mirror covers the default
+                                                   "_oh");
+            WeaponLog("  bake(offhand): display=%u column=%u AutoMirror-from-mainhand real='%s' "
+                      "vpath='%s' spec='%s' geoCount=%u registered=%d",
+                      displayId, modelColumn, pathIt->second.path[modelColumn].c_str(), vModelPath,
+                      matSpec, geoSpec ? geoSpec->count : 0u, registered ? 1 : 0);
+
+            if (registered && vModelPath[0])
+            {
+                g_offhandVirtualPath[OffhandCacheKey(displayId, modelColumn)] = vModelPath;
+                return true;
+            }
+            return false;
+        }
+
+        // Cases 2 and 4: an explicit OffhandPath row exists. mirrorOffhand (checked further down,
+        // via the `mirror` local) decides between rendering it verbatim (case 2) or Y-mirroring it
+        // (case 4) -- either way the SPECIFIED offhand model is what gets baked, never the mainhand
+        // model.
+        const WeaponGeosetSpec* geoSpec = nullptr;
         if (geoIt != g_sidecarWeaponGeoset.end() && geoIt->second.offhandSpec[modelColumn].count > 0)
             geoSpec = &geoIt->second.offhandSpec[modelColumn];
 
+        const bool mirror = pathIt->second.mirrorOffhand;
+
         char vModelPath[280] = {};
         // Keyed from the OFFHAND path itself now (not the mainhand's), so its virtual name is
-        // naturally distinct from BakeWeaponDisplay's mainhand bake for the same displayId/column
-        // -- different real source file in, different vkey out, no key collision possible.
+        // usually already distinct from BakeWeaponDisplay's mainhand bake for the same
+        // displayId/column just from having a different real source file. BUT offhandPath[] is
+        // commonly the exact same real file as the mainhand Model path (the common
+        // repeats-mainhand-plus-mirror-flag case this whole function exists for) -- and
+        // VPathPopulateGlobal's vkey is derived from (real path, displayId) alone, with no baked-in
+        // notion of "hand". Mirroring doesn't change that: it only changes what's done to the bytes
+        // AFTER the same vkey is derived, not which file is read or what key that file maps to. So
+        // without the explicit keySuffix passed below, an identical-path offhand row would silently
+        // collide with the mainhand bake's own vkey ("first bake wins" -- see VPathPopulateGlobal's
+        // doc comment) and the offhand would end up rendering the mainhand's bytes instead of its
+        // own. Passing keySuffix="_oh" here mints this bake under its own distinct vkey in every
+        // case -- mirrored or not, identical source file or not -- so it can never be shadowed by or
+        // shadow the mainhand bake.
         // forceBake=true: the point of this call is to mint a distinct virtual name pointing at
         // the offhand's own model bytes even when there's no texture/geoset change to actually
         // patch (see VPathPopulateGlobal's own forceBake doc comment, which describes this exact
@@ -719,11 +849,22 @@ namespace wxl::scripts::weaponextension
                                                true, // evictable -- WeaponLazyResolve rebakes on miss
                                                vModelPath, sizeof(vModelPath),
                                                "Weapon",
-                                               true); // forceBake
+                                               true,   // forceBake
+                                               mirror && GeometricMirror(), // mirrorAcrossY -- see GeometricMirror(), WeaponModelPaths::
+                                                        // mirrorOffhand's own doc comment
+                                               "_oh"); // keySuffix -- keeps this offhand bake's vkey
+                                                        // distinct from BakeWeaponDisplay's mainhand
+                                                        // bake for the same displayId/column even
+                                                        // when OffhandPath names the exact same real
+                                                        // file as the mainhand Model path (both the
+                                                        // mirror=true and mirror=false cases: the
+                                                        // collision risk is in the real-path+displayId
+                                                        // key shape, not in whether a mirror step ran)
         WeaponLog("  bake(offhand): display=%u column=%u real='%s' vpath='%s' spec='%s' "
-                  "geoCount=%u registered=%d",
+                  "geoCount=%u mirror=%d registered=%d",
                   displayId, modelColumn, pathIt->second.offhandPath[modelColumn].c_str(),
-                  vModelPath, matSpec, geoSpec ? geoSpec->count : 0u, registered ? 1 : 0);
+                  vModelPath, matSpec, geoSpec ? geoSpec->count : 0u, mirror ? 1 : 0,
+                  registered ? 1 : 0);
 
         if (registered && vModelPath[0])
         {
@@ -733,8 +874,15 @@ namespace wxl::scripts::weaponextension
         return false;
     }
 
-    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz)
+    bool WeaponMirrorIsGeometric()
     {
+        return GeometricMirror();
+    }
+
+    bool WeaponGetOffhandVirtualPath(uint32_t displayId, uint32_t column, char* out, size_t outSz,
+                                      bool* outAutoMirrored)
+    {
+        if (outAutoMirrored) *outAutoMirrored = false;
         if (!out || outSz == 0 || column > 1) return false;
         LoadWeaponSidecar(); // no-op after the first call; guards against this being called before
                               // WeaponExtension's own OnModelLoadPre has ever fired
@@ -751,6 +899,20 @@ namespace wxl::scripts::weaponextension
         if (it == g_offhandVirtualPath.end()) return false;
         if (it->second.size() >= outSz) return false;
         std::memcpy(out, it->second.c_str(), it->second.size() + 1);
+
+        // outAutoMirrored reflects the row's own mirrorOffhand (the NoAutoMirror/AutoMirror CSV
+        // column) flag -- true means the bytes just copied above were geometrically Y-mirrored by
+        // BakeWeaponDisplayOffhand (VirtualPath.cpp's MirrorModelBytes/MirrorSkinWinding) before
+        // being cached; false means offhandPath's model was baked and attached unmodified. Read
+        // directly off the sidecar row rather than a separate tracked set, since mirrorOffhand is
+        // already the single source of truth BakeWeaponDisplayOffhand itself consulted to decide
+        // whether to mirror in the first place -- nothing else can disagree with it.
+        if (outAutoMirrored)
+        {
+            auto pathIt = g_sidecarWeaponModelPath.find(displayId);
+            if (pathIt != g_sidecarWeaponModelPath.end())
+                *outAutoMirrored = pathIt->second.mirrorOffhand;
+        }
         return true;
     }
 

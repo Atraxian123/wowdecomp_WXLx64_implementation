@@ -57,6 +57,7 @@ namespace wxl::events
         OnDoodadSpawn,   // a placed map doodad (CMapDoodad) was built (DoodadSpawnArgs)
         OnItemSlotChange,// a character model slot received an item    (ItemSlotChangeArgs)
         OnItemSlotClear, // a character model equipment slot was cleared(ItemSlotClearArgs)
+        OnHandItemAttached, // a held weapon/shield/ranged item was (re)attached or removed (HandItemAttachedArgs)
         OnWeaponVisualChange, // a unit's mainhand/offhand/ranged visible-item entry field was written
                               // (WeaponVisualChangeArgs)
         OnItemDisplayLookup, // a native ItemDisplayInfo row lookup by id just succeeded
@@ -203,6 +204,15 @@ namespace wxl::events
     /** @brief Args for OnItemSlotClear; charModelObj is the CharModelObject, equipSlotWow is the
      *         WoW equipment slot index (EQUIPMENT_SLOT_* constants, 0-18). */
     struct ItemSlotClearArgs  { void* charModelObj; uint32_t equipSlotWow; };
+    /**
+     * @brief Args for OnHandItemAttached, fired by CCharacterComponent::AddHandItem after it has attached a held
+     *        item, and by RemoveHandItem when one is taken off.
+     *        model is the character's own CM2Model (the parent the item attaches to); invSlot is the WoW
+     *        inventory slot (15 main hand, 16 off hand, 17 ranged); attachLink is the attachment id used
+     *        (0 shield, 1 right hand, 2 left hand, 26+ sheath points, -1 none); displayId is the item's
+     *        ItemDisplayInfo id, or 0 when the item was removed; sheathed is true when attached at a sheath point.
+     */
+    struct HandItemAttachedArgs { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; bool sheathed; bool removed; };
     /**
      * @brief Args for OnWeaponVisualChange. Fires for EVERY object in range whose visible-item entry
      *        field is written, including the initial full-sync when a unit enters view (not only live

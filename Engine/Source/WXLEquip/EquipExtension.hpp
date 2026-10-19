@@ -52,6 +52,9 @@ namespace wxl::scripts::equipextension
 
         void OnItemSlotChange(const wxl::events::ItemSlotChangeArgs& a);
         void OnItemSlotClear(const wxl::events::ItemSlotClearArgs& a);
+        /// A held item (weapon/shield/ranged) was attached or removed by CCharacterComponent::AddHandItem/RemoveHandItem.
+        /// Drives the offhand model override and its runtime mirror: weapons never go through the armor slot event.
+        void OnHandItemAttached(const wxl::events::HandItemAttachedArgs& a);
         void OnM2SkinFinalize(const wxl::events::M2SkinFinalizeArgs& a);
         void OnM2PerFrameUpdate(const wxl::events::M2PerFrameUpdateArgs& a);
         void OnBuildBonePalette(const wxl::events::BuildBonePaletteArgs& a);
