@@ -72,6 +72,8 @@ class CCharacterComponent {
     static CVar* g_componentCompressVar;
     static CVar* g_componentTextureLevelVar;
     static CVar* g_componentThreadVar;
+    // WXL: 1 = build NPC skins at runtime from CreatureDisplayInfoExtra even when a BakeName exists.
+    static CVar* g_npcRuntimeCompositeVar;
     static CCharacterComponent* m_activePlayerComponent;
     static void (CCharacterComponent::*m_itemFunc[NUM_COMPONENT_SECTIONS])(ITEM_SLOT, const ItemDisplayInfoRec*, bool);
     static void (CCharacterComponent::*m_prepFunc[NUM_COMPONENT_SECTIONS])();
@@ -121,6 +123,10 @@ class CCharacterComponent {
     static void Paste(void* texture, MipBits* dstMips, const C2iVector& dstPos, const C2iVector& srcPos, const C2iVector& srcSize, TCTEXTUREINFO& srcInfo, uint32_t srcMipLevel);
     static void PasteCrappyGreen(MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcSize, TCTEXTUREINFO& srcInfo, uint32_t srcMipLevel, int32_t dstMipOffset);
     static void PasteOpaque(void* texture, const BlpPalPixel* pal, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo, uint32_t srcMipLevel, int32_t dstMipOffset);
+    // WXL: native 32-bit layer paste (DXT/BGRA layers converted by the texture cache).
+    static void PasteBgra(void* texture, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo, uint32_t srcMipLevel, int32_t dstMipOffset);
+    static void PasteResample(void* texture, MipBits* dstMips, const C2iVector& dstPos, const C2iVector& dstSize, float srcX, float srcY, float srcW, float srcH, TCTEXTUREINFO& srcInfo);
+    static void PasteBgraScale(void* texture, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo);
     static void PasteOpaqueScale(void* texture, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo);
     static void PasteFromSkin(COMPONENT_SECTIONS section, void* texture, MipBits* dstMips);
     static void PasteScale(void* texture, MipBits* dstMips, const C2iVector& dstPos, const C2iVector& srcPos, const C2iVector& srcSize, TCTEXTUREINFO& srcInfo);
