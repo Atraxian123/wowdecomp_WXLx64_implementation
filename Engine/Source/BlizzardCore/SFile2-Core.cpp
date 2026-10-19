@@ -1038,7 +1038,7 @@ int32_t STORMAPI SFile::OpenEx(SArchive* archive, const char* name, uint32_t fla
         std::vector<uint8_t> served;
 
         if (wxl::storage::TryServe(name, served)) {
-            SFileImpl* file = new (0u, __FILE__, __LINE__) SFileImpl(5);
+            SFileImpl* file = new (0u, __FILE__, __LINE__) SFileImpl(SFILE_MEMORY);
             file->m_size = static_cast<uint32_t>(served.size());
             file->m_data = static_cast<uint8_t*>(Blizzard::Memory::Allocate(file->m_size ? file->m_size : 1, 0, __FILE__, __LINE__));
             file->m_position = 0;
