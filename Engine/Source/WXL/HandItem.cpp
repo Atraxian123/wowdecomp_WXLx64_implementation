@@ -6,6 +6,7 @@ namespace wxl::hooks
     namespace
     {
         HandItemModelResolver g_resolver = nullptr;
+        MirroredModelQuery g_mirrorQuery = nullptr;
     }
 
     void SetHandItemModelResolver(HandItemModelResolver fn)
@@ -24,5 +25,12 @@ namespace wxl::hooks
         if (!g_resolver || !out || outSize == 0) return false;
         out[0] = '\0';
         return g_resolver(displayId, invSlot, out, outSize);
+    }
+
+    void SetMirroredModelQuery(MirroredModelQuery fn) { g_mirrorQuery = fn; }
+
+    bool IsModelMirrored(const void* model)
+    {
+        return g_mirrorQuery && model && g_mirrorQuery(model);
     }
 }

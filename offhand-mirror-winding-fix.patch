@@ -1,0 +1,105 @@
+diff --git a/Engine/Source/Model2/CM2SceneRender.cpp b/Engine/Source/Model2/CM2SceneRender.cpp
+index 648003e..4bd992b 100644
+--- a/Engine/Source/Model2/CM2SceneRender.cpp
++++ b/Engine/Source/Model2/CM2SceneRender.cpp
+@@ -19,6 +19,7 @@
+ #include "Engine/Source/Tempest/C4Vector.h"
+ #include "Engine/Source/Tempest/CMath.h"
+ #include "Engine/Source/Tempest/CImVector.h"
++#include "Engine/Source/WXL/HandItem.h"
+ 
+ // STATIC: 0x00A45390
+ const uint32_t s_fogModes[7] = { 1, 1, 1, 2, 2, 3, 4 };
+@@ -305,8 +306,16 @@ void CM2SceneRender::SetupMaterial() {
+         CShaderEffect::SetAlphaRef(alphaRef);
+     }
+ 
+-    if (this->m_curType != this->m_prevType || this->m_curMaterial != this->m_prevMaterial) {
+-        GxRsSet(GxRs_Culling, !(this->m_curMaterial->m_flags & 4));
++    // WXL: a runtime-mirrored model (offhand AutoMirror) has a handedness-flipping bone palette, which reverses
++    // every triangle's winding. Swap the cull direction (GxRs_Culling 1 <-> 2) so front faces stay visible.
++    // The mirror state is part of the "did anything change" test so it can't be skipped by the material cache.
++    static bool s_wxlPrevMirrored = false;
++    const bool wxlMirrored = wxl::hooks::IsModelMirrored(this->m_curModel);
++
++    if (this->m_curType != this->m_prevType || this->m_curMaterial != this->m_prevMaterial || wxlMirrored != s_wxlPrevMirrored) {
++        s_wxlPrevMirrored = wxlMirrored;
++        const int32_t wxlCull = (this->m_curMaterial->m_flags & 4) ? 0 : (wxlMirrored ? 2 : 1);
++        GxRsSet(GxRs_Culling, wxlCull);
+         GxRsSet(GxRs_DepthTest, !(this->m_curMaterial->m_flags & 8));
+         GxRsSet(GxRs_DepthWrite, !(this->m_curMaterial->m_flags & 0x10));
+     }
+diff --git a/Engine/Source/WXL/HandItem.cpp b/Engine/Source/WXL/HandItem.cpp
+index 2f44e71..fe86ca9 100644
+--- a/Engine/Source/WXL/HandItem.cpp
++++ b/Engine/Source/WXL/HandItem.cpp
+@@ -6,6 +6,7 @@ namespace wxl::hooks
+     namespace
+     {
+         HandItemModelResolver g_resolver = nullptr;
++        MirroredModelQuery g_mirrorQuery = nullptr;
+     }
+ 
+     void SetHandItemModelResolver(HandItemModelResolver fn)
+@@ -25,4 +26,11 @@ namespace wxl::hooks
+         out[0] = '\0';
+         return g_resolver(displayId, invSlot, out, outSize);
+     }
++
++    void SetMirroredModelQuery(MirroredModelQuery fn) { g_mirrorQuery = fn; }
++
++    bool IsModelMirrored(const void* model)
++    {
++        return g_mirrorQuery && model && g_mirrorQuery(model);
++    }
+ }
+diff --git a/Engine/Source/WXL/HandItem.h b/Engine/Source/WXL/HandItem.h
+index 5a4761f..a6f25f5 100644
+--- a/Engine/Source/WXL/HandItem.h
++++ b/Engine/Source/WXL/HandItem.h
+@@ -23,4 +23,16 @@ namespace wxl::hooks
+ 
+     /// Called by AddHandItem before it builds the model path. false when no resolver is set or it declines.
+     bool ResolveHandItemModel(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
++
++    /**
++     * @brief Callback type: true when the given CM2Model instance is rendered with a mirrored (handedness-flipping)
++     *        bone palette, so its triangle winding is reversed and the renderer must swap the cull direction.
++     */
++    using MirroredModelQuery = bool (*)(const void* model);
++
++    /// Registers the query. One only; a later call replaces the earlier one.
++    void SetMirroredModelQuery(MirroredModelQuery fn);
++
++    /// Called by the model renderer per material change. Cheap: false immediately when no query is set.
++    bool IsModelMirrored(const void* model);
+ }
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index 49262ee..f516668 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -2387,6 +2387,17 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         return nullptr;
+     }
+ 
++    // Renderer query (see wxl::hooks::IsModelMirrored): true for instances whose palette we mirror at runtime,
++    // so CM2SceneRender can flip the cull winding for them. Only the instances actually mirrored are flagged
++    // (state.rctx is nulled for explicit/authored offhand models and for geometric mirroring).
++    static bool IsOffhandRuntimeMirrored(const void* model)
++    {
++        if (g_offhandMirrorBySubObj.empty()) return false;
++        for (const auto& kv : g_offhandMirrorBySubObj)
++            if (model == kv.second.rctx[0] || model == kv.second.rctx[1]) return true;
++        return false;
++    }
++
+     static void HandleOffhandWeaponOverride(void* cmo, void* subObj, uint32_t displayId)
+     {
+         if (!subObj || displayId == 0) return; // unequip: nothing to override, native detach handles it
+@@ -3566,5 +3577,6 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         static EquipExtension s_equipExtension;
+         (void)s_equipExtension;
+         wxl::hooks::SetHandItemModelResolver(&ResolveHandItemModelFile);
++        wxl::hooks::SetMirroredModelQuery(&IsOffhandRuntimeMirrored);
+     }
+ }

@@ -2387,6 +2387,17 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         return nullptr;
     }
 
+    // Renderer query (see wxl::hooks::IsModelMirrored): true for instances whose palette we mirror at runtime,
+    // so CM2SceneRender can flip the cull winding for them. Only the instances actually mirrored are flagged
+    // (state.rctx is nulled for explicit/authored offhand models and for geometric mirroring).
+    static bool IsOffhandRuntimeMirrored(const void* model)
+    {
+        if (g_offhandMirrorBySubObj.empty()) return false;
+        for (const auto& kv : g_offhandMirrorBySubObj)
+            if (model == kv.second.rctx[0] || model == kv.second.rctx[1]) return true;
+        return false;
+    }
+
     static void HandleOffhandWeaponOverride(void* cmo, void* subObj, uint32_t displayId)
     {
         if (!subObj || displayId == 0) return; // unequip: nothing to override, native detach handles it
@@ -3566,5 +3577,6 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         static EquipExtension s_equipExtension;
         (void)s_equipExtension;
         wxl::hooks::SetHandItemModelResolver(&ResolveHandItemModelFile);
+        wxl::hooks::SetMirroredModelQuery(&IsOffhandRuntimeMirrored);
     }
 }

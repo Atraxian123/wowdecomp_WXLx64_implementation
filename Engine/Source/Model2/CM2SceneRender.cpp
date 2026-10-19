@@ -19,6 +19,7 @@
 #include "Engine/Source/Tempest/C4Vector.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CImVector.h"
+#include "Engine/Source/WXL/HandItem.h"
 
 // STATIC: 0x00A45390
 const uint32_t s_fogModes[7] = { 1, 1, 1, 2, 2, 3, 4 };
@@ -305,8 +306,16 @@ void CM2SceneRender::SetupMaterial() {
         CShaderEffect::SetAlphaRef(alphaRef);
     }
 
-    if (this->m_curType != this->m_prevType || this->m_curMaterial != this->m_prevMaterial) {
-        GxRsSet(GxRs_Culling, !(this->m_curMaterial->m_flags & 4));
+    // WXL: a runtime-mirrored model (offhand AutoMirror) has a handedness-flipping bone palette, which reverses
+    // every triangle's winding. Swap the cull direction (GxRs_Culling 1 <-> 2) so front faces stay visible.
+    // The mirror state is part of the "did anything change" test so it can't be skipped by the material cache.
+    static bool s_wxlPrevMirrored = false;
+    const bool wxlMirrored = wxl::hooks::IsModelMirrored(this->m_curModel);
+
+    if (this->m_curType != this->m_prevType || this->m_curMaterial != this->m_prevMaterial || wxlMirrored != s_wxlPrevMirrored) {
+        s_wxlPrevMirrored = wxlMirrored;
+        const int32_t wxlCull = (this->m_curMaterial->m_flags & 4) ? 0 : (wxlMirrored ? 2 : 1);
+        GxRsSet(GxRs_Culling, wxlCull);
         GxRsSet(GxRs_DepthTest, !(this->m_curMaterial->m_flags & 8));
         GxRsSet(GxRs_DepthWrite, !(this->m_curMaterial->m_flags & 0x10));
     }

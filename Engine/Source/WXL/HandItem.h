@@ -23,4 +23,16 @@ namespace wxl::hooks
 
     /// Called by AddHandItem before it builds the model path. false when no resolver is set or it declines.
     bool ResolveHandItemModel(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
+
+    /**
+     * @brief Callback type: true when the given CM2Model instance is rendered with a mirrored (handedness-flipping)
+     *        bone palette, so its triangle winding is reversed and the renderer must swap the cull direction.
+     */
+    using MirroredModelQuery = bool (*)(const void* model);
+
+    /// Registers the query. One only; a later call replaces the earlier one.
+    void SetMirroredModelQuery(MirroredModelQuery fn);
+
+    /// Called by the model renderer per material change. Cheap: false immediately when no query is set.
+    bool IsModelMirrored(const void* model);
 }
