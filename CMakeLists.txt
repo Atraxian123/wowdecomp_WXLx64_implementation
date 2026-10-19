@@ -49,10 +49,10 @@ add_compile_definitions(
 
 # Off by default: the client checks MPQ file MD5s (signaturefile) and GlueXML/FrameXML/AddOn .toc.sig files like the
 # original. ON accepts unsigned or modified game data and interface files.
-option(WOWDECOMP_DISABLE_SIGNATURE_CHECKS "Skip MPQ file signature and .toc signature checks" OFF)
-if (WOWDECOMP_DISABLE_SIGNATURE_CHECKS)
+#option(WOWDECOMP_DISABLE_SIGNATURE_CHECKS "Skip MPQ file signature and .toc signature checks" OFF)
+#if (WOWDECOMP_DISABLE_SIGNATURE_CHECKS)
     add_compile_definitions(DISABLE_SIGNATURE_CHECKS=1)
-endif ()
+#endif ()
 
 # Third-party code is linked, not decompiled, for now.
 if (EXISTS ${CMAKE_SOURCE_DIR}/ThirdParty/CMakeLists.txt)
