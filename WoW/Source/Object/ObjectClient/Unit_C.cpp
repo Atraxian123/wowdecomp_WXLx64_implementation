@@ -13847,12 +13847,16 @@ int32_t CGUnit_C::InitializeExtendedDisplay(CGPlayer_C* player, int32_t hasDispl
 
             const char* bakeName = this->m_displayInfoExtra->m_bakeName;
 
-            if (!bakeName || !*bakeName) {
-                return 0;
-            }
+            // WXL: the original gave up here when the row had no BakeName, leaving the NPC with its model's
+            // default skin. Now such NPCs (and every NPC when npcRuntimeComposite is 1) leave the "baked"
+            // flag clear, so the compositor builds the skin from race/sex/skin/face/hair like a player, and
+            // InitializeComponent then adds the row's 11 NPCItemDisplay slots through the normal layer pipeline.
+            const bool forceRuntime = CCharacterComponent::g_npcRuntimeCompositeVar && CCharacterComponent::g_npcRuntimeCompositeVar->m_intValue != 0;
 
-            data.m_flags |= 0x1;
-            SStrPrintf(data.m_npcSkinTexture, sizeof(data.m_npcSkinTexture), "%s%s", "Textures\\BakedNpcTextures\\", bakeName);
+            if (bakeName && *bakeName && !forceRuntime) {
+                data.m_flags |= 0x1;
+                SStrPrintf(data.m_npcSkinTexture, sizeof(data.m_npcSkinTexture), "%s%s", "Textures\\BakedNpcTextures\\", bakeName);
+            }
         }
     }
 

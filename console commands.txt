@@ -1,0 +1,5 @@
+The new setting
+
+npcRuntimeComposite is registered next to the other component settings, with a default of 0. To turn it on, use SET npcRuntimeComposite "1" in WTF\Config.wtf, or type /console npcRuntimeComposite 1. It only applies to NPCs that load afterward, so existing ones keep their current look until they reload.
+
+Put SET componentTextureLevel "10" in WTF\Config.wtf. The existing rules still apply: 1024 only works with componentThread and componentCompress both on, and at least 2 CPU cores. Otherwise it falls back to 256 (or lower, as before).

@@ -1,0 +1,60 @@
+diff --git a/WoW/Common/BlpDecode.hpp b/WoW/Common/BlpDecode.hpp
+index e162ae4..36f6091 100644
+--- a/WoW/Common/BlpDecode.hpp
++++ b/WoW/Common/BlpDecode.hpp
+@@ -1,15 +1,26 @@
+ // BlpDecode.hpp - decode any BLP2 (palettized / DXT1,3,5 / BGRA) to RGBA8 at a requested size.
+ // Intended use: feed the character-skin compositor, so layers no longer have to be palettized.
+-// Header-only, no dependencies beyond the STL. C++20 (std::span).
++// Header-only, no dependencies beyond the STL. Builds as C++17 (the project standard): it uses its own
++// ByteSpan instead of C++20's std::span, which is unavailable there and broke the WoW/Common build.
+ #pragma once
+ #include <algorithm>
+ #include <cstdint>
+ #include <cstring>
+-#include <span>
+ #include <vector>
+ 
+ namespace blpdec
+ {
++    // Minimal read-only (pointer, size) view; the only members the decoder needs. C++17 stand-in for std::span.
++    struct ByteSpan
++    {
++        const uint8_t* ptr;
++        size_t         len;
++        constexpr ByteSpan(const uint8_t* p, size_t n) noexcept : ptr(p), len(n) {}
++        constexpr const uint8_t* data() const noexcept { return ptr; }
++        constexpr size_t size() const noexcept { return len; }
++        constexpr const uint8_t& operator[](size_t i) const noexcept { return ptr[i]; }
++    };
++
+     struct Rgba
+     {
+         uint32_t w = 0, h = 0;
+@@ -68,7 +79,7 @@ namespace blpdec
+         }
+ 
+         // Decode one specific mip level to RGBA. Returns false on any bounds problem.
+-        inline bool DecodeMip(std::span<const uint8_t> in, uint32_t mip, Rgba& img)
++        inline bool DecodeMip(ByteSpan in, uint32_t mip, Rgba& img)
+         {
+             const uint8_t* b = in.data();
+             const uint32_t n = uint32_t(in.size());
+@@ -179,7 +190,7 @@ namespace blpdec
+     // target on both axes (so a 1024 layer going into a 256 slot is just read from its 256 mip: no real
+     // downscale), then does a final resample only if the sizes still differ (non-matching aspect, or a
+     // source smaller than the slot -> upscale).
+-    inline bool DecodeBlp2ToSize(std::span<const uint8_t> in, uint32_t dstW, uint32_t dstH, Rgba& out)
++    inline bool DecodeBlp2ToSize(ByteSpan in, uint32_t dstW, uint32_t dstH, Rgba& out)
+     {
+         using namespace detail;
+         if (in.size() < 0x94 || rd32(in.data()) != 0x32504C42 || rd32(in.data() + 4) != 1) return false;
+@@ -206,7 +217,7 @@ namespace blpdec
+     // mip chain, keeping width/height/alphaDepth, so the character compositor can read every layer the
+     // same way. Levels the source lacks are box-filtered from the previous level. The 0x494-byte header
+     // (palette area zeroed) matches BLPHeader, so the client's own parsing works unchanged.
+-    inline bool ConvertToBgraBlp(std::span<const uint8_t> in, std::vector<uint8_t>& out)
++    inline bool ConvertToBgraBlp(ByteSpan in, std::vector<uint8_t>& out)
+     {
+         using namespace detail;
+         if (in.size() < 0x94 || rd32(in.data()) != 0x32504C42 || rd32(in.data() + 4) != 1) return false;
