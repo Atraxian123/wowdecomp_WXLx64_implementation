@@ -1,0 +1,105 @@
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index 533079b..c344dec 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -95,6 +95,9 @@ namespace wxl::scripts::equipextension
+     struct BoneRemap
+     {
+         uint16_t count;
++        // true once a build ran against two FULLY PARSED models (even if it matched nothing). false for a default
++        // or reset remap and for one that was attempted too early -- those must be retried, not treated as final.
++        bool     resolved;
+         uint8_t  collToChar[256];
+         void*    collectionModel; // live M2 model this remap was built for (collection side)
+         void*    characterModel;  // live M2 model this remap was built for (character/pose side)
+@@ -766,6 +769,15 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         return s_value;
+     }
+ 
++    /// True once a CM2Shared has finished loading AND parsing (FinishLoading ran M2Init and set m_flags bit 0),
++    /// i.e. its header's M2Array members are relocated and safe to read through Data().
++    static bool SharedFullyParsed(void* shared) noexcept
++    {
++        if (!shared) return false;
++        const auto* sh = static_cast<const CM2Shared*>(shared);
++        return (sh->m_flags & 1u) != 0 && sh->m_data != nullptr;
++    }
++
+     static BoneRemap BuildBoneRemapCore(void* collRc, void* charRc) noexcept
+     {
+         BoneRemap r = {};
+@@ -776,8 +788,22 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+             void* collM2 = eng::ModelShared(collRc);
+             void* charM2 = eng::ModelShared(charRc);
+             if (!collM2 || !charM2) return r;
++
++            // CM2Shared::Load allocates m_data up front and fills it from an async read; M2Init (which turns the
++            // self-relative M2Array offsets into usable ones) only runs in FinishLoading, which then sets
++            // m_flags bit 0. Until that bit is set m_bones.m_count can already look valid while m_bones.Data()
++            // points at unrelocated/uninitialised memory -- every bone then reads as the same garbage record
++            // and the remap gets built (and cached) from it. Wait for both models; callers retry on !resolved.
++            if (!SharedFullyParsed(collM2) || !SharedFullyParsed(charM2))
++            {
++                if (wxl::LogThrottle("equip.boneRemap.notReady", 12, 500))
++                    EquipLog("  BuildBoneRemap: deferred, model not fully parsed yet (coll=%d char=%d)",
++                             SharedFullyParsed(collM2) ? 1 : 0, SharedFullyParsed(charM2) ? 1 : 0);
++                return r;
++            }
+             r.collectionModel = collM2;
+             r.characterModel  = charM2;
++            r.resolved        = true;
+ 
+             // The parsed .m2 headers. M2Array members are self-relative, so the bone and lookup arrays are
+             // reached with Data() instead of a stored raw pointer.
+@@ -2276,7 +2302,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+             for (auto& e2 : entries)
+             {
+                 if (!SameAttachModelGroup(e2, e)) continue;
+-                if (remap.count > 0) e2.boneRemap = remap;
++                if (remap.count > 0 || remap.resolved) e2.boneRemap = remap;
+             }
+ 
+             // Apply merged geoset filter for entries sharing this (keyBuf, attachId, texBuf).
+@@ -3083,7 +3109,9 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+                 // charCtx is the character's render_ctx (= cmo->sceneNode = the outer frame call).
+                 // The collection M2's bone buffer is overwritten with corresponding char matrices.
+                 if (!IsCollectionEntry(entry)) return;
+-                if (entry.boneRemap.count == 0) return;													   
++                // A remap that was never built, attempted before the models were parsed, or reset after a stale-pair
++                // rejection (resolved == false) must reach the retry below; only a settled empty remap ends here.
++                if (entry.boneRemap.count == 0 && entry.boneRemap.resolved) return;
+                 void* charCtx = eng::CmoModel(cmo);
+                 if (charCtx && charCtx != renderCtx)
+                 {
+@@ -3104,14 +3132,14 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+                     if (remapBroken)
+                     {
+                         BoneRemap tryRemap = BuildBoneRemapGuarded(renderCtx, charCtx);
+-                        if (tryRemap.count > 0)
++                        if (tryRemap.resolved)
+                         {
+-                            // Only adopt if at least one bone was matched; otherwise charBase
+-                            // is still unavailable and we'd just pin the same broken remap.
++                            // Adopt a build made against fully parsed models: either it matched something, or it
++                            // settled on "nothing matches" (count==0, resolved) which stops further retries.
+                             bool hasMatch = false;
+                             for (uint32_t bi = 0; !hasMatch && bi < tryRemap.count; ++bi)
+                                 hasMatch = (tryRemap.collToChar[bi] != 0xFF);
+-                            if (hasMatch)
++                            if (hasMatch || tryRemap.count == 0)
+                             {
+                                 remap = tryRemap;
+                                 // Propagate to ALL entries sharing this renderCtx — not just
+@@ -3235,10 +3263,10 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+                 void* charCtx = eng::CmoModel(cmo);
+                 if (charCtx && charCtx != entry.renderCtx)
+                 {
+-                    if (entry.boneRemap.count == 0)
++                    if (entry.boneRemap.count == 0 && !entry.boneRemap.resolved)
+                     {
+                         BoneRemap tryRemap = BuildBoneRemapGuarded(entry.renderCtx, charCtx);
+-                        if (tryRemap.count > 0)
++                        if (tryRemap.resolved)
+                         {
+                             for (auto& e2 : entries)
+                                 if (e2.renderCtx == entry.renderCtx) e2.boneRemap = tryRemap;
