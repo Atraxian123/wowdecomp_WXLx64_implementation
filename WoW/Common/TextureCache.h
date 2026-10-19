@@ -35,8 +35,6 @@ void TextureCacheDestroyTexture(void* handle);
 int32_t TextureCacheGetInfo(void* handle, TCTEXTUREINFO& info, int32_t wait);
 void* TextureCacheGetMip(void* handle, uint32_t mipLevel);
 BlpPalPixel* TextureCacheGetPal(void* handle);
-// WXL: true when the entry holds 32-bit BGRA mips (a DXT/BGRA layer converted at load) instead of palette indices.
-int32_t TextureCacheIsBgra(void* handle);
 int32_t TextureCacheHasMips(void* handle);
 void TextureCacheResetLoadCount();
 

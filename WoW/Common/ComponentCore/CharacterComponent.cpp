@@ -11,7 +11,6 @@
 #include <alloca.h>
 #endif
 #include "WoW/Common/ComponentCore/CharacterComponent.h"
-#include "WoW/Common/ComponentCore/PasteBgra.hpp"
 #include "Engine/Source/Base/Handle.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
 #include "Engine/Source/Base/Prop.h"
@@ -206,7 +205,6 @@ bool CCharacterComponent::Initialize() {
     CCharacterComponent::g_componentTextureLevelVar = CVar::Register("componentTextureLevel", "Number of mip levels used for character component textures", 0x1, "8", &ComponentVarHandler, 0, false, nullptr, false);
     CCharacterComponent::g_componentThreadVar = CVar::Register("componentThread", "Multi thread character component processing", 0x1, "1", &ComponentVarHandler, 0, false, nullptr, false);
     CCharacterComponent::g_componentCompressVar = CVar::Register("componentCompress", "Character component texture compression", 0x1, "1", &ComponentVarHandler, 0, false, nullptr, false);
-    CCharacterComponent::g_npcRuntimeCompositeVar = CVar::Register("npcRuntimeComposite", "Build NPC skins from their equipment instead of using the baked NPC texture (applies to newly loaded NPCs)", 0x1, "0", &ComponentVarHandler, 0, false, nullptr, false);
 
     uint32_t mipLevels = CCharacterComponent::g_componentTextureLevelVar->m_intValue;
     int32_t useThread = CCharacterComponent::g_componentThreadVar->m_intValue;
@@ -222,9 +220,8 @@ bool CCharacterComponent::Initialize() {
         }
 
         useCompression = 0;
-    } else if (mipLevels > 10) {
-        // WXL: limit raised from 9 (512x512) to 10 (1024x1024).
-        return CCharacterComponent::Initialize(GxTex_Rgb565, 10, useThread, useCompression);
+    } else if (mipLevels > 9) {
+        return CCharacterComponent::Initialize(GxTex_Rgb565, 9, useThread, useCompression);
     }
 
     if (mipLevels < 7) {
@@ -946,166 +943,6 @@ void CCharacterComponent::PasteCrappyGreen(MipBits* dstMips, C2iVector& dstPos, 
         dstPos.y >>= 1;
         dstStride >>= 1;
     }
-}
-
-// WXL: generic layer fitter. Resamples a source rectangle (mip-0 pixels, any size or aspect) into the destination
-// rectangle at every destination mip level, picking for each level the smallest source mip that is still at
-// least as large as the target so the remaining filtering is always <2x. Reads palettized (any alpha depth) and
-// BGRA layers alike. Used whenever the layer is neither slot-sized (power-of-two) nor exactly half the slot.
-void CCharacterComponent::PasteResample(void* texture, MipBits* dstMips, const C2iVector& dstPos, const C2iVector& dstSize, float srcX, float srcY, float srcW, float srcH, TCTEXTUREINFO& srcInfo) {
-    const bool bgra = TextureCacheIsBgra(texture) != 0;
-    const BlpPalPixel* pal = bgra ? nullptr : TextureCacheGetPal(texture);
-
-    if (!bgra && !pal) {
-        C2iVector pos = dstPos;
-        C2iVector size = dstSize;
-        CCharacterComponent::PasteCrappyGreen(dstMips, pos, 4 * s_textureSize, size, srcInfo, 0, 0);
-        return;
-    }
-
-    const uint32_t alphaSize = srcInfo.m_alphaSize;
-    const bool useAlpha = alphaSize != 0;
-    const uint32_t maxDim = static_cast<uint32_t>(dstSize.x > dstSize.y ? dstSize.x : dstSize.y);
-
-    for (uint32_t level = 0; (maxDim >> level) != 0; level++) {
-        const uint32_t tw = (dstSize.x >> level) ? dstSize.x >> level : 1;
-        const uint32_t th = (dstSize.y >> level) ? dstSize.y >> level : 1;
-
-        uint32_t mip = 0;
-
-        while (mip + 1 < srcInfo.m_mipCount && srcW / static_cast<float>(1u << (mip + 1)) >= tw && srcH / static_cast<float>(1u << (mip + 1)) >= th) {
-            mip++;
-        }
-
-        while (mip > 0 && !TextureCacheGetMip(texture, mip)) {
-            mip--;
-        }
-
-        const uint8_t* data = static_cast<const uint8_t*>(TextureCacheGetMip(texture, mip));
-
-        if (!data) {
-            return;
-        }
-
-        const int32_t mw = (srcInfo.m_width >> mip) ? srcInfo.m_width >> mip : 1;
-        const int32_t mh = (srcInfo.m_height >> mip) ? srcInfo.m_height >> mip : 1;
-        const float scale = 1.0f / static_cast<float>(1u << mip);
-        const float rx = srcX * scale;
-        const float ry = srcY * scale;
-        const float rw = srcW * scale;
-        const float rh = srcH * scale;
-
-        int32_t cx0 = static_cast<int32_t>(std::floor(rx));
-        int32_t cy0 = static_cast<int32_t>(std::floor(ry));
-        int32_t cx1 = static_cast<int32_t>(std::ceil(rx + rw)) - 1;
-        int32_t cy1 = static_cast<int32_t>(std::ceil(ry + rh)) - 1;
-        cx0 = pastebgra::ClampI(cx0, 0, mw - 1);
-        cy0 = pastebgra::ClampI(cy0, 0, mh - 1);
-        cx1 = pastebgra::ClampI(cx1, cx0, mw - 1);
-        cy1 = pastebgra::ClampI(cy1, cy0, mh - 1);
-
-        uint8_t* dst = reinterpret_cast<uint8_t*>(dstMips->m_mip[level]) + ((4 * s_textureSize) >> level) * (dstPos.y >> level) + 4 * (dstPos.x >> level);
-        const uint32_t dstStride = (4 * s_textureSize) >> level;
-
-        if (bgra) {
-            auto fetch = [data, mw](int32_t x, int32_t y, uint8_t* out) {
-                const uint8_t* p = data + 4 * (static_cast<size_t>(y) * mw + x);
-                out[0] = p[2];
-                out[1] = p[1];
-                out[2] = p[0];
-                out[3] = p[3];
-            };
-
-            pastebgra::ResampleLevel(fetch, rx, ry, rw, rh, cx0, cy0, cx1, cy1, dst, dstStride, tw, th, useAlpha);
-        } else {
-            const size_t pixels = static_cast<size_t>(mw) * mh;
-            const uint8_t* alphaPlane = data + pixels;
-            auto fetch = [data, alphaPlane, pal, mw, alphaSize](int32_t x, int32_t y, uint8_t* out) {
-                const size_t i = static_cast<size_t>(y) * mw + x;
-                const BlpPalPixel& c = pal[data[i]];
-                out[0] = c.m_r;
-                out[1] = c.m_g;
-                out[2] = c.m_b;
-
-                switch (alphaSize) {
-                    case 1:
-                        out[3] = ((alphaPlane[i >> 3] >> (i & 7)) & 1) ? 255 : 0;
-                        break;
-
-                    case 4:
-                        out[3] = static_cast<uint8_t>(((i & 1) ? (alphaPlane[i >> 1] >> 4) : (alphaPlane[i >> 1] & 0xF)) * 17);
-                        break;
-
-                    case 8:
-                        out[3] = alphaPlane[i];
-                        break;
-
-                    default:
-                        out[3] = 255;
-                        break;
-                }
-            };
-
-            pastebgra::ResampleLevel(fetch, rx, ry, rw, rh, cx0, cy0, cx1, cy1, dst, dstStride, tw, th, useAlpha);
-        }
-    }
-}
-
-// WXL: native BGRA layer paste. Mirrors the palettized Paste* loops (same mip walk and position shifts) but reads
-// 32-bit texels and blends by the layer's own alpha, so DXT1/3/5 layers keep full quality.
-void CCharacterComponent::PasteBgra(void* texture, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo, uint32_t srcMipLevel, int32_t dstMipOffset) {
-    uint32_t srcWidth = srcInfo.m_width >> srcMipLevel;
-    uint32_t width = srcSize.x;
-    uint32_t height = srcSize.y;
-    const bool useAlpha = srcInfo.m_alphaSize != 0;
-
-    for (uint32_t mip = srcMipLevel; mip < srcInfo.m_mipCount; mip++) {
-        const uint8_t* src = static_cast<const uint8_t*>(TextureCacheGetMip(texture, mip));
-
-        if (!src) {
-            return;
-        }
-
-        uint8_t* dst = reinterpret_cast<uint8_t*>(dstMips->m_mip[mip + dstMipOffset]) + dstStride * dstPos.y + 4 * dstPos.x;
-        const uint8_t* srcRow = src + 4 * (srcPos.x + srcWidth * srcPos.y);
-
-        pastebgra::PasteLevel(srcRow, 4 * srcWidth, dst, dstStride, width, height, useAlpha);
-
-        width = (width >> 1) ? width >> 1 : 1;
-        height = (height >> 1) ? height >> 1 : 1;
-        dstPos.x >>= 1;
-        dstPos.y >>= 1;
-        srcPos.x >>= 1;
-        srcPos.y >>= 1;
-        srcWidth = (srcWidth >> 1) ? srcWidth >> 1 : 1;
-        dstStride >>= 1;
-    }
-}
-
-// WXL: BGRA counterpart of PasteOpaqueScale / Paste*BScale: layer is half the slot size, so mip 0 is
-// upscaled 2x and the remaining destination mips come from the layer's own mips (dst mip n+1 <- src mip n).
-void CCharacterComponent::PasteBgraScale(void* texture, MipBits* dstMips, C2iVector& dstPos, uint32_t dstStride, C2iVector& srcPos, C2iVector& srcSize, TCTEXTUREINFO& srcInfo) {
-    const uint32_t srcWidth = srcInfo.m_width;
-    const bool useAlpha = srcInfo.m_alphaSize != 0;
-    const uint8_t* mip0 = static_cast<const uint8_t*>(TextureCacheGetMip(texture, 0));
-
-    if (!mip0) {
-        return;
-    }
-
-    srcPos.x >>= 1;
-    srcPos.y >>= 1;
-    uint8_t* dst = reinterpret_cast<uint8_t*>(dstMips->m_mip[0]) + dstStride * dstPos.y + 4 * dstPos.x;
-    const uint32_t halfW = (srcSize.x >> 1) ? srcSize.x >> 1 : 1;
-    const uint32_t halfH = (srcSize.y >> 1) ? srcSize.y >> 1 : 1;
-
-    pastebgra::PasteLevelScale2x(mip0 + 4 * (srcPos.x + srcWidth * srcPos.y), 4 * srcWidth, halfW, halfH, dst, dstStride, srcSize.x, srcSize.y, useAlpha);
-
-    srcSize.x = halfW;
-    srcSize.y = halfH;
-    dstPos.x >>= 1;
-    dstPos.y >>= 1;
-    CCharacterComponent::PasteBgra(texture, dstMips, dstPos, dstStride >> 1, srcPos, srcSize, srcInfo, 0, 1);
 }
 
 // VERIFY: 6c996c19 manual
@@ -3077,12 +2914,6 @@ void CCharacterComponent::Paste(void* texture, MipBits* dstMips, const C2iVector
     C2iVector src = srcPos;
     C2iVector size = srcSize;
     uint32_t stride = 4 * s_textureSize;
-
-    if (TextureCacheIsBgra(texture)) {
-        CCharacterComponent::PasteBgra(texture, dstMips, pos, stride, src, size, srcInfo, srcMipLevel, -static_cast<int32_t>(srcMipLevel));
-        return;
-    }
-
     BlpPalPixel* pal = TextureCacheGetPal(texture);
 
     if (!pal) {
@@ -4297,11 +4128,6 @@ void CCharacterComponent::PasteScale(void* texture, MipBits* dstMips, const C2iV
     C2iVector src = srcPos;
     C2iVector size = srcSize;
 
-    if (TextureCacheIsBgra(texture)) {
-        CCharacterComponent::PasteBgraScale(texture, dstMips, pos, 4 * s_textureSize, src, size, srcInfo);
-        return;
-    }
-
     switch (srcInfo.m_alphaSize) {
         case 0:
             CCharacterComponent::PasteOpaqueScale(texture, dstMips, pos, 4 * s_textureSize, src, size, srcInfo);
@@ -4886,26 +4712,19 @@ void CCharacterComponent::PasteFromSkin(COMPONENT_SECTIONS section, void* textur
     info.m_alphaSize = 0;
     info.m_opaque = 1;
     TextureCacheGetInfo(texture, info, 1);
+    uint32_t width = info.m_width;
     info.m_alphaSize = 0;
 
-    // WXL: fit the skin texture to the composite whatever its size (the original assumed an exact power-of-two
-    // ratio and looped forever otherwise).
-    uint32_t mipLevel = 0;
-    const pastebgra::Mode mode = pastebgra::Classify(info.m_width, info.m_height, s_textureSize, s_textureSize, mipLevel);
-
-    if (mode == pastebgra::Mode::Scale2x) {
+    if (info.m_width < s_textureSize && info.m_height < s_textureSize) {
         CCharacterComponent::PasteScale(texture, dstMips, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_size, info);
         return;
     }
 
-    if (mode == pastebgra::Mode::Resample) {
-        // The section rectangle is given in composite pixels; map it into the skin texture's own pixels.
-        const float sx = static_cast<float>(info.m_width) / static_cast<float>(s_textureSize);
-        const float sy = static_cast<float>(info.m_height) / static_cast<float>(s_textureSize);
-        CCharacterComponent::PasteResample(texture, dstMips, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_size,
-                                           s_sectionInfo[section].m_pos.x * sx, s_sectionInfo[section].m_pos.y * sy,
-                                           s_sectionInfo[section].m_size.x * sx, s_sectionInfo[section].m_size.y * sy, info);
-        return;
+    uint32_t mipLevel = 0;
+
+    while (width != s_textureSize) {
+        width >>= 1;
+        mipLevel++;
     }
 
     CCharacterComponent::Paste(texture, dstMips, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_size, info, mipLevel);
@@ -4925,26 +4744,26 @@ void CCharacterComponent::PasteToSection(COMPONENT_SECTIONS section, void* textu
     info.m_alphaSize = 0;
     info.m_opaque = 1;
     TextureCacheGetInfo(texture, info, 1);
+    uint32_t width = info.m_width;
+    uint32_t sectionWidth = s_sectionInfo[section].m_size.x;
     C2iVector srcPos;
-    srcPos.x = 0;
-    srcPos.y = 0;
 
-    // WXL: fit the layer to its slot whatever the layer's size or aspect ratio. Same-ratio power-of-two sizes
-    // and exact 2x upscales keep the original code paths; everything else goes through the generic resampler.
-    uint32_t mipLevel = 0;
-    const pastebgra::Mode mode = pastebgra::Classify(info.m_width, info.m_height, s_sectionInfo[section].m_size.x, s_sectionInfo[section].m_size.y, mipLevel);
-
-    if (mode == pastebgra::Mode::Scale2x) {
+    if (info.m_width < sectionWidth && info.m_height < static_cast<uint32_t>(s_sectionInfo[section].m_size.y)) {
+        srcPos.x = 0;
+        srcPos.y = 0;
         CCharacterComponent::PasteScale(texture, dstMips, s_sectionInfo[section].m_pos, srcPos, s_sectionInfo[section].m_size, info);
         return;
     }
 
-    if (mode == pastebgra::Mode::Resample) {
-        CCharacterComponent::PasteResample(texture, dstMips, s_sectionInfo[section].m_pos, s_sectionInfo[section].m_size,
-                                           0.0f, 0.0f, static_cast<float>(info.m_width), static_cast<float>(info.m_height), info);
-        return;
+    uint32_t mipLevel = 0;
+
+    while (width != sectionWidth) {
+        width >>= 1;
+        mipLevel++;
     }
 
+    srcPos.x = 0;
+    srcPos.y = 0;
     CCharacterComponent::Paste(texture, dstMips, s_sectionInfo[section].m_pos, srcPos, s_sectionInfo[section].m_size, info, mipLevel);
 }
 
@@ -5483,8 +5302,8 @@ bool CCharacterComponent::Initialize(EGxTexFormat format, uint32_t mipLevels, in
     CCharacterComponent::m_itemFunc[SECTION_LEG_LOWER] = &CCharacterComponent::UpdateItemLL;
     CCharacterComponent::m_itemFunc[SECTION_FOOT] = &CCharacterComponent::UpdateItemFO;
 
-    if (mipLevels > 10) {
-        mipLevels = 10;
+    if (mipLevels > 9) {
+        mipLevels = 9;
     } else if (mipLevels < 6) {
         mipLevels = 6;
     }
@@ -5496,17 +5315,11 @@ bool CCharacterComponent::Initialize(EGxTexFormat format, uint32_t mipLevels, in
     CCharacterComponent::s_mipLevels = mipLevels;
     s_textureSize = 1 << mipLevels;
 
-    // WXL: the raw section table is laid out on a 512 grid. Levels below 9 shift right as before; level 10
-    // (1024) must shift LEFT, since a negative shift count is undefined behaviour.
-    auto scaleFromRaw = [mipLevels](int32_t value) -> int32_t {
-        return mipLevels >= 9 ? value << (mipLevels - 9) : value >> (9 - mipLevels);
-    };
-
     for (int32_t section = 0; section < NUM_COMPONENT_SECTIONS; section++) {
-        s_sectionInfo[section].m_pos.x = scaleFromRaw(CCharacterComponent::s_sectionInfoRaw[section].m_pos.x);
-        s_sectionInfo[section].m_pos.y = scaleFromRaw(CCharacterComponent::s_sectionInfoRaw[section].m_pos.y);
-        s_sectionInfo[section].m_size.x = scaleFromRaw(CCharacterComponent::s_sectionInfoRaw[section].m_size.x);
-        s_sectionInfo[section].m_size.y = scaleFromRaw(CCharacterComponent::s_sectionInfoRaw[section].m_size.y);
+        s_sectionInfo[section].m_pos.x = CCharacterComponent::s_sectionInfoRaw[section].m_pos.x >> (9 - mipLevels);
+        s_sectionInfo[section].m_pos.y = CCharacterComponent::s_sectionInfoRaw[section].m_pos.y >> (9 - mipLevels);
+        s_sectionInfo[section].m_size.x = CCharacterComponent::s_sectionInfoRaw[section].m_size.x >> (9 - mipLevels);
+        s_sectionInfo[section].m_size.y = CCharacterComponent::s_sectionInfoRaw[section].m_size.y >> (9 - mipLevels);
     }
 
     TextureCacheResetLoadCount();

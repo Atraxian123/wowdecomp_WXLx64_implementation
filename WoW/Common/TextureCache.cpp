@@ -1,6 +1,5 @@
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <new>
 #include "WoW/Common/TextureCache.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
@@ -10,8 +9,6 @@
 #include "Engine/Source/Services/Texture.h"
 #include "Engine/Source/Services/Types.h"
 #include "Engine/Source/Storm/H/storm.h"
-#include "WoW/Common/BlpDecode.hpp"
-#include <vector>
 
 // STATIC: 0x00B6BA48
 static HASHKEY_NONE s_cacheKey;
@@ -38,25 +35,8 @@ static void FreeRequest(CAsyncObject* object) {
 static void LoadSuccessCallback(void* param) {
     CACHEENTRY* entry = static_cast<CACHEENTRY*>(param);
 
-    // WXL: the size must be read before the async object is destroyed (m_size is only 20 bits wide).
-    const uint32_t wxlFileSize = entry->m_asyncObject->m_size;
-
     AsyncFileReadDestroyObject(entry->m_asyncObject);
     BLPHeader* header = entry->m_data;
-
-    // WXL: the compositor only understands palette indices. A DXT (or BGRA) layer is decoded here to a full
-    // BGRA mip chain instead of being rejected or palettized; CCharacterComponent::Paste* has a BGRA path.
-    if (wxlFileSize >= sizeof(BLPHeader) - sizeof(header->m_extended) && CBLPFile::ValidateHeader(*header) &&
-        (header->m_colorEncoding == 2 || header->m_colorEncoding == 3)) {
-        std::vector<uint8_t> bgra;
-        if (blpdec::ConvertToBgraBlp({ reinterpret_cast<const uint8_t*>(header), wxlFileSize }, bgra)) {
-            void* replacement = SMemAlloc(static_cast<uint32_t>(bgra.size()), __FILE__, __LINE__, 0);
-            memcpy(replacement, bgra.data(), bgra.size());
-            SMemFree(entry->m_data, __FILE__, __LINE__, 0);
-            entry->m_data = static_cast<BLPHeader*>(replacement);
-            header = entry->m_data;
-        }
-    }
     entry->m_asyncObject = nullptr;
     CBLPFile::ValidateHeader(*header);
 
@@ -132,13 +112,6 @@ BlpPalPixel* TextureCacheGetPal(void* handle) {
     }
 
     return entry->m_data->m_extended.m_palette;
-}
-
-// WXL
-int32_t TextureCacheIsBgra(void* handle) {
-    CACHEENTRY* entry = static_cast<CACHEENTRY*>(handle);
-
-    return entry && !entry->m_loadFailed && entry->m_data && entry->m_data->m_colorEncoding == 3;
 }
 
 // VERIFY: 8b89ff06 manual
