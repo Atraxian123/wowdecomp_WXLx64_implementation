@@ -1,0 +1,168 @@
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index f815366..49262ee 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -194,7 +194,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+     // two (column 0/1) renderCtx values this subObj had before, rather than leaking entries for
+     // pointers that may since have been freed and reused by an unrelated instance -- see
+     // HandleOffhandWeaponOverride's own update-in-place logic.
+-    struct OffhandMirrorState { void* rctx[2] = { nullptr, nullptr }; };
++    struct OffhandMirrorState { void* rctx[2] = { nullptr, nullptr }; uint32_t lastStamp[2] = { 0xFFFFFFFFu, 0xFFFFFFFFu }; };
+     static std::unordered_map<void*, OffhandMirrorState> g_offhandMirrorBySubObj;
+     // ApplyOffhandAutoMirrorGuarded itself is defined further down, after RenderCtxBoneCountGuarded/
+     // GuardedReadPtr exist -- see the comment there for how it works.
+@@ -539,6 +539,29 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+     // (and crash-prone) pre-mirrored copy of the model on disk. Reuses RenderCtxBoneCountGuarded's
+     // own model/header validation, so a stale renderCtx recycled for a smaller/unrelated model
+     // safely bails out (count 0) instead of writing past the live palette's real size.
++    // Returns true if the palette was (re)built by the engine during THIS frame. The OnBuildBonePalette
++    // event fires on EXIT of CM2Model::AnimateMT, including its early-return paths (animation data not
++    // ready, or m_frameStamp already == scene frame stamp). On those paths the palette was NOT rebuilt,
++    // so mirroring again would un-mirror (double flip) or touch a palette that was never filled.
++    static bool PaletteBuiltThisFrameGuarded(void* renderCtx, uint32_t& stampOut) noexcept
++    {
++        __try
++        {
++            auto* m = static_cast<CM2Model*>(renderCtx);
++            if (!m || !m->m_scene || !m->m_shared || !m->m_shared->m_data) return false;
++            if (!(m->m_fFlags & 1)) return false;                   // animation data not ready yet
++            if (!m->m_boneMatrices) return false;
++            stampOut = m->m_scene->m_frameStamp;
++            return m->m_frameStamp == stampOut;                      // built this frame
++        }
++        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
++    }
++
++    // Mirrors the weapon across the local Y axis. For this client's row-vector convention
++    // (v' = v * M), left-multiplying M by diag(1,-1,1,1) negates exactly row 1 (b0..b3), which equals
++    // mirroring the source vertex across local Y BEFORE M is applied. (The previous code negated row 0,
++    // i.e. a mirror across X, which did not match the Y-mirror the old geometric bake produced.)
++    // The attach-point position/orientation are unaffected; only the weapon's own shape flips.
+     static void ApplyOffhandAutoMirrorGuarded(void* renderCtx) noexcept
+     {
+         if (!renderCtx) return;
+@@ -552,11 +575,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         {
+             for (uint32_t bi = 0; bi < boneCount; ++bi)
+             {
+-                auto* row0 = reinterpret_cast<float*>(buf + bi * eng::kBonePaletteStride);
+-                row0[0] = -row0[0];
+-                row0[1] = -row0[1];
+-                row0[2] = -row0[2];
+-                row0[3] = -row0[3];
++                auto* row1 = reinterpret_cast<float*>(buf + bi * eng::kBonePaletteStride) + 4;
++                row1[0] = -row1[0];
++                row1[1] = -row1[1];
++                row1[2] = -row1[2];
++                row1[3] = -row1[3];
+             }
+         }
+         __except (EXCEPTION_EXECUTE_HANDLER) {}
+@@ -2327,6 +2350,43 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+     // and put the offhand model there. The offhand weapon is held in the left hand.
+     constexpr uint32_t kWeaponAttachOffHand  = 2;
+ 
++    // Finds the child instance vanilla's AddHandItem/AddLink already attached under `parent` at `attachId`
++    // whose model file name matches `vpath` (case-insensitive, '/' == '\\', directory ignored, extension
++    // ignored). The hand-item resolver already makes vanilla load the virtual offhand key, so that instance
++    // is the right model AND carries all the setup AddLink performs (texture binding, item visual, flags).
++    // Replacing it with a bare CreateModel+AttachToParent instance skipped that setup.
++    static bool NameStemEqualsNoCase(const char* a, const char* b) noexcept
++    {
++        auto stem = [](const char* p, char* out, size_t cap) {
++            const char* last = p;
++            for (const char* c = p; *c; ++c) if (*c == '\\' || *c == '/') last = c + 1;
++            size_t n = 0;
++            for (const char* c = last; *c && n + 1 < cap; ++c) out[n++] = (char)tolower((unsigned char)*c);
++            out[n] = 0;
++            char* dot = strrchr(out, '.');
++            if (dot) *dot = 0;
++        };
++        char sa[260], sb[260];
++        stem(a, sa, sizeof(sa)); stem(b, sb, sizeof(sb));
++        return sa[0] && strcmp(sa, sb) == 0;
++    }
++
++    static void* FindAttachedChildByNameGuarded(void* parent, uint32_t attachId, const char* vpath) noexcept
++    {
++        if (!parent || !vpath) return nullptr;
++        __try
++        {
++            uint32_t guard = 0;
++            for (CM2Model* c = static_cast<CM2Model*>(parent)->m_attachList; c && guard < 256; c = c->m_attachNext, ++guard)
++            {
++                if (c->m_attachmentId != attachId || !c->m_shared) continue;
++                if (NameStemEqualsNoCase(c->m_shared->m_fileName, vpath)) return c;
++            }
++        }
++        __except (EXCEPTION_EXECUTE_HANDLER) {}
++        return nullptr;
++    }
++
+     static void HandleOffhandWeaponOverride(void* cmo, void* subObj, uint32_t displayId)
+     {
+         if (!subObj || displayId == 0) return; // unequip: nothing to override, native detach handles it
+@@ -2372,18 +2432,37 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         // Phase1/Phase2 for armor -- see that comment for the full explanation of why the ordering
+         // matters.
+         void* rctx[2] = { nullptr, nullptr };
+-        if (has0) rctx[0] = SafeGetRenderCtx(subObj, vPath[0]);
+-        if (has1) rctx[1] = SafeGetRenderCtx(subObj, vPath[1]);
+-        if (!rctx[0] && !rctx[1])
++
++        // Column 0: vanilla already attached the right (virtual offhand) model with full AddLink setup. Reuse it.
++        void* vanilla0 = has0 ? FindAttachedChildByNameGuarded(subObj, kWeaponAttachOffHand, vPath[0]) : nullptr;
++        if (vanilla0)
+         {
+-            EquipLog("  HandleOffhandWeaponOverride: GetRenderCtx failed for both columns, aborting");
+-            return;
++            rctx[0] = vanilla0;
++            EquipLog("  HandleOffhandWeaponOverride: reusing vanilla-attached offhand instance %p (no detach/replace)", vanilla0);
++        }
++        else if (has0)
++        {
++            // Vanilla did NOT attach this model (e.g. resolver not applied): fall back to replace.
++            rctx[0] = SafeGetRenderCtx(subObj, vPath[0]);
++            if (rctx[0])
++            {
++                SafeDetachSlot(subObj, kWeaponAttachOffHand);
++                eng::AttachToScene(rctx[0], subObj, kWeaponAttachOffHand, false);
++            }
+         }
+ 
+-        SafeDetachSlot(subObj, kWeaponAttachOffHand);
++        // Column 1 (second model, no vanilla equivalent): attach alongside, never detach column 0.
++        if (has1)
++        {
++            rctx[1] = SafeGetRenderCtx(subObj, vPath[1]);
++            if (rctx[1]) eng::AttachToScene(rctx[1], subObj, kWeaponAttachOffHand, false);
++        }
+ 
+-        if (rctx[0]) eng::AttachToScene(rctx[0], subObj, kWeaponAttachOffHand, false);
+-        if (rctx[1]) eng::AttachToScene(rctx[1], subObj, kWeaponAttachOffHand, false);
++        if (!rctx[0] && !rctx[1])
++        {
++            EquipLog("  HandleOffhandWeaponOverride: no offhand instance found/created, aborting");
++            return;
++        }
+ 
+         // Re-flag for the (now freshly attached, or none) renderCtx values. mirror[i] is only ever
+         // true when rctx[i] is the mainhand bake reused verbatim (see WeaponGetOffhandVirtualPath's
+@@ -3219,9 +3298,15 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         {
+             for (auto& [subObj, state] : g_offhandMirrorBySubObj)
+             {
+-                if (a.renderCtx == state.rctx[0] || a.renderCtx == state.rctx[1])
++                const int idx = (a.renderCtx == state.rctx[0]) ? 0 : (a.renderCtx == state.rctx[1]) ? 1 : -1;
++                if (idx >= 0)
+                 {
+-                    ApplyOffhandAutoMirrorGuarded(a.renderCtx);
++                    uint32_t stamp = 0;
++                    if (PaletteBuiltThisFrameGuarded(a.renderCtx, stamp) && state.lastStamp[idx] != stamp)
++                    {
++                        ApplyOffhandAutoMirrorGuarded(a.renderCtx);
++                        state.lastStamp[idx] = stamp;
++                    }
+                     break;
+                 }
+             }
