@@ -1,0 +1,111 @@
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index f516668..533079b 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -36,6 +36,7 @@
+ #include <cstring>
+ #include <cstdlib>
+ #include <cctype>
++#include <cmath>
+ #include <array>
+ #include <string>
+ #include <unordered_map>
+@@ -557,31 +558,79 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+     }
+ 
+-    // Mirrors the weapon across the local Y axis. For this client's row-vector convention
+-    // (v' = v * M), left-multiplying M by diag(1,-1,1,1) negates exactly row 1 (b0..b3), which equals
+-    // mirroring the source vertex across local Y BEFORE M is applied. (The previous code negated row 0,
+-    // i.e. a mirror across X, which did not match the Y-mirror the old geometric bake produced.)
+-    // The attach-point position/orientation are unaffected; only the weapon's own shape flips.
+-    static void ApplyOffhandAutoMirrorGuarded(void* renderCtx) noexcept
++    // Mirrors the weapon across the model's local Y axis, bone by bone, on the freshly built palette.
++    //
++    // A palette matrix maps a model-space vertex to view space: M_b = L_b * W, where L_b is the bone's
++    // posed local transform and W = m_matrixF4 (world * view). The correct mirrored model is the posed
++    // model reflected in model space: v' = (v * L_b) * S * W, S = diag(1,-1,1). That is NOT S * M_b
++    // (reflect the vertex first): that only holds for bones lying on the mirror plane, and displaced every
++    // bone whose pivot has y != 0. So:
++    //
++    //   regular bone   : M_b' = M_b * Q,  Q = W^-1 * S * W      (one Q per model per frame)
++    //
++    //   billboard bone : the engine rebuilds these from the CAMERA every frame (rotation rows replaced by
++    //                    view-aligned ones, translation re-pinned so the bone pivot p stays at
++    //                    pivot_view = p * M_b). Applying Q to the rotation would turn the quad away from
++    //                    the camera, and reflecting vertices around the model origin (the previous code)
++    //                    moves the pivot. Instead: reflect the quad in its LOCAL Y about its own pivot
++    //                    (negate row b, and d += 2*p.y*rowB_old -- this keeps p fixed), so it still faces
++    //                    the camera but has the reversed winding the swapped cull mode expects, then move
++    //                    the pivot to where the mirrored skeleton puts it: pivot_view * Q.
++    //
++    // Billboard test is the engine's own (CM2Model::AnimateMT): (boneData->m_flags | bone->m_flags) & 0x78.
++    // Children of a billboard bone are mirrored by the regular rule (positions right, orientation not
++    // re-billboarded).
++    static void MirrorPaletteImpl(CM2Model* m, uint32_t boneCount) noexcept
+     {
+-        if (!renderCtx) return;
+-        const uint32_t boneCount = RenderCtxBoneCountGuarded(renderCtx);
+-        if (boneCount == 0) return;
+-        auto* buf = reinterpret_cast<uint8_t*>(
+-            eng::ModelBonePalette(renderCtx));
+-        if (!buf) return;
++        M2Data* data = m->m_shared->m_data;
++        const C44Matrix W = m->m_matrixF4;
++        const bool haveQ = std::fabs(W.Determinant()) > 1e-12f;
++        C44Matrix Q;
++        Q.Identity();
++        if (haveQ)
++        {
++            C44Matrix S;
++            S.Identity();
++            S.b1 = -1.0f;
++            Q = W.Inverse() * S * W;
++        }
+ 
+-        __try
++        for (uint32_t bi = 0; bi < boneCount; ++bi)
+         {
+-            for (uint32_t bi = 0; bi < boneCount; ++bi)
++            C44Matrix& M = m->m_boneMatrices[bi];
++            const uint32_t flags = data->m_bones[bi].m_flags | (m->m_bones ? m->m_bones[bi].m_flags : 0u);
++
++            if (flags & 0x78) // billboard bone
+             {
+-                auto* row1 = reinterpret_cast<float*>(buf + bi * eng::kBonePaletteStride) + 4;
+-                row1[0] = -row1[0];
+-                row1[1] = -row1[1];
+-                row1[2] = -row1[2];
+-                row1[3] = -row1[3];
++                const C3Vector p = data->m_bones[bi].m_pivot;
++                const C3Vector pv = p * M;                         // where the engine pinned the pivot
++                const C3Vector pq = haveQ ? (pv * Q) : pv;         // where the mirrored skeleton needs it
++                const float ob0 = M.b0, ob1 = M.b1, ob2 = M.b2;
++                M.b0 = -ob0; M.b1 = -ob1; M.b2 = -ob2;             // local-Y reflection (keeps camera facing)
++                M.d0 += 2.0f * p.y * ob0 + (pq.x - pv.x);
++                M.d1 += 2.0f * p.y * ob1 + (pq.y - pv.y);
++                M.d2 += 2.0f * p.y * ob2 + (pq.z - pv.z);
++            }
++            else if (haveQ)
++            {
++                M = M * Q;
++            }
++            else
++            {
++                M.b0 = -M.b0; M.b1 = -M.b1; M.b2 = -M.b2; M.b3 = -M.b3; // degenerate world matrix fallback
+             }
+         }
++    }
++
++    static void ApplyOffhandAutoMirrorGuarded(void* renderCtx) noexcept
++    {
++        if (!renderCtx) return;
++        const uint32_t boneCount = RenderCtxBoneCountGuarded(renderCtx);
++        if (boneCount == 0) return;
++        auto* m = static_cast<CM2Model*>(renderCtx);
++        if (!m->m_boneMatrices || !m->m_shared || !m->m_shared->m_data) return;
++
++        __try { MirrorPaletteImpl(m, boneCount); }
+         __except (EXCEPTION_EXECUTE_HANDLER) {}
+     }
+ 
