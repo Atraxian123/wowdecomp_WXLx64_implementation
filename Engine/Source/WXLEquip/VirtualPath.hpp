@@ -277,6 +277,15 @@ namespace wxl::scripts::equipextension
                                      uint32_t* outDisplayId);
 
     /**
+     * @brief True when `name` is a virtual path this module minted and still holds (a collection key
+     *        from VPathPopulate, or a global key from VPathPopulateGlobal*), false for a real model.
+     *        Lets a caller tell "<stem>_<digits>.m2" the virtual key from "<stem>_<digits>.m2" the
+     *        real model, which VPathDecodeGlobalVirtualKey cannot (it only checks the shape).
+     *        Thread-safe; takes the same lock the client's loader threads take in VirtualProvide.
+     */
+    bool VPathIsVirtualKey(const char* name);
+
+    /**
      * @brief Reads a boolean value out of WXLExtendedEquipment.ini, sitting beside WarcraftXL.dll
      *        itself -- this module is built into WarcraftXL.dll (there is no separate
      *        WXLExtendedEquipment.dll), so in practice that means the game's own root folder.

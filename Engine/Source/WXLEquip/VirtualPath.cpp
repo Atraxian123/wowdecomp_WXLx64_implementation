@@ -1839,6 +1839,16 @@ namespace wxl::scripts::equipextension
         if (resolver) g_lazyResolvers.push_back(resolver);
     }
 
+    bool VPathIsVirtualKey(const char* name)
+    {
+        if (!name || !*name) return false;
+        std::lock_guard<std::recursive_mutex> vpLock(g_vpMutex);
+        if (std::strstr(name, "_wxl_") && g_virtualBytes.count(name)) return true;
+        char norm[264];
+        NormalizeRealPath(norm, sizeof(norm), name);   // the form g_globalOverrides is keyed by
+        return g_globalOverrides.count(norm) != 0;
+    }
+
     bool VPathDecodeGlobalVirtualKey(const char* virtualPathName, char* outNormPath, size_t outNormPathSz,
                                      uint32_t* outDisplayId)
     {
