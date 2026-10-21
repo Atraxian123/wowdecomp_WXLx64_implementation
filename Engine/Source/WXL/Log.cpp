@@ -57,16 +57,35 @@ namespace wxl
             return t;
         }
 
+        // [Log] Enabled in WXLExtendedEquipment.ini, which sits beside the client executable (the same file
+        // the equip modules read; WXLCore cannot call their helper, so the lookup is repeated here, kept
+        // free of any logging so it cannot recurse). Missing file, section or key: off.
+        bool IniEnabled()
+        {
+#ifdef _WIN32
+            char path[MAX_PATH] = {};
+            const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
+            if (n == 0 || n >= sizeof(path)) return false;
+            char* slash = std::strrchr(path, '\\');
+            const char* name = "WXLExtendedEquipment.ini";
+            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return false;
+            std::strcpy(slash + 1, name);
+            return GetPrivateProfileIntA("Log", "Enabled", 0, path) != 0;
+#else
+            return false;
+#endif
+        }
+
         bool DecideEnabled()
         {
+            // the environment wins for a single run: WXL_LOG=1 forces on, WXL_LOG=0 (or n/f) forces off
             const char* env = std::getenv("WXL_LOG");
-            if (env && (*env == '0' || *env == 'n' || *env == 'N' || *env == 'f' || *env == 'F')) return false;
-            if (FILE* flag = std::fopen("WXL.log.disable", "rb"))
+            if (env && *env)
             {
-                std::fclose(flag);
-                return false;
+                if (*env == '0' || *env == 'n' || *env == 'N' || *env == 'f' || *env == 'F') return false;
+                return true;
             }
-            return true;
+            return IniEnabled();
         }
 
         struct Sink
@@ -92,7 +111,7 @@ namespace wxl
             {
                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
                 if (!sink.file) { sink.capped = true; return; }
-                std::fprintf(sink.file, "==== WXL log opened (set WXL_LOG=0 or create WXL.log.disable to turn off) ====\n");
+                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1) ====\n");
             }
 
             const Timestamp t = Now();

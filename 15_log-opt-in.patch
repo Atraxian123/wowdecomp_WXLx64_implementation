@@ -1,0 +1,100 @@
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+index a0c90c4..26a0848 100644
+--- a/Engine/Source/WXL/Log.cpp
++++ b/Engine/Source/WXL/Log.cpp
+@@ -57,16 +57,35 @@ namespace wxl
+             return t;
+         }
+ 
++        // [Log] Enabled in WXLExtendedEquipment.ini, which sits beside the client executable (the same file
++        // the equip modules read; WXLCore cannot call their helper, so the lookup is repeated here, kept
++        // free of any logging so it cannot recurse). Missing file, section or key: off.
++        bool IniEnabled()
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
++            if (n == 0 || n >= sizeof(path)) return false;
++            char* slash = std::strrchr(path, '\\');
++            const char* name = "WXLExtendedEquipment.ini";
++            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return false;
++            std::strcpy(slash + 1, name);
++            return GetPrivateProfileIntA("Log", "Enabled", 0, path) != 0;
++#else
++            return false;
++#endif
++        }
++
+         bool DecideEnabled()
+         {
++            // the environment wins for a single run: WXL_LOG=1 forces on, WXL_LOG=0 (or n/f) forces off
+             const char* env = std::getenv("WXL_LOG");
+-            if (env && (*env == '0' || *env == 'n' || *env == 'N' || *env == 'f' || *env == 'F')) return false;
+-            if (FILE* flag = std::fopen("WXL.log.disable", "rb"))
++            if (env && *env)
+             {
+-                std::fclose(flag);
+-                return false;
++                if (*env == '0' || *env == 'n' || *env == 'N' || *env == 'f' || *env == 'F') return false;
++                return true;
+             }
+-            return true;
++            return IniEnabled();
+         }
+ 
+         struct Sink
+@@ -92,7 +111,7 @@ namespace wxl
+             {
+                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
+                 if (!sink.file) { sink.capped = true; return; }
+-                std::fprintf(sink.file, "==== WXL log opened (set WXL_LOG=0 or create WXL.log.disable to turn off) ====\n");
++                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1) ====\n");
+             }
+ 
+             const Timestamp t = Now();
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+index 7f30883..e08b6ce 100644
+--- a/Engine/Source/WXL/Log.h
++++ b/Engine/Source/WXL/Log.h
+@@ -3,8 +3,16 @@
+ //
+ // Output goes to WXL.log in the working directory (the client's folder), truncated at each launch.
+ // Every line is flushed as it is written, so the last line is the last thing that happened even when
+-// the client crashes. Logging is ON by default; turn it off with env WXL_LOG=0 or by creating a file
+-// named WXL.log.disable next to the exe.
++// the client crashes.
++//
++// Logging is OPT-IN: nothing is written, and WXL.log is not even created, unless it is switched on in
++// WXLExtendedEquipment.ini (beside the client executable):
++//
++//     [Log]
++//     Enabled=1
++//
++// The environment variable WXL_LOG overrides the ini for one run: WXL_LOG=1 forces logging on,
++// WXL_LOG=0 forces it off. The choice is made once, on the first line any module tries to write.
+ //
+ // Line format:  [HH:MM:SS.mmm] [T<thread id>] [CATEGORY] message
+ #pragma once
+@@ -13,7 +21,8 @@
+ 
+ namespace wxl
+ {
+-    /// Whether logging is on for this run (decided once, on first use).
++    /// Whether logging is on for this run (decided once, on first use): env WXL_LOG, else the ini's
++    /// [Log] Enabled, else off.
+     bool LogEnabled();
+ 
+     /// printf-style line in category "WXL".
+diff --git a/Engine/Source/WXLEquip/Physics/README.md b/Engine/Source/WXLEquip/Physics/README.md
+index bdb0273..fc618b0 100644
+--- a/Engine/Source/WXLEquip/Physics/README.md
++++ b/Engine/Source/WXLEquip/Physics/README.md
+@@ -112,7 +112,7 @@ UnstickReach=300
+ TeleportYards=6
+ ```
+ 
+-Log lines (category `PHYS`): `has several anchors and no root body: N anchor(s) now carry their followers`,
++Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLExtendedEquipment.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
+ `stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
+ `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
+ and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of

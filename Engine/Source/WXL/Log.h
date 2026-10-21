@@ -3,8 +3,16 @@
 //
 // Output goes to WXL.log in the working directory (the client's folder), truncated at each launch.
 // Every line is flushed as it is written, so the last line is the last thing that happened even when
-// the client crashes. Logging is ON by default; turn it off with env WXL_LOG=0 or by creating a file
-// named WXL.log.disable next to the exe.
+// the client crashes.
+//
+// Logging is OPT-IN: nothing is written, and WXL.log is not even created, unless it is switched on in
+// WXLExtendedEquipment.ini (beside the client executable):
+//
+//     [Log]
+//     Enabled=1
+//
+// The environment variable WXL_LOG overrides the ini for one run: WXL_LOG=1 forces logging on,
+// WXL_LOG=0 forces it off. The choice is made once, on the first line any module tries to write.
 //
 // Line format:  [HH:MM:SS.mmm] [T<thread id>] [CATEGORY] message
 #pragma once
@@ -13,7 +21,8 @@
 
 namespace wxl
 {
-    /// Whether logging is on for this run (decided once, on first use).
+    /// Whether logging is on for this run (decided once, on first use): env WXL_LOG, else the ini's
+    /// [Log] Enabled, else off.
     bool LogEnabled();
 
     /// printf-style line in category "WXL".

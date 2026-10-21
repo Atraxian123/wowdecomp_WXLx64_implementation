@@ -112,7 +112,7 @@ UnstickReach=300
 TeleportYards=6
 ```
 
-Log lines (category `PHYS`): `has several anchors and no root body: N anchor(s) now carry their followers`,
+Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLExtendedEquipment.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
 `stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
 `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
 and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
