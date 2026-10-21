@@ -7,7 +7,12 @@
 //   * each dynamic body's model-space bone goes back as bone x m_matrixF4, and every bone under a
 //     moved one is carried by its parent's delta;
 //   * time comes from the scene's clock (CM2Scene::m_time, ms); a second build in one frame takes 0 s;
-//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded.
+//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded;
+//   * stuck items: see PhysicsGuard.hpp. The model is prepared once (extra anchors carry their followers),
+//     and each frame the simulated bones are compared with the animated ones; an instance that stays far
+//     off, or whose placement teleports, is dropped (it is re-seeded from the animated pose next frame)
+//     and the palette is left as the engine built it for that frame. Re-seeding too often switches the
+//     instance's physics off for 10 s. There is no sleeping to wake: the engine never sleeps an item world.
 
 #include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
 
@@ -19,12 +24,15 @@
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
+#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
 #include "Engine/Source/WXLEquip/Physics/physics_domino.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -53,6 +61,18 @@ namespace wxl::equip::physics
             LARGE_INTEGER stillSince{};   // when the scene clock stopped moving
             LARGE_INTEGER lastQpc{};
             bool     haveClock = false;
+            std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
+            guard::Limits limits;                 // how far each dynamic bone may stray
+            guard::State  judge;
+        };
+
+        // Instances that had to be re-seeded: too many times in a short while switches them off for a bit.
+        struct Penalty
+        {
+            uint32_t windowStart = 0;
+            uint32_t count = 0;
+            uint32_t disabledUntil = 0;
+            uint32_t lastTouched = 0;
         };
 
         struct ModelEntry
@@ -64,6 +84,10 @@ namespace wxl::equip::physics
         std::mutex g_lock;                                            // guards the three below and g_stats
         std::unordered_map<void*, ModelEntry> g_models;               // shared model -> its physics
         std::unordered_map<void*, InstState> g_inst;                  // instance -> simulation
+        std::unordered_map<void*, Penalty> g_penalty;                 // instance -> re-seed history
+        guard::Config g_guardCfg;
+        bool g_carryAnchors = true;
+        constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
         Stats g_stats;
         uint32_t g_lastSweep = 0;
         std::atomic<bool> g_enabled{false};
@@ -175,6 +199,11 @@ namespace wxl::equip::physics
                 if (now - it->second.lastSeen > kForgetMs) { it = g_inst.erase(it); ++g_stats.dropped; }
                 else ++it;
             }
+            for (auto it = g_penalty.begin(); it != g_penalty.end();)
+            {
+                if (now - it->second.lastTouched > 30000) it = g_penalty.erase(it);
+                else ++it;
+            }
             g_stats.live = uint32_t(g_inst.size());
         }
 
@@ -192,6 +221,16 @@ namespace wxl::equip::physics
         g_enabled = wxl::scripts::equipextension::WxlIniGetBool("Physics", "Enabled", false);
         wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
                     g_enabled ? "on" : "off");
+        {
+            using wxl::scripts::equipextension::WxlIniGetBool;
+            using wxl::scripts::equipextension::WxlIniGetInt;
+            g_carryAnchors = WxlIniGetBool("Physics", "CarryAnchors", true);
+            g_guardCfg.enabled = WxlIniGetBool("Physics", "Unstick", true);
+            g_guardCfg.reach = float(std::max(WxlIniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
+            g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
+            wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
+                        g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+        }
         // After the equip extension's handler (subscribers run in subscription order).
         wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
     }
@@ -212,6 +251,7 @@ namespace wxl::equip::physics
         std::lock_guard<std::mutex> g(g_lock);
         g_models.clear();
         g_inst.clear();
+        g_penalty.clear();
         g_stats = Stats{};
         wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files will be read again");
     }
@@ -247,6 +287,11 @@ namespace wxl::equip::physics
         std::unique_lock<std::mutex> lk(g_lock);
         const uint32_t now = GetTickCount();
         SweepLocked(now);
+        {
+            // an instance that was re-seeded too often stays animated for a while
+            auto pen = g_penalty.find(instance);
+            if (pen != g_penalty.end() && pen->second.disabledUntil && int32_t(now - pen->second.disabledUntil) < 0) return;
+        }
 
         // This model's physics, looked up once (and again if the slot was reused by another file).
         // The lookup reads files, so it runs with the lock released: other animate threads keep going.
@@ -268,8 +313,16 @@ namespace wxl::equip::physics
                     wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", s.stem, s.boneCount);
             }
             lk.lock();
-            g_models[s.shared] = ModelEntry{ s.stem, res.model };
-            model = res.model;
+            // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
+            int carried = 0;
+            model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
+            if (carried)
+            {
+                ++g_stats.modelsCarried;
+                wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
+                            s.stem, carried);
+            }
+            g_models[s.shared] = ModelEntry{ s.stem, model };
         }
         else model = mi->second.model;
         if (!model) return;
@@ -291,7 +344,9 @@ namespace wxl::equip::physics
         {
             st = InstState{};
             st.shared = s.shared;
+            st.model = model;
             st.sim = std::make_unique<phys::Instance>(model.get());
+            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), s.boneCount, g_guardCfg);
         }
         st.lastSeen = now;
 
@@ -349,6 +404,62 @@ namespace wxl::equip::physics
         phys::Carry(parents.data(), s.boneCount, before.data(), bones.data(), moved.get());
         for (float v : bones)
             if (!(v == v)) { ++g_stats.faults; g_inst.erase(instance); return; }   // never write a NaN
+
+        // The safety net: is this instance stuck or flung, or did it teleport? If so, leave the palette as
+        // the engine built it and start the simulation over from the animated pose on the next frame.
+        if (g_guardCfg.enabled)
+        {
+            // |simulated bone - animated bone| at each checked bone's pivot, in model units (the palette is
+            // camera-relative and carries the model's scale, so the distance is divided by that scale)
+            const float* own = s.ownMat;
+            const float scale = std::max(std::sqrt(own[4] * own[4] + own[5] * own[5] + own[6] * own[6]), 0.016f);
+            float dispBuf[64];
+            std::vector<float> dispHeap;
+            float* disp = dispBuf;
+            if (st.limits.bones.size() > 64) { dispHeap.resize(st.limits.bones.size()); disp = dispHeap.data(); }
+            for (size_t i = 0; i < st.limits.bones.size(); ++i)
+            {
+                const uint16_t b = st.limits.bones[i];
+                const phys::V3 pv = pivots[b];
+                const float* A = &before[size_t(b) * 16];
+                const float* B = &bones[size_t(b) * 16];
+                const float ax = pv.x * A[0] + pv.y * A[4] + pv.z * A[8] + A[12];
+                const float ay = pv.x * A[1] + pv.y * A[5] + pv.z * A[9] + A[13];
+                const float az = pv.x * A[2] + pv.y * A[6] + pv.z * A[10] + A[14];
+                const float bx = pv.x * B[0] + pv.y * B[4] + pv.z * B[8] + B[12];
+                const float by = pv.x * B[1] + pv.y * B[5] + pv.z * B[9] + B[13];
+                const float bz = pv.x * B[2] + pv.y * B[6] + pv.z * B[10] + B[14];
+                disp[i] = std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) / scale;
+            }
+            const double where[3] = { f.placement[3], f.placement[7], f.placement[11] };
+            float worst = 0;
+            uint16_t worstBone = 0xFFFF;
+            const guard::Verdict verdict = guard::Judge(st.limits, st.judge, where, disp, dt, g_guardCfg, &worst, &worstBone);
+            if (verdict != guard::Verdict::Ok)
+            {
+                const bool teleport = verdict == guard::Verdict::Teleport;
+                if (teleport) ++g_stats.teleports; else ++g_stats.unstuck;
+                if (wxl::LogThrottle("phys.unstick", 60, 50))
+                    wxl::LogCat("PHYS", "physics: %s '%s': %s, re-seeding (bone %u at %.0f%% of its limit, dt %.3f s)",
+                                teleport ? "teleport" : "stuck", s.stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
+                                unsigned(worstBone), worst * 100.0f, dt);
+
+                Penalty& pen = g_penalty[instance];
+                pen.lastTouched = now;
+                if (now - pen.windowStart > kPenaltyWindowMs) { pen.windowStart = now; pen.count = 0; }
+                if (++pen.count >= kPenaltyMax)
+                {
+                    pen.count = 0;
+                    pen.disabledUntil = now + kPenaltyOffMs;
+                    ++g_stats.disabled;
+                    if (wxl::LogThrottle("phys.disabled", 20, 0))
+                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", s.stem, kPenaltyMax,
+                                    kPenaltyWindowMs / 1000, kPenaltyOffMs / 1000);
+                }
+                g_inst.erase(instance);
+                return;
+            }
+        }
         if (!SafeCopy(const_cast<C44Matrix*>(s.palette), bones.data(), bones.size() * sizeof(float)))
         {
             ++g_stats.faults;

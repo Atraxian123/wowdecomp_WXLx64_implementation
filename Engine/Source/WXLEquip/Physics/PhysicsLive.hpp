@@ -17,6 +17,15 @@
 //
 // Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
 //
+// Stuck items (PhysicsGuard.hpp). Two more keys, both on by default:
+//     CarryAnchors=1       a model with several kinematic anchors and no root body: every anchor carries
+//                          the dynamic bodies hanging from it (retail carries only the first one, so the
+//                          others trail behind during a jump or a flight of stairs)
+//     Unstick=1            an instance whose bones stay far from where the animation puts them, or whose
+//                          placement jumps (teleport), is dropped and re-seeded from the animated pose
+//     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
+//     TeleportYards=6      a placement move farther than this in one frame is a teleport
+//
 // The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT,
 // original 0x0082F0F0). Init() subscribes AFTER the equip extension's own handler, and subscribers
 // run in order, so physics sees the palette after the equip remap/mirror, as the injected build did.
@@ -45,6 +54,10 @@ namespace wxl::equip::physics
         uint32_t steps = 0;           // simulation steps run (all instances)
         uint32_t faults = 0;          // reads/writes that hit bad memory (instance skipped)
         uint32_t dropped = 0;         // instances forgotten after 2 s unseen
+        uint32_t unstuck = 0;         // instances re-seeded because a bone stayed far from its animated pose
+        uint32_t teleports = 0;       // instances re-seeded because the placement jumped
+        uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
+        uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
         double   worstFrameMs = 0;
     };

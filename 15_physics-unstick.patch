@@ -1,0 +1,752 @@
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp b/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp
+new file mode 100644
+index 0000000..2cef7ff
+--- /dev/null
++++ b/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp
+@@ -0,0 +1,119 @@
++// See PhysicsGuard.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++namespace wxl::equip::physics::guard
++{
++    namespace
++    {
++        constexpr uint16_t kGroupRoot = 0x4000;
++        constexpr uint16_t kGroupHead = 0x8000;
++
++        float Dist(const phys::V3& a, const phys::V3& b)
++        {
++            const float x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
++            return std::sqrt(x * x + y * y + z * z);
++        }
++    }
++
++    std::shared_ptr<phys::Model> PrepareModel(const std::shared_ptr<phys::Model>& in, bool carryAnchors, int* changed)
++    {
++        if (changed) *changed = 0;
++        if (!in || !carryAnchors) return in;
++
++        // With a root body the retail loop already carries every anchor by the root's delta.
++        bool hasRoot = false;
++        int kinematic = 0, loose = 0;
++        for (const phys::BodyDef& b : in->bodies)
++        {
++            if (b.group == kGroupRoot) hasRoot = true;
++            if (b.type == phys::kBodyKinematic)
++            {
++                ++kinematic;
++                if (b.group == 0) ++loose;
++            }
++        }
++        // One anchor is the head the engine already picks. Two or more: the second one on is not carried.
++        if (hasRoot || kinematic < 2 || loose == 0) return in;
++
++        auto out = std::make_shared<phys::Model>(*in);
++        int n = 0;
++        for (phys::BodyDef& b : out->bodies)
++        {
++            if (b.type == phys::kBodyKinematic && b.group == 0)
++            {
++                b.group = kGroupHead;
++                ++n;
++            }
++        }
++        if (changed) *changed = n;
++        return out;
++    }
++
++    Limits Build(const phys::Model& m, const phys::V3* pivots, size_t boneCount, const Config& cfg)
++    {
++        Limits lim;
++        if (!pivots) return lim;
++
++        std::vector<phys::V3> anchors;
++        for (const phys::BodyDef& b : m.bodies)
++        {
++            const bool driven = b.type != phys::kBodyDynamic || b.group == kGroupRoot || b.group == kGroupHead;
++            if (driven && b.bone < boneCount) anchors.push_back(pivots[b.bone]);
++        }
++        if (anchors.empty()) return lim;
++
++        for (const phys::BodyDef& b : m.bodies)
++        {
++            if (b.type != phys::kBodyDynamic || b.group == kGroupRoot || b.group == kGroupHead) continue;
++            if (b.bone >= boneCount) continue;
++            float chain = 1e30f;
++            for (const phys::V3& a : anchors) chain = std::min(chain, Dist(pivots[b.bone], a));
++            lim.bones.push_back(b.bone);
++            lim.limit.push_back(cfg.reach * chain + cfg.slack);
++        }
++        return lim;
++    }
++
++    Verdict Judge(const Limits& lim, State& st, const double placement[3], const float* disp, float dt,
++                  const Config& cfg, float* worst, uint16_t* worstBone)
++    {
++        if (worst) *worst = 0;
++        Verdict v = Verdict::Ok;
++
++        // a teleport: the placement itself moved farther in one frame than anything walks, rides or falls
++        if (st.havePos)
++        {
++            const double dx = placement[0] - st.lastPos[0], dy = placement[1] - st.lastPos[1], dz = placement[2] - st.lastPos[2];
++            if (std::sqrt(dx * dx + dy * dy + dz * dz) > double(cfg.teleportYards)) v = Verdict::Teleport;
++        }
++        st.havePos = true;
++        st.lastPos[0] = placement[0];
++        st.lastPos[1] = placement[1];
++        st.lastPos[2] = placement[2];
++        if (v == Verdict::Teleport) { st.overSec = 0; return v; }
++
++        // a stuck or flung bone: over its limit for graceSec of simulated time
++        float ratio = 0;
++        uint16_t bone = 0xFFFF;
++        bool bad = false;
++        for (size_t i = 0; i < lim.bones.size(); ++i)
++        {
++            const float r = lim.limit[i] > 0 ? disp[i] / lim.limit[i] : 0;
++            if (!(r == r)) { ratio = 1e9f; bone = lim.bones[i]; bad = true; break; }   // NaN
++            if (r > ratio) { ratio = r; bone = lim.bones[i]; }
++        }
++        if (ratio > 1.0f) bad = true;
++        if (worst) *worst = ratio;
++        if (worstBone) *worstBone = bone;
++
++        const float step = std::min(std::max(dt, 0.0f), 0.1f);
++        if (bad) st.overSec += step;
++        else st.overSec = std::max(0.0f, st.overSec - 2.0f * step);   // swinging back in is forgiven quickly
++        return st.overSec >= cfg.graceSec ? Verdict::Stuck : Verdict::Ok;
++    }
++}
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp b/Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp
+new file mode 100644
+index 0000000..f538623
+--- /dev/null
++++ b/Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp
+@@ -0,0 +1,81 @@
++// Keeps a simulated item from staying stuck. Engine-free: no client types, so the same code runs in the
++// client (PhysicsLive.cpp) and in the test program (Tools/PhysicsGuardTest).
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Two separate problems, two separate tools.
++//
++// 1. PrepareModel: a model with SEVERAL kinematic anchors and no root body (BDY4 group 0x4000) is carried by
++//    the retail rules only through its FIRST anchor ("head", group 0x8000, picked by the engine when no body
++//    has a group). A second anchor teleports with its bone, but the dynamic bodies hanging from it are not
++//    carried, so the joints have to drag them: during a jump or a flight of stairs the bone moves faster than
++//    the joint solver can follow, and that chain trails 1 yd or more behind the item for as long as the
++//    motion lasts (measured by Tools/PhysicsGuardTest, scenario "second anchor"). PrepareModel gives every
++//    such anchor the head group, so its followers move with it, the way the first anchor's do.
++//
++// 2. Judge: the safety net. Whatever the cause, a dynamic bone that stays much farther from where the
++//    animation puts it than its own distance to the nearest anchor allows is stuck or has been flung. The
++//    caller then drops the instance (it is re-seeded from the animated pose on the next frame) and does not
++//    write the palette that frame. A placement that jumps far in one frame (teleport, mount, phase) takes
++//    the same way out. Nothing here can put a body to sleep: the engine never sleeps an item world (see
++//    physics_domino.cpp, "item bodies are made with sleeping off"), so "stuck" is never sleep.
++#pragma once
++
++#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
++
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <vector>
++
++namespace wxl::equip::physics::guard
++{
++    namespace phys = wow::ec::physics;
++
++    struct Config
++    {
++        bool  enabled       = true;    ///< the Judge safety net
++        float reach         = 3.0f;    ///< a bone may stray this many times its distance to the nearest anchor ...
++        float slack         = 0.15f;   ///< ... plus this much (model units)
++        float teleportYards = 6.0f;    ///< a placement that moves farther than this in one frame is a teleport
++        float graceSec      = 0.25f;   ///< simulated time over the limit before the instance counts as stuck
++    };
++
++    /**
++     * @brief The model the glue should run. Returns `in` itself when nothing needs changing.
++     * @param carryAnchors  apply fix 1 above
++     * @param changed       receives how many anchors were given the head group
++     */
++    std::shared_ptr<phys::Model> PrepareModel(const std::shared_ptr<phys::Model>& in, bool carryAnchors, int* changed = nullptr);
++
++    /// What Judge needs to know about one model: its dynamic bones and how far each may stray.
++    struct Limits
++    {
++        std::vector<uint16_t> bones;   ///< bone of each checked dynamic body
++        std::vector<float>    limit;   ///< allowed distance from the animated pose, model units
++    };
++
++    /**
++     * @brief Builds the limits from the model and the bones' pivots (model space).
++     *        Empty when the model has no anchor to measure from: then nothing is judged.
++     */
++    Limits Build(const phys::Model& m, const phys::V3* pivots, size_t boneCount, const Config& cfg);
++
++    struct State
++    {
++        bool   havePos = false;
++        double lastPos[3] = {};
++        float  overSec = 0;
++    };
++
++    enum class Verdict { Ok, Teleport, Stuck };
++
++    /**
++     * @brief Judges one simulated frame.
++     * @param placement  the instance's world position this frame (yards)
++     * @param disp       per entry of lim.bones: |simulated bone - animated bone| in model units
++     * @param dt         simulated seconds this frame
++     * @param worst      optional: receives the largest disp / limit, and `worstBone` its bone
++     */
++    Verdict Judge(const Limits& lim, State& st, const double placement[3], const float* disp, float dt,
++                  const Config& cfg, float* worst = nullptr, uint16_t* worstBone = nullptr);
++}
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp b/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
+index 561ae8b..9ac0f72 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
+@@ -7,7 +7,12 @@
+ //   * each dynamic body's model-space bone goes back as bone x m_matrixF4, and every bone under a
+ //     moved one is carried by its parent's delta;
+ //   * time comes from the scene's clock (CM2Scene::m_time, ms); a second build in one frame takes 0 s;
+-//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded.
++//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded;
++//   * stuck items: see PhysicsGuard.hpp. The model is prepared once (extra anchors carry their followers),
++//     and each frame the simulated bones are compared with the animated ones; an instance that stays far
++//     off, or whose placement teleports, is dropped (it is re-seeded from the animated pose next frame)
++//     and the palette is left as the engine built it for that frame. Re-seeding too often switches the
++//     instance's physics off for 10 s. There is no sleeping to wake: the engine never sleeps an item world.
+ 
+ #include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
+ 
+@@ -19,12 +24,15 @@
+ #include "Engine/Source/WXL/Event.h"
+ #include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
++#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
+ #include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
+ 
+ #include <windows.h>
+ 
++#include <algorithm>
+ #include <atomic>
++#include <cmath>
+ #include <cstdint>
+ #include <cstring>
+ #include <memory>
+@@ -53,6 +61,18 @@ namespace wxl::equip::physics
+             LARGE_INTEGER stillSince{};   // when the scene clock stopped moving
+             LARGE_INTEGER lastQpc{};
+             bool     haveClock = false;
++            std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
++            guard::Limits limits;                 // how far each dynamic bone may stray
++            guard::State  judge;
++        };
++
++        // Instances that had to be re-seeded: too many times in a short while switches them off for a bit.
++        struct Penalty
++        {
++            uint32_t windowStart = 0;
++            uint32_t count = 0;
++            uint32_t disabledUntil = 0;
++            uint32_t lastTouched = 0;
+         };
+ 
+         struct ModelEntry
+@@ -64,6 +84,10 @@ namespace wxl::equip::physics
+         std::mutex g_lock;                                            // guards the three below and g_stats
+         std::unordered_map<void*, ModelEntry> g_models;               // shared model -> its physics
+         std::unordered_map<void*, InstState> g_inst;                  // instance -> simulation
++        std::unordered_map<void*, Penalty> g_penalty;                 // instance -> re-seed history
++        guard::Config g_guardCfg;
++        bool g_carryAnchors = true;
++        constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
+         Stats g_stats;
+         uint32_t g_lastSweep = 0;
+         std::atomic<bool> g_enabled{false};
+@@ -175,6 +199,11 @@ namespace wxl::equip::physics
+                 if (now - it->second.lastSeen > kForgetMs) { it = g_inst.erase(it); ++g_stats.dropped; }
+                 else ++it;
+             }
++            for (auto it = g_penalty.begin(); it != g_penalty.end();)
++            {
++                if (now - it->second.lastTouched > 30000) it = g_penalty.erase(it);
++                else ++it;
++            }
+             g_stats.live = uint32_t(g_inst.size());
+         }
+ 
+@@ -192,6 +221,16 @@ namespace wxl::equip::physics
+         g_enabled = wxl::scripts::equipextension::WxlIniGetBool("Physics", "Enabled", false);
+         wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
+                     g_enabled ? "on" : "off");
++        {
++            using wxl::scripts::equipextension::WxlIniGetBool;
++            using wxl::scripts::equipextension::WxlIniGetInt;
++            g_carryAnchors = WxlIniGetBool("Physics", "CarryAnchors", true);
++            g_guardCfg.enabled = WxlIniGetBool("Physics", "Unstick", true);
++            g_guardCfg.reach = float(std::max(WxlIniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
++            g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
++            wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
++                        g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
++        }
+         // After the equip extension's handler (subscribers run in subscription order).
+         wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
+     }
+@@ -212,6 +251,7 @@ namespace wxl::equip::physics
+         std::lock_guard<std::mutex> g(g_lock);
+         g_models.clear();
+         g_inst.clear();
++        g_penalty.clear();
+         g_stats = Stats{};
+         wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files will be read again");
+     }
+@@ -247,6 +287,11 @@ namespace wxl::equip::physics
+         std::unique_lock<std::mutex> lk(g_lock);
+         const uint32_t now = GetTickCount();
+         SweepLocked(now);
++        {
++            // an instance that was re-seeded too often stays animated for a while
++            auto pen = g_penalty.find(instance);
++            if (pen != g_penalty.end() && pen->second.disabledUntil && int32_t(now - pen->second.disabledUntil) < 0) return;
++        }
+ 
+         // This model's physics, looked up once (and again if the slot was reused by another file).
+         // The lookup reads files, so it runs with the lock released: other animate threads keep going.
+@@ -268,8 +313,16 @@ namespace wxl::equip::physics
+                     wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", s.stem, s.boneCount);
+             }
+             lk.lock();
+-            g_models[s.shared] = ModelEntry{ s.stem, res.model };
+-            model = res.model;
++            // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
++            int carried = 0;
++            model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
++            if (carried)
++            {
++                ++g_stats.modelsCarried;
++                wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
++                            s.stem, carried);
++            }
++            g_models[s.shared] = ModelEntry{ s.stem, model };
+         }
+         else model = mi->second.model;
+         if (!model) return;
+@@ -291,7 +344,9 @@ namespace wxl::equip::physics
+         {
+             st = InstState{};
+             st.shared = s.shared;
++            st.model = model;
+             st.sim = std::make_unique<phys::Instance>(model.get());
++            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), s.boneCount, g_guardCfg);
+         }
+         st.lastSeen = now;
+ 
+@@ -349,6 +404,62 @@ namespace wxl::equip::physics
+         phys::Carry(parents.data(), s.boneCount, before.data(), bones.data(), moved.get());
+         for (float v : bones)
+             if (!(v == v)) { ++g_stats.faults; g_inst.erase(instance); return; }   // never write a NaN
++
++        // The safety net: is this instance stuck or flung, or did it teleport? If so, leave the palette as
++        // the engine built it and start the simulation over from the animated pose on the next frame.
++        if (g_guardCfg.enabled)
++        {
++            // |simulated bone - animated bone| at each checked bone's pivot, in model units (the palette is
++            // camera-relative and carries the model's scale, so the distance is divided by that scale)
++            const float* own = s.ownMat;
++            const float scale = std::max(std::sqrt(own[4] * own[4] + own[5] * own[5] + own[6] * own[6]), 0.016f);
++            float dispBuf[64];
++            std::vector<float> dispHeap;
++            float* disp = dispBuf;
++            if (st.limits.bones.size() > 64) { dispHeap.resize(st.limits.bones.size()); disp = dispHeap.data(); }
++            for (size_t i = 0; i < st.limits.bones.size(); ++i)
++            {
++                const uint16_t b = st.limits.bones[i];
++                const phys::V3 pv = pivots[b];
++                const float* A = &before[size_t(b) * 16];
++                const float* B = &bones[size_t(b) * 16];
++                const float ax = pv.x * A[0] + pv.y * A[4] + pv.z * A[8] + A[12];
++                const float ay = pv.x * A[1] + pv.y * A[5] + pv.z * A[9] + A[13];
++                const float az = pv.x * A[2] + pv.y * A[6] + pv.z * A[10] + A[14];
++                const float bx = pv.x * B[0] + pv.y * B[4] + pv.z * B[8] + B[12];
++                const float by = pv.x * B[1] + pv.y * B[5] + pv.z * B[9] + B[13];
++                const float bz = pv.x * B[2] + pv.y * B[6] + pv.z * B[10] + B[14];
++                disp[i] = std::sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az)) / scale;
++            }
++            const double where[3] = { f.placement[3], f.placement[7], f.placement[11] };
++            float worst = 0;
++            uint16_t worstBone = 0xFFFF;
++            const guard::Verdict verdict = guard::Judge(st.limits, st.judge, where, disp, dt, g_guardCfg, &worst, &worstBone);
++            if (verdict != guard::Verdict::Ok)
++            {
++                const bool teleport = verdict == guard::Verdict::Teleport;
++                if (teleport) ++g_stats.teleports; else ++g_stats.unstuck;
++                if (wxl::LogThrottle("phys.unstick", 60, 50))
++                    wxl::LogCat("PHYS", "physics: %s '%s': %s, re-seeding (bone %u at %.0f%% of its limit, dt %.3f s)",
++                                teleport ? "teleport" : "stuck", s.stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
++                                unsigned(worstBone), worst * 100.0f, dt);
++
++                Penalty& pen = g_penalty[instance];
++                pen.lastTouched = now;
++                if (now - pen.windowStart > kPenaltyWindowMs) { pen.windowStart = now; pen.count = 0; }
++                if (++pen.count >= kPenaltyMax)
++                {
++                    pen.count = 0;
++                    pen.disabledUntil = now + kPenaltyOffMs;
++                    ++g_stats.disabled;
++                    if (wxl::LogThrottle("phys.disabled", 20, 0))
++                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", s.stem, kPenaltyMax,
++                                    kPenaltyWindowMs / 1000, kPenaltyOffMs / 1000);
++                }
++                g_inst.erase(instance);
++                return;
++            }
++        }
+         if (!SafeCopy(const_cast<C44Matrix*>(s.palette), bones.data(), bones.size() * sizeof(float)))
+         {
+             ++g_stats.faults;
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp b/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
+index 08c48d8..7a8d0db 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
++++ b/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
+@@ -17,6 +17,15 @@
+ //
+ // Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
+ //
++// Stuck items (PhysicsGuard.hpp). Two more keys, both on by default:
++//     CarryAnchors=1       a model with several kinematic anchors and no root body: every anchor carries
++//                          the dynamic bodies hanging from it (retail carries only the first one, so the
++//                          others trail behind during a jump or a flight of stairs)
++//     Unstick=1            an instance whose bones stay far from where the animation puts them, or whose
++//                          placement jumps (teleport), is dropped and re-seeded from the animated pose
++//     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
++//     TeleportYards=6      a placement move farther than this in one frame is a teleport
++//
+ // The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT,
+ // original 0x0082F0F0). Init() subscribes AFTER the equip extension's own handler, and subscribers
+ // run in order, so physics sees the palette after the equip remap/mirror, as the injected build did.
+@@ -45,6 +54,10 @@ namespace wxl::equip::physics
+         uint32_t steps = 0;           // simulation steps run (all instances)
+         uint32_t faults = 0;          // reads/writes that hit bad memory (instance skipped)
+         uint32_t dropped = 0;         // instances forgotten after 2 s unseen
++        uint32_t unstuck = 0;         // instances re-seeded because a bone stayed far from its animated pose
++        uint32_t teleports = 0;       // instances re-seeded because the placement jumped
++        uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
++        uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
+         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
+         double   worstFrameMs = 0;
+     };
+diff --git a/Engine/Source/WXLEquip/Physics/README.md b/Engine/Source/WXLEquip/Physics/README.md
+index b8b3801..bdb0273 100644
+--- a/Engine/Source/WXLEquip/Physics/README.md
++++ b/Engine/Source/WXLEquip/Physics/README.md
+@@ -78,3 +78,42 @@ does not fit the model the client loaded (for example after a converter merged b
+ `OnBuildBonePalette` (end of `CM2Model::AnimateMT`, original `0x0082F0F0`). Subscribers run in subscription
+ order, so physics sees the palette after the equip remap and offhand mirror. The event can fire on animate
+ threads; the file lookup runs outside the global lock so a disk read never stalls other threads.
++
++---
++
++# Stuck items (jump, stairs): PhysicsGuard
++
++`PhysicsGuard.{hpp,cpp}` is engine-free (no client types). `Tools/PhysicsGuardTest/physics_guard_test.cpp` drives
++the real engine with a character that walks, jumps, climbs stairs and teleports (build line at the top of the file).
++
++**Sleeping is not the cause.** `physics_domino.cpp` never puts an item world to sleep: every body is made with
++`allowSleep = false`, so the sleep rule can never fire and `islandAwake` is only ever set to true. There is no
++sleeping position to wake.
++
++**What does get an item stuck (reproduced offline).** A model with *several* kinematic anchors and no root body
++(`BDY4` group `0x4000`) is carried through its first anchor only. A second anchor teleports with its bone, but the
++dynamic bodies hanging from it are not carried (`if (!head && S.root < 0) continue;` in `Instance::Step`), so the
++joints must drag them. During a jump or a flight of stairs the bone moves faster than the joint solver follows, and
++that chain trails 1 yd or more behind (tip 1.28 yd off for a 0.75 yd chain on a jump, 1.45 yd at 20 fps).
++`CarryAnchors=1` gives every such anchor the head group (`0x8000`): same scenarios, 0.15 to 0.24 yd.
++
++**The safety net.** Each frame the simulated bones are compared with the animated ones. A bone that stays farther
++than `UnstickReach` (default 300%) of its distance to the nearest anchor (plus 0.15) for 0.25 s of simulated time
++is stuck or flung; a placement that moves more than `TeleportYards` (default 6) in one frame is a teleport. Either
++way the palette is left as the engine built it, the instance is dropped and the next frame re-seeds it from the
++animated pose. Four re-seeds in 5 s switch that instance's physics off for 10 s, so it can never loop.
++
++```ini
++[Physics]
++Enabled=1
++CarryAnchors=1
++Unstick=1
++UnstickReach=300
++TeleportYards=6
++```
++
++Log lines (category `PHYS`): `has several anchors and no root body: N anchor(s) now carry their followers`,
++`stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
++`re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
++and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
++these, and the model named in the log is the one to look at.
+diff --git a/Tools/PhysicsGuardTest/physics_guard_test.cpp b/Tools/PhysicsGuardTest/physics_guard_test.cpp
+new file mode 100644
+index 0000000..9fcc23a
+--- /dev/null
++++ b/Tools/PhysicsGuardTest/physics_guard_test.cpp
+@@ -0,0 +1,251 @@
++// Test program for the physics "unstick" work. Standalone: no client, no CMake target.
++//
++//   g++ -std=c++17 -O1 -I <repo root> physics_guard_test.cpp \
++//       <repo root>/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp \
++//       <repo root>/Engine/Source/WXLEquip/Physics/physics_domino.cpp -o physics_guard_test
++//   ./physics_guard_test            (exit code 0 = every check passed)
++//
++// It drives the real engine (physics_domino.cpp, unchanged) with synthetic items and a character that
++// walks, jumps, climbs a flight of stairs and teleports, and checks:
++//   1. the problem: a second kinematic anchor with no carry group lags far behind during a jump or a
++//      flight of stairs; PrepareModel fixes it;
++//   2. Judge never fires on a healthy item (no false positives);
++//   3. Judge does fire on a flung chain (stuck) and on a teleport.
++#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <functional>
++#include <memory>
++#include <vector>
++
++using namespace wow::ec::physics;
++namespace gd = wxl::equip::physics::guard;
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++
++    struct Pose { double x, y, z, yaw; };
++    void Mat(const Pose& p, double M[16])   // column form, model -> world
++    {
++        const double c = std::cos(p.yaw), s = std::sin(p.yaw);
++        const double T[16] = { c, -s, 0, p.x, s, c, 0, p.y, 0, 0, 1, p.z, 0, 0, 0, 1 };
++        std::memcpy(M, T, sizeof T);
++    }
++
++    // chains hanging from kinematic anchors: anchor c sits at x = 0.4 * c; its chain follows it in body order
++    struct Rig
++    {
++        Model model;
++        std::vector<V3> pivots;     // per bone: 0 = root, 1.. = anchors, then the dynamic bones
++        int anchors = 1, segs = 4;
++        float seg = 0.25f;
++    };
++
++    Rig MakeRig(int anchors, int segs, float carry, float damp, float headRadius = 0.02f)
++    {
++        Rig r;
++        r.anchors = anchors;
++        r.segs = segs;
++        r.pivots.assign(1 + anchors + anchors * segs, V3{});
++        for (int c = 0; c < anchors; ++c)
++        {
++            const float ox = 0.4f * c;
++            BodyDef k;
++            k.type = kBodyKinematic; k.bone = uint16_t(1 + c); k.pos = { ox, 0, 0 }; k.gravity = 0; k.carry = carry;
++            const int kidx = int(r.model.bodies.size());
++            r.model.bodies.push_back(k);
++            r.pivots[1 + c] = { ox, 0, 0 };
++            ShapeDef ks; ks.body = uint8_t(kidx); ks.type = kShapeSphere; ks.a = { ox, 0, 0 }; ks.r = headRadius;
++            r.model.shapes.push_back(ks);
++            for (int i = 0; i < segs; ++i)
++            {
++                BodyDef b;
++                b.type = kBodyDynamic; b.bone = uint16_t(1 + anchors + c * segs + i); b.pos = { ox, 0, -r.seg * i };
++                b.gravity = 1; b.linDamp = damp; b.angDamp = damp;
++                const int bi = int(r.model.bodies.size());
++                r.model.bodies.push_back(b);
++                r.pivots[b.bone] = b.pos;
++                ShapeDef s; s.body = uint8_t(bi); s.type = kShapeCapsule; s.a = { 0, 0, 0 }; s.b = { 0, 0, -r.seg }; s.r = 0.03f;
++                r.model.shapes.push_back(s);
++                JointDef j; j.type = kJointShoulder; j.a = uint8_t(i == 0 ? kidx : bi - 1); j.b = uint8_t(bi);
++                j.pa = i == 0 ? V3{ 0, 0, 0 } : V3{ 0, 0, -r.seg }; j.pb = {};
++                j.f[0] = -45; j.f[1] = 45; j.f[2] = 45;
++                r.model.joints.push_back(j);
++            }
++        }
++        return r;
++    }
++
++    struct Outcome
++    {
++        double tipLag = 0;          // chain of the LAST anchor: farthest its tip got from the rest-hang tip
++        double finalErr = 0;        // ... after the hold
++        int stuck = 0, teleports = 0, firstStuckFrame = -1, firstTeleportFrame = -1;
++        float worstRatio = 0;
++    };
++
++    // Runs a rig through a motion, optionally with the guard.
++    Outcome Run(const std::shared_ptr<Model>& model, const Rig& rig, double ox, double fps, double moveEnd, double hold,
++                const std::function<Pose(double)>& poseAt, bool useGuard)
++    {
++        Outcome o;
++        Instance inst(model.get());
++        const gd::Config cfg;
++        const gd::Limits lim = gd::Build(*model, rig.pivots.data(), rig.pivots.size(), cfg);
++        gd::State st;
++        const double dt = 1.0 / fps;
++        const int lastChain = rig.anchors - 1;
++        int frame = 0;
++        for (double t = 0; t <= moveEnd + hold + 1e-9; t += dt, ++frame)
++        {
++            Pose p = poseAt(std::min(t, moveEnd));
++            p.x += ox;
++            std::vector<double> W(rig.pivots.size() * 16);
++            for (size_t b = 0; b < rig.pivots.size(); ++b) Mat(p, &W[b * 16]);
++            Frame f;
++            f.boneWorld = reinterpret_cast<const double (*)[16]>(W.data());
++            f.pivots = rig.pivots.data();
++            f.boneCount = rig.pivots.size();
++            Mat(p, f.placement);
++            f.dt = float(dt);
++            inst.Step(f);
++
++            // displacement of every dynamic bone from its animated pose (model space), like the glue
++            std::vector<float> disp(lim.bones.size(), 0.0f);
++            for (size_t i = 0; i < lim.bones.size(); ++i)
++            {
++                size_t body = 0;
++                for (size_t b = 0; b < model->bodies.size(); ++b)
++                    if (model->bodies[b].bone == lim.bones[i]) body = b;
++                double M[16];
++                if (!inst.Output(body, M)) continue;
++                const V3 pv = rig.pivots[lim.bones[i]];
++                const double px = M[3] + M[0] * pv.x + M[1] * pv.y + M[2] * pv.z;
++                const double py = M[7] + M[4] * pv.x + M[5] * pv.y + M[6] * pv.z;
++                const double pz = M[11] + M[8] * pv.x + M[9] * pv.y + M[10] * pv.z;
++                disp[i] = float(std::sqrt((px - pv.x) * (px - pv.x) + (py - pv.y) * (py - pv.y) + (pz - pv.z) * (pz - pv.z)));
++                if (int(lim.bones[i]) == int(1 + rig.anchors + lastChain * rig.segs + rig.segs - 1))
++                {
++                    o.tipLag = std::max(o.tipLag, double(disp[i]));
++                    if (t > moveEnd) o.finalErr = disp[i];
++                }
++            }
++            if (useGuard)
++            {
++                const double pos[3] = { f.placement[3], f.placement[7], f.placement[11] };
++                float worst = 0;
++                const gd::Verdict v = gd::Judge(lim, st, pos, disp.data(), float(dt), cfg, &worst);
++                o.worstRatio = std::max(o.worstRatio, worst);
++                if (v == gd::Verdict::Stuck) { if (!o.stuck++) o.firstStuckFrame = frame; st = gd::State{}; }
++                if (v == gd::Verdict::Teleport) { if (!o.teleports++) o.firstTeleportFrame = frame; }
++            }
++        }
++        return o;
++    }
++
++    Pose Jump(double t)
++    {
++        double z = 7.9555 * t - 0.5 * 19.29 * t * t;
++        if (z < 0) z = 0;
++        return { 7 * t, 0, z, 0.3 };
++    }
++    Pose Stairs(double t) { return { 5 * t, 0, 0.4 * std::floor(t / 0.15), 0.3 }; }
++    Pose SteepStairs(double t) { return { 5 * t, 0, 0.7 * std::floor(t / 0.2), 0.3 }; }
++    Pose Walk(double t) { return { 7 * t, 0, 0, 0.3 }; }
++    Pose Turn(double t) { return { 0, 0, 0, 6.28 * t }; }
++    Pose Teleport(double t) { return { t < 0.5 ? 0.0 : 30.0, 0, t < 0.5 ? 0.0 : 6.0, 0.3 }; }
++}
++
++int main()
++{
++    const double kWorld = -8913.2;   // a real map position: the engine's floats are world-sized
++    struct Motion { const char* name; double fps, end; std::function<Pose(double)> f; };
++    const Motion motions[] = {
++        { "jump", 60, 1.0, Jump }, { "stairs 0.4yd", 60, 2.0, Stairs }, { "steep stairs 0.7yd", 60, 2.0, SteepStairs },
++        { "jump @20fps", 20, 1.0, Jump },
++    };
++
++    std::printf("1. a second kinematic anchor with no carry group (the stuck chain)\n");
++    {
++        Rig rig = MakeRig(2, 4, 0.9f, 2.0f);
++        auto raw = std::make_shared<Model>(rig.model);
++        int changed = 0;
++        auto fixed = gd::PrepareModel(raw, true, &changed);
++        Check(changed == 2 && fixed != raw, "PrepareModel names both anchors head (the engine only names the first)");
++        Check(gd::PrepareModel(raw, false) == raw, "PrepareModel does nothing when switched off");
++        for (const Motion& m : motions)
++        {
++            const Outcome a = Run(raw, rig, kWorld, m.fps, m.end, 5.0, m.f, false);
++            const Outcome b = Run(fixed, rig, kWorld, m.fps, m.end, 5.0, m.f, false);
++            std::printf("     %-20s tip strays up to %.2f yd as shipped, %.2f yd with the fix\n", m.name, a.tipLag, b.tipLag);
++            if (m.fps >= 60) Check(a.tipLag > 3 * b.tipLag + 0.05, m.name);
++            else Check(b.tipLag <= a.tipLag + 1e-3, m.name);
++            Check(b.finalErr < 0.05, "    ... and it hangs straight again after the hold");
++        }
++        // single anchor / explicit root: nothing to fix
++        Rig one = MakeRig(1, 4, 0.9f, 2.0f);
++        Check(gd::PrepareModel(std::make_shared<Model>(one.model), true) != nullptr &&
++              gd::PrepareModel(std::make_shared<Model>(one.model), true)->bodies[0].group == 0, "a single-anchor model is left alone");
++        Rig rooted = MakeRig(2, 4, 0.9f, 2.0f);
++        rooted.model.bodies[0].group = 0x4000;
++        auto rp = std::make_shared<Model>(rooted.model);
++        Check(gd::PrepareModel(rp, true) == rp, "a model with a root body is left alone");
++    }
++
++    std::printf("2. the judge on healthy items: never fires\n");
++    {
++        const Motion all[] = {
++            { "idle", 60, 0.1, [](double) { return Pose{ 0, 0, 0, 0.3 }; } }, { "walk", 60, 3.0, Walk },
++            { "jump", 60, 1.0, Jump }, { "stairs", 60, 2.0, Stairs }, { "steep stairs", 60, 2.0, SteepStairs },
++            { "jump @20fps", 20, 1.0, Jump }, { "turn 360deg/s", 60, 2.0, Turn },
++        };
++        for (float damp : { 0.3f, 2.0f })
++            for (int anchors : { 1, 2 })
++            {
++                Rig rig = MakeRig(anchors, 4, 0.9f, damp);
++                auto model = gd::PrepareModel(std::make_shared<Model>(rig.model), true);
++                int fired = 0;
++                float worst = 0;
++                for (const Motion& m : all)
++                {
++                    const Outcome o = Run(model, rig, kWorld, m.fps, m.end, 3.0, m.f, true);
++                    fired += o.stuck + o.teleports;
++                    worst = std::max(worst, o.worstRatio);
++                }
++                std::printf("     %d anchor(s), damping %.1f: worst displacement is %.0f%% of its limit\n", anchors, damp, worst * 100);
++                Check(fired == 0, "no stuck / teleport verdict on any motion");
++            }
++    }
++
++    std::printf("3. the judge on failures\n");
++    {
++        // a chain that was flung: the head sphere is fatter than the first segment's anchor distance, so
++        // the contact solver throws the chain away (the same state a real model reaches when it is stuck)
++        Rig rig = MakeRig(1, 4, 0.9f, 2.0f, 0.15f);
++        for (auto& j : rig.model.joints) { j.type = kJointWeld; j.f[0] = 1; j.f[1] = 0.2f; j.f[2] = 1; j.f[3] = 0.2f; }
++        auto model = std::make_shared<Model>(rig.model);
++        const Outcome o = Run(model, rig, kWorld, 60, 0.1, 3.0, [](double) { return Pose{ 0, 0, 0, 0.3 }; }, true);
++        std::printf("     flung chain: strays %.2f yd, judged stuck at frame %d (%.2f s), %d verdict(s)\n", o.tipLag, o.firstStuckFrame,
++                    o.firstStuckFrame / 60.0, o.stuck);
++        Check(o.tipLag > 1.0, "the test chain really was flung (> 1 yd away)");
++        Check(o.stuck >= 1 && o.firstStuckFrame >= 0 && o.firstStuckFrame / 60.0 < 1.0, "judged stuck within a second");
++
++        Rig healthy = MakeRig(1, 4, 0.9f, 2.0f);
++        auto hm = std::make_shared<Model>(healthy.model);
++        const Outcome t = Run(hm, healthy, kWorld, 60, 1.0, 1.0, Teleport, true);
++        std::printf("     teleport 30 yd: verdict at frame %d (the move is at frame 30)\n", t.firstTeleportFrame);
++        Check(t.teleports == 1 && (t.firstTeleportFrame == 30 || t.firstTeleportFrame == 31), "a 30 yd jump of the placement is a teleport, once");
++        Check(t.stuck == 0, "...and not also stuck");
++    }
++
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}

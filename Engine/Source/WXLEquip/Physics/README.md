@@ -78,3 +78,42 @@ does not fit the model the client loaded (for example after a converter merged b
 `OnBuildBonePalette` (end of `CM2Model::AnimateMT`, original `0x0082F0F0`). Subscribers run in subscription
 order, so physics sees the palette after the equip remap and offhand mirror. The event can fire on animate
 threads; the file lookup runs outside the global lock so a disk read never stalls other threads.
+
+---
+
+# Stuck items (jump, stairs): PhysicsGuard
+
+`PhysicsGuard.{hpp,cpp}` is engine-free (no client types). `Tools/PhysicsGuardTest/physics_guard_test.cpp` drives
+the real engine with a character that walks, jumps, climbs stairs and teleports (build line at the top of the file).
+
+**Sleeping is not the cause.** `physics_domino.cpp` never puts an item world to sleep: every body is made with
+`allowSleep = false`, so the sleep rule can never fire and `islandAwake` is only ever set to true. There is no
+sleeping position to wake.
+
+**What does get an item stuck (reproduced offline).** A model with *several* kinematic anchors and no root body
+(`BDY4` group `0x4000`) is carried through its first anchor only. A second anchor teleports with its bone, but the
+dynamic bodies hanging from it are not carried (`if (!head && S.root < 0) continue;` in `Instance::Step`), so the
+joints must drag them. During a jump or a flight of stairs the bone moves faster than the joint solver follows, and
+that chain trails 1 yd or more behind (tip 1.28 yd off for a 0.75 yd chain on a jump, 1.45 yd at 20 fps).
+`CarryAnchors=1` gives every such anchor the head group (`0x8000`): same scenarios, 0.15 to 0.24 yd.
+
+**The safety net.** Each frame the simulated bones are compared with the animated ones. A bone that stays farther
+than `UnstickReach` (default 300%) of its distance to the nearest anchor (plus 0.15) for 0.25 s of simulated time
+is stuck or flung; a placement that moves more than `TeleportYards` (default 6) in one frame is a teleport. Either
+way the palette is left as the engine built it, the instance is dropped and the next frame re-seeds it from the
+animated pose. Four re-seeds in 5 s switch that instance's physics off for 10 s, so it can never loop.
+
+```ini
+[Physics]
+Enabled=1
+CarryAnchors=1
+Unstick=1
+UnstickReach=300
+TeleportYards=6
+```
+
+Log lines (category `PHYS`): `has several anchors and no root body: N anchor(s) now carry their followers`,
+`stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
+`re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
+and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
+these, and the model named in the log is the one to look at.
