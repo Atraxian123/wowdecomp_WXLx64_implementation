@@ -1,4 +1,5 @@
 #include "World.h"
+#include "Engine/Source/WXL/Culling.h"
 #include <cstdlib>
 #include <new>
 #include <algorithm>
@@ -2192,7 +2193,10 @@ void CWorldScene::AddDoodadDefModelToModelScene(CMapDoodadDef* doodadDef) {
 // VERIFY: 300a631e auto
 // OFFSET: 0x00792AD0
 void CWorldScene::AddMapObjDefGroup(CMapObjDef* mapObjDef, CMapObjDefGroup* mapObjDefGroup) {
-    if (!(mapObjDef->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum) & 0x10008)) {
+    // Stock: only exterior (0x8) and direct (0x10000) groups enter the sort table; an indoor group is reached
+    // only by walking portals from one of them. [Culling] DisablePortalCulling=1 lets every group in, so it is
+    // culled by its own bounding box and drawn by CMapObjDef::CullMapObjDefGroupFromExterior.
+    if (!(mapObjDef->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum) & 0x10008) && !wxl::culling::DisablePortalCulling()) {
         return;
     }
 
@@ -4062,7 +4066,24 @@ void CWorldScene::CullMapObjDefGroups(CSortEntry* entry, CRect* rect, uint32_t i
 
         CMapObjDef* mapObjDef = static_cast<CMapObjDef*>(group->m_parentLinkList.Head()->m_ref);
 
-        if (CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(group->m_bbox) && !CWorldOcclusion::QueryVolumes(&group->m_sphere) && !CWorldOcclusion::QueryBuffer(&group->m_bbox, 0)) {
+        // Same test as before, split so the trace can name the stage that dropped the group. Order and
+        // short-circuiting are unchanged. [Culling] DisableWmoFrustumCull=1 skips the frustum stage.
+        wxl::culling::GroupVerdict verdict = wxl::culling::GroupVerdict::PassedStage1;
+
+        if (!wxl::culling::DisableWmoFrustumCull() && !CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(group->m_bbox)) {
+            verdict = wxl::culling::GroupVerdict::CulledFrustum;
+        } else if (CWorldOcclusion::QueryVolumes(&group->m_sphere)) {
+            verdict = wxl::culling::GroupVerdict::CulledVolume;
+        } else if (CWorldOcclusion::QueryBuffer(&group->m_bbox, 0)) {
+            verdict = wxl::culling::GroupVerdict::CulledBuffer;
+        }
+
+        if (wxl::culling::TraceWmoWanted(mapObjDef->m_owner->m_wmoName)) {
+            CMapObjGroup* traced = mapObjDef->m_owner->GetGroup(group->m_groupNum, 0);
+            wxl::culling::TraceGroup(group, mapObjDef->m_owner->m_wmoName, group->m_groupNum, traced ? traced->m_groupName : nullptr, verdict);
+        }
+
+        if (verdict == wxl::culling::GroupVerdict::PassedStage1) {
             mapObjDef->CullMapObjDefGroupFromExterior(group, rect, 0);
             CWorldScene::AddDoodadDefs(&group->m_doodadDefLinkList, index);
         }

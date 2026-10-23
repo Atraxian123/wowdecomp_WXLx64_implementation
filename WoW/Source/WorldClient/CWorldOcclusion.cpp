@@ -1,4 +1,5 @@
 #include "CWorldOcclusion.h"
+#include "Engine/Source/WXL/Culling.h"
 #include <malloc.h>
 #include <cmath>
 #include <cstring>
@@ -483,7 +484,8 @@ void CWorldOcclusion::UpdateBuffer(const C3Vector* points, int32_t count, uint32
 // VERIFY: a0f63ed4 manual
 // OFFSET: 0x0078FC40
 uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint8_t flags) {
-    if (!(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
+    // WXLExtendedEquipment.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
+    if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
         return 0;
     }
 
@@ -527,7 +529,7 @@ uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint
 // VERIFY: 3ac5bc19 auto
 // OFFSET: 0x0078FDC0
 uint32_t CWorldOcclusion::QueryBuffer(CAaBox* box, uint8_t flags) {
-    if (!(CWorld::enables & Enable_Culling) || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
+    if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
         return 0;
     }
 
@@ -854,6 +856,12 @@ void CWorldOcclusion::AddVolume(const C3Vector* eye, const C3Vector* verts, int3
 void CWorldScene::CreateOcclusionVolumes(const C3Vector* eye, const C3Vector* corners, int32_t onlyFlagged) {
     CWorldOcclusion::planeArray.SetCount(0);
     CWorldOcclusion::clipVolumeArray.SetCount(0);
+
+    // WXLExtendedEquipment.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
+    // QueryVolumes finds none and nothing is hidden behind them.
+    if (wxl::culling::DisableOcclusionVolumes()) {
+        return;
+    }
 
     if (!s_occlusionVolumesInit) {
         InitOcclusionVolumes();

@@ -28,6 +28,9 @@
 #include "Engine/Source/Gx/CGxMatrixStack.h"
 #include "Engine/Source/ShaderEffect/ShadowCache.h"
 #include "Engine/Source/Tempest/C44Matrix.h"
+#include "Engine/Source/WXL/Culling.h"
+#include "Engine/Source/WXL/Log.h"
+#include <cstdio>
 
 // VERIFY: 78b69e1a manual
 // OFFSET: 0x007D5610
@@ -126,11 +129,86 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
 
         CWorldScene::s_viewerMapObjDef->RenderWithCallback(&CWorldScene::s_viewerMapObjGroups);
 
-        if (CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f) {
+        // Stock behaviour: the camera is inside a WMO. If none of its portals reach the outside
+        // (m_maxViewDepth < 0) the whole exterior sort table (outdoor WMO groups, terrain chunks, liquid,
+        // M2 entities and doodads) is emptied; otherwise the exterior is culled through the portal view.
+        // WXLExtendedEquipment.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
+        // is when the camera stands outdoors (the branch below). Interiors still render through their
+        // portals either way (RenderWithCallback above).
+        const bool noWayOut = CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f;
+        wxl::culling::ExteriorAction exteriorAction;
+
+        if (wxl::culling::KeepExteriorWhenInsideWmo()) {
+            exteriorAction = wxl::culling::ExteriorAction::KeptByToggle;
+            CRect exteriorRect = { 0.0f, 0.0f, 1.0f, 1.0f };
+            CWorldScene::s_occlusionNearDepth = -10000.0f;
+            CWorldScene::CullSortTable(&exteriorRect);
+        } else if (noWayOut) {
+            exteriorAction = wxl::culling::ExteriorAction::Cleared;
             CWorldScene::sortTable.Clear();
         } else {
+            exteriorAction = wxl::culling::ExteriorAction::PortalCulled;
             CWorldScene::s_occlusionNearDepth = CWorldScene::frustumPortalView.m_maxViewDepth + 33.333332f;
             CWorldScene::CullSortTable(&CWorldScene::frustumPortalView.m_rect);
+        }
+
+        // [Culling] DisablePortalCulling=1: also draw this WMO's indoor groups that no portal chain from the camera
+        // reaches (RenderWithCallback above only follows portals), when they are in view. A group already queued
+        // by the portal walk is skipped (its sort-table link is set).
+        if (wxl::culling::DisablePortalCulling()) {
+            CMapObjDef* viewerDef = CWorldScene::s_viewerMapObjDef;
+            CMapObj* viewerObj = viewerDef->m_owner;
+
+            for (uint32_t i = 0; viewerObj && i < viewerObj->m_groupInfoCount; i++) {
+                CMapObjDefGroup* defGroup = viewerDef->m_defGroups[i];
+                CMapObjGroup* group = defGroup ? viewerObj->GetGroup(defGroup->m_groupNum, 0) : nullptr;
+
+                if (!group || (group->m_flags & 0x10008) || defGroup->m_sortTableLink.m_next) {
+                    continue;
+                }
+
+                if (!CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(defGroup->m_bbox)) {
+                    continue;
+                }
+
+                s_curGroupIsInterior = 1;
+                CWorldScene::AddMapObjDefGroupToSortTable(i, viewerDef);
+            }
+        }
+
+        // Diagnostic (WXL.log, category CULL; only when logging is on): one line each time the camera's
+        // WMO or what happened to the exterior changes.
+        if (wxl::culling::ViewerChanged(CWorldScene::s_viewerMapObjDef, exteriorAction)) {
+            CMapObj* owner = CWorldScene::s_viewerMapObjDef->m_owner;
+            const char* wmoName = owner ? owner->m_wmoName : nullptr;
+
+            if (wmoName) {
+                const char* slash = strrchr(wmoName, '\\');
+                wmoName = slash ? slash + 1 : wmoName;
+            }
+
+            char groups[256];
+            size_t used = 0;
+            groups[0] = 0;
+
+            for (uint32_t i = 0; owner && i < CWorldScene::s_viewerMapObjGroups.Count() && i < 6 && used + 80 < sizeof(groups); i++) {
+                const uint32_t num = CWorldScene::s_viewerMapObjGroups[i];
+                CMapObjGroup* group = owner->GetGroup(num, 0);
+                used += snprintf(groups + used, sizeof(groups) - used, "%s#%u '%s' flags 0x%X", i ? ", " : "", num,
+                                 group && group->m_groupName ? group->m_groupName : "?", group ? group->m_flags : 0);
+            }
+
+            if (CWorldScene::s_viewerMapObjGroups.Count() > 6 && used + 12 < sizeof(groups)) {
+                snprintf(groups + used, sizeof(groups) - used, ", +%u more", CWorldScene::s_viewerMapObjGroups.Count() - 6);
+            }
+
+            char detail[320];
+            snprintf(detail, sizeof(detail), "%s%s", groups,
+                     exteriorAction == wxl::culling::ExteriorAction::KeptByToggle
+                         ? (noWayOut ? " (stock would have dropped the exterior)" : " (stock would have portal-culled it)")
+                         : "");
+            wxl::culling::LogViewer(exteriorAction, wmoName, detail, CWorldScene::s_activeWorldView.x,
+                                    CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
         }
 
         CRect fullRect = { 0.0f, 0.0f, 1.0f, 1.0f };
@@ -146,10 +224,16 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
         CWorldScene::s_occlusionNearDepth = -10000.0f;
         CWorldScene::frustumPortalView.m_vertCount = 0;
         CWorldScene::CullSortTable(&CWorldScene::frustumPortalView.m_rect);
+
+        if (wxl::culling::ViewerChanged(nullptr, wxl::culling::ExteriorAction::Outdoors)) {
+            wxl::culling::LogViewer(wxl::culling::ExteriorAction::Outdoors, nullptr, nullptr, CWorldScene::s_activeWorldView.x,
+                                    CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
+        }
     }
 
     CWorldScene::CullMapObjDefGroup();
     CWorldScene::UpdateSortedModels();
+    wxl::culling::TraceFlush(CWorldScene::s_activeWorldView.x, CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
     CWorldScene::sortTable.m_pendingExteriorGroupList.UnlinkAll();
 
     DayNight::DNInfo* info = DayNight::GetInfo();

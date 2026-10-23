@@ -1,4 +1,5 @@
 #include "MapObj.h"
+#include "Engine/Source/WXL/Culling.h"
 #include <cstdlib>
 #include <malloc.h>
 #include <new>
@@ -2603,7 +2604,30 @@ void CMapObjDef::CullMapObjDefGroupFromExterior(CMapObjDefGroup* mapObjDefGroup,
 
     uint32_t groupFlags = this->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum);
 
-    if (!CWorldScene::FrustumCull(&mapObjDefGroup->m_bbox) && (skipOcclusion || !CWorldOcclusion::QueryBuffer(&mapObjDefGroup->m_bbox, 1))) {
+    // Same test as before, split so the trace can name the stage. [Culling] DisableWmoFrustumCull=1 skips
+    // the frustum part.
+    const bool traced = wxl::culling::TraceWmoWanted(this->m_owner->m_wmoName);
+    CMapObjGroup* tracedGroup = traced ? this->m_owner->GetGroup(mapObjDefGroup->m_groupNum, 0) : nullptr;
+    const char* tracedName = tracedGroup ? tracedGroup->m_groupName : nullptr;
+    const bool frustumOut = !wxl::culling::DisableWmoFrustumCull() && CWorldScene::FrustumCull(&mapObjDefGroup->m_bbox);
+
+    if (frustumOut) {
+        if (traced) {
+            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName, wxl::culling::GroupVerdict::CulledPortalFrustum);
+        }
+    } else if (!skipOcclusion && CWorldOcclusion::QueryBuffer(&mapObjDefGroup->m_bbox, 1)) {
+        if (traced) {
+            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName, wxl::culling::GroupVerdict::CulledPortalBuffer);
+        }
+    } else {
+        if (traced) {
+            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName,
+                                     (groupFlags & 0x10000) ? wxl::culling::GroupVerdict::RenderedDirect
+                                     : (groupFlags & 0x8)   ? wxl::culling::GroupVerdict::RenderedViaPortals
+                                     : wxl::culling::DisablePortalCulling() ? wxl::culling::GroupVerdict::RenderedDirect
+                                                                            : wxl::culling::GroupVerdict::NotRenderedFromExterior);
+        }
+
         if (groupFlags & 0x10000) {
             this->m_owner->InvokeRenderCallback(mapObjDefGroup->m_groupNum);
             CWorldScene::FrustumPop();
@@ -2617,6 +2641,13 @@ void CMapObjDef::CullMapObjDefGroupFromExterior(CMapObjDefGroup* mapObjDefGroup,
             ndcRect.maxY = rect->maxY * 2.0f - 1.0f;
             ndcRect.maxX = 2.0f * rect->maxX - 1.0f;
             this->m_owner->RenderThruPortalsExterior(this->m_mat, this->m_invMat, CWorldScene::s_activeWorldView, CWorldScene::camTarget, ndcRect, mapObjDefGroup->m_groupNum);
+        } else if (wxl::culling::DisablePortalCulling()) {
+            // An indoor group has no exterior portal of its own to be entered by. [Culling] DisablePortalCulling=1:
+            // it passed its own frustum / occlusion tests above, so draw it. Same as a portal-reached group seen
+            // from outside (RenderThruPortalsExterior passes interior = 0). A group already queued through a
+            // portal this frame is not queued twice (AddMapObjDefGroupToSortTable checks m_sortTableLink).
+            s_curGroupIsInterior = 0;
+            this->m_owner->InvokeRenderCallback(mapObjDefGroup->m_groupNum);
         }
     }
 

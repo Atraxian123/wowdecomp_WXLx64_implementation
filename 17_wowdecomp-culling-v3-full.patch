@@ -1,0 +1,782 @@
+diff --git a/Engine/Source/WXL/Culling.cpp b/Engine/Source/WXL/Culling.cpp
+new file mode 100644
+index 0000000..4b51347
+--- /dev/null
++++ b/Engine/Source/WXL/Culling.cpp
+@@ -0,0 +1,299 @@
++// WXL culling switches and trace. See Culling.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++
++#include "Engine/Source/WXL/Culling.h"
++
++#include "Engine/Source/WXL/Log.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#include <atomic>
++#include <cctype>
++#include <cstdio>
++#include <cstring>
++#include <map>
++#include <mutex>
++#include <string>
++#include <unordered_map>
++
++namespace wxl::culling
++{
++    namespace
++    {
++        // WXLExtendedEquipment.ini sits beside the client executable (the file the equip modules and the log
++        // read; this module lives in WXLCore, which cannot call their helper, so the lookup is repeated, as
++        // Log.cpp does). Missing file, section or key: the default.
++        bool IniPath(char* path, size_t cap)
++        {
++#ifdef _WIN32
++            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
++            if (n == 0 || n >= cap) return false;
++            char* slash = std::strrchr(path, '\\');
++            const char* name = "WXLExtendedEquipment.ini";
++            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
++            std::strcpy(slash + 1, name);
++            return true;
++#else
++            (void)path; (void)cap;
++            return false;
++#endif
++        }
++
++        int IniInt(const char* section, const char* key, int def)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            if (!IniPath(path, sizeof(path))) return def;
++            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
++#else
++            (void)section; (void)key;
++            return def;
++#endif
++        }
++
++        std::string IniStr(const char* section, const char* key)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            if (!IniPath(path, sizeof(path))) return {};
++            char out[256] = {};
++            GetPrivateProfileStringA(section, key, "", out, sizeof(out), path);
++            return out;
++#else
++            (void)section; (void)key;
++            return {};
++#endif
++        }
++
++        std::string Lower(std::string s)
++        {
++            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            while (!s.empty() && (s.back() == ' ' || s.back() == '\t')) s.pop_back();
++            size_t b = 0;
++            while (b < s.size() && (s[b] == ' ' || s[b] == '\t')) ++b;
++            return s.substr(b);
++        }
++
++        struct Config
++        {
++            bool master = false;
++            bool viewerWmo = false;
++            bool wmoOccluders = false;
++            bool volumes = false;
++            bool horizon = false;
++            bool wmoFrustum = false;
++            bool sceneBox = false;
++            bool portals = false;
++            std::string traceWmo;     // lower case; empty = off
++
++            Config()
++            {
++                master = IniInt("Culling", "DisableWmoCulling", 0) != 0;
++                viewerWmo = master || IniInt("Culling", "DisableViewerWmoCull", 0) != 0;
++                wmoOccluders = master || IniInt("Culling", "DisableWmoOccluders", 0) != 0;
++                volumes = master || IniInt("Culling", "DisableOcclusionVolumes", 0) != 0;
++                horizon = master || IniInt("Culling", "DisableHorizonBuffer", 0) != 0;
++                wmoFrustum = IniInt("Culling", "DisableWmoFrustumCull", 0) != 0;
++                sceneBox = IniInt("Culling", "DisableSceneBoxCull", 0) != 0;
++                portals = IniInt("Culling", "DisablePortalCulling", 0) != 0;
++                if (wxl::LogEnabled()) traceWmo = Lower(IniStr("Culling", "TraceWmo"));
++                if (viewerWmo || wmoOccluders || volumes || horizon || wmoFrustum || sceneBox || portals)
++                    wxl::LogCat("CULL", "culling: master=%d -> exterior kept when inside a WMO=%d, WMO occluders off=%d, occlusion volumes off=%d, horizon buffer off=%d | frustum test off=%d, scene box test off=%d, portal culling off=%d",
++                                master ? 1 : 0, viewerWmo ? 1 : 0, wmoOccluders ? 1 : 0, volumes ? 1 : 0, horizon ? 1 : 0,
++                                wmoFrustum ? 1 : 0, sceneBox ? 1 : 0, portals ? 1 : 0);
++                else
++                    wxl::LogCat("CULL", "culling: stock behaviour (WXLExtendedEquipment.ini [Culling] switches are all 0 or absent)");
++                if (!traceWmo.empty())
++                    wxl::LogCat("CULL", "trace: TraceWmo='%s'", traceWmo.c_str());
++            }
++        };
++
++        // Built on first use; C++11 guarantees the construction happens once even if several threads race.
++        const Config& Cfg()
++        {
++            static const Config c;
++            return c;
++        }
++
++        std::atomic<const void*> g_lastKey{ nullptr };
++        std::atomic<int> g_lastAction{ -1 };
++
++        bool Matches(const std::string& filter, const char* path)
++        {
++            if (filter.empty() || !path) return false;
++            if (filter == "*") return true;
++            const size_t fl = filter.size();
++            for (const char* p = path; *p; ++p)
++            {
++                size_t i = 0;
++                while (i < fl && p[i] && std::tolower(static_cast<unsigned char>(p[i])) == static_cast<unsigned char>(filter[i])) ++i;
++                if (i == fl) return true;
++            }
++            return false;
++        }
++
++        const char* FileName(const char* path)
++        {
++            if (!path) return "?";
++            const char* s = std::strrchr(path, '\\');
++            const char* t = std::strrchr(path, '/');
++            if (t && (!s || t > s)) s = t;
++            return s ? s + 1 : path;
++        }
++
++        const char* GroupText(GroupVerdict v)
++        {
++            switch (v)
++            {
++            case GroupVerdict::NotPrepared: return "not prepared yet (WMO instance not initialised)";
++            case GroupVerdict::NotLoaded: return "group file not loaded yet";
++            case GroupVerdict::Disabled: return "WMO instance flagged disabled (MAPOBJ_FLAG_DISABLED)";
++            case GroupVerdict::OutsideSceneBox: return "outside the scene bounding box";
++            case GroupVerdict::Queued: return "queued for exterior culling";
++            case GroupVerdict::CulledFrustum: return "CULLED: view frustum";
++            case GroupVerdict::CulledVolume: return "CULLED: inside an occlusion volume";
++            case GroupVerdict::CulledBuffer: return "CULLED: behind the horizon buffer";
++            case GroupVerdict::PassedStage1: return "passed exterior culling";
++            case GroupVerdict::CulledPortalFrustum: return "CULLED: portal-view frustum (stage 2)";
++            case GroupVerdict::CulledPortalBuffer: return "CULLED: behind the horizon buffer (stage 2)";
++            case GroupVerdict::RenderedDirect: return "VISIBLE (rendered directly)";
++            case GroupVerdict::RenderedViaPortals: return "VISIBLE (entered through its exterior portals)";
++            case GroupVerdict::NotRenderedFromExterior: return "survived culling but its group flags give the exterior no way to render it";
++            }
++            return "?";
++        }
++
++        bool IsVisible(GroupVerdict v) { return v == GroupVerdict::RenderedDirect || v == GroupVerdict::RenderedViaPortals; }
++
++        struct GroupRec
++        {
++            std::string wmo;
++            unsigned num = 0;
++            std::string name;
++            GroupVerdict v = GroupVerdict::NotPrepared;
++        };
++        constexpr size_t kMaxTracked = 20000;
++        std::mutex g_traceLock;
++        std::unordered_map<const void*, GroupRec> g_groupCur, g_groupPrev;
++        std::map<std::string, int> g_wmoState;   // 0 unknown, 1 visible, 2 fully hidden
++    }
++
++    bool KeepExteriorWhenInsideWmo() { return Cfg().viewerWmo; }
++    bool DisableWmoOccluders() { return Cfg().wmoOccluders; }
++    bool DisableOcclusionVolumes() { return Cfg().volumes; }
++    bool DisableHorizonBuffer() { return Cfg().horizon; }
++    bool DisableWmoFrustumCull() { return Cfg().wmoFrustum; }
++    bool DisableSceneBoxCull() { return Cfg().sceneBox; }
++    bool DisablePortalCulling() { return Cfg().portals; }
++
++    bool ViewerChanged(const void* viewerKey, ExteriorAction action)
++    {
++        if (!wxl::LogEnabled()) return false;
++        const int a = static_cast<int>(action);
++        if (g_lastKey.load(std::memory_order_relaxed) == viewerKey && g_lastAction.load(std::memory_order_relaxed) == a)
++            return false;
++        g_lastKey.store(viewerKey, std::memory_order_relaxed);
++        g_lastAction.store(a, std::memory_order_relaxed);
++        return true;
++    }
++
++    void LogViewer(ExteriorAction action, const char* wmo, const char* groups, float x, float y, float z)
++    {
++        const char* what = "?";
++        switch (action)
++        {
++        case ExteriorAction::Outdoors: what = "camera outdoors, exterior culled normally"; break;
++        case ExteriorAction::PortalCulled: what = "inside a WMO, exterior culled through its portals"; break;
++        case ExteriorAction::Cleared: what = "inside a WMO with NO way out: whole exterior (WMOs, terrain, M2 objects) DROPPED"; break;
++        case ExteriorAction::KeptByToggle: what = "inside a WMO: exterior KEPT (DisableViewerWmoCull)"; break;
++        }
++        if (action == ExteriorAction::Outdoors)
++            wxl::LogCat("CULL", "viewer: %s at (%.1f, %.1f, %.1f)", what, x, y, z);
++        else
++            wxl::LogCat("CULL", "viewer: %s | wmo '%s' groups %s | camera (%.1f, %.1f, %.1f)", what, wmo ? wmo : "?",
++                        groups ? groups : "?", x, y, z);
++    }
++
++    bool TraceWmoWanted(const char* wmoPath)
++    {
++        const Config& c = Cfg();
++        return !c.traceWmo.empty() && Matches(c.traceWmo, wmoPath);
++    }
++
++    void TraceGroup(const void* key, const char* wmoPath, unsigned groupNum, const char* groupName, GroupVerdict v)
++    {
++        if (!key) return;
++        std::lock_guard<std::mutex> g(g_traceLock);
++        if (g_groupCur.size() > kMaxTracked) return;
++        GroupRec& r = g_groupCur[key];
++        if (r.wmo.empty()) r.wmo = FileName(wmoPath);
++        r.num = groupNum;
++        if (r.name.empty() && groupName) r.name = groupName;
++        r.v = v;   // later stages of the frame overwrite earlier ones: the last verdict is the reason
++    }
++
++    void TraceFlush(float camX, float camY, float camZ)
++    {
++        const Config& c = Cfg();
++        if (c.traceWmo.empty()) return;
++        std::lock_guard<std::mutex> g(g_traceLock);
++
++        if (g_groupPrev.size() > kMaxTracked) { g_groupPrev.clear(); g_wmoState.clear(); }
++
++        // changed groups
++        for (const auto& kv : g_groupCur)
++        {
++            const GroupRec& now = kv.second;
++            auto it = g_groupPrev.find(kv.first);
++            if (it == g_groupPrev.end() || it->second.v != now.v)
++            {
++                if (it == g_groupPrev.end())
++                    wxl::LogCat("CULL", "trace: wmo '%s' group #%u '%s' first seen: %s | camera (%.1f, %.1f, %.1f)", now.wmo.c_str(),
++                                now.num, now.name.empty() ? "?" : now.name.c_str(), GroupText(now.v), camX, camY, camZ);
++                else
++                    wxl::LogCat("CULL", "trace: wmo '%s' group #%u '%s': %s -> %s | camera (%.1f, %.1f, %.1f)", now.wmo.c_str(),
++                                now.num, now.name.empty() ? "?" : now.name.c_str(), GroupText(it->second.v), GroupText(now.v), camX, camY, camZ);
++            }
++            g_groupPrev[kv.first] = now;
++        }
++        g_groupCur.clear();
++
++        // whole-WMO summary: did the last visible group of a traced WMO just go away (or the first come back)?
++        struct Tally { int total = 0; int visible = 0; std::map<int, int> reasons; };
++        std::map<std::string, Tally> byWmo;
++        for (const auto& kv : g_groupPrev)
++        {
++            Tally& t = byWmo[kv.second.wmo];
++            ++t.total;
++            if (IsVisible(kv.second.v)) ++t.visible;
++            else ++t.reasons[static_cast<int>(kv.second.v)];
++        }
++        for (const auto& kv : byWmo)
++        {
++            const int state = kv.second.visible > 0 ? 1 : 2;
++            int& last = g_wmoState[kv.first];
++            if (last == state) continue;
++            const bool first = last == 0;
++            last = state;
++            if (state == 2)
++            {
++                std::string why;
++                for (const auto& r : kv.second.reasons)
++                {
++                    char one[160];
++                    std::snprintf(one, sizeof(one), "%s%dx %s", why.empty() ? "" : "; ", r.second, GroupText(static_cast<GroupVerdict>(r.first)));
++                    why += one;
++                }
++                wxl::LogCat("CULL", "trace: WMO '%s' %s: ALL %d traced groups hidden [%s] | camera (%.1f, %.1f, %.1f)", kv.first.c_str(),
++                            first ? "starts hidden" : "has just DISAPPEARED", kv.second.total, why.c_str(), camX, camY, camZ);
++            }
++            else if (!first)
++            {
++                wxl::LogCat("CULL", "trace: WMO '%s' is visible again (%d of %d groups) | camera (%.1f, %.1f, %.1f)", kv.first.c_str(),
++                            kv.second.visible, kv.second.total, camX, camY, camZ);
++            }
++        }
++    }
++}
+diff --git a/Engine/Source/WXL/Culling.h b/Engine/Source/WXL/Culling.h
+new file mode 100644
+index 0000000..5b64ec2
+--- /dev/null
++++ b/Engine/Source/WXL/Culling.h
+@@ -0,0 +1,136 @@
++// WXL culling switches: lets WXLExtendedEquipment.ini turn off the ways a WMO can hide other objects.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// All keys live in WXLExtendedEquipment.ini (beside the client executable), section [Culling]. Every key
++// defaults to 0, which is the stock client's behaviour; nothing changes unless you set one.
++//
++//     [Culling]
++//     ; Master switch. 1 = nothing that belongs to a WMO may hide other objects. Same as setting the
++//     ; three keys below to 1.
++//     DisableWmoCulling=0
++//
++//     ; The camera being "inside" a WMO no longer hides the outside world. Stock behaviour: when the
++//     ; camera is classified as inside a WMO and its portals show no way out, the whole exterior sort
++//     ; table is emptied, which removes every outdoor WMO group, terrain chunk, liquid and M2 object
++//     ; (CWorldScene::Render). With this on, the outside is culled like it is when you stand outdoors
++//     ; (view frustum and distance only). Interiors still render through their portals as before.
++//     DisableViewerWmoCull=0
++//
++//     ; WMO groups stop adding occluder segments to the horizon buffer (Map.cpp, AddOccluder), so a
++//     ; WMO can no longer hide whatever is behind it.
++//     DisableWmoOccluders=0
++//
++//     ; The hardcoded occlusion volumes (CWorldScene::CreateOcclusionVolumes, for example the wall quad
++//     ; in Stormwind on map 0) are not built, so nothing is hidden behind them.
++//     DisableOcclusionVolumes=0
++//
++//     ; The horizon buffer (terrain chunks and the occluders above) is not consulted, so nothing is
++//     ; hidden behind terrain or occluders. This is what the console command "showCull" does, but from
++//     ; start-up. Also covered by the master switch.
++//     DisableHorizonBuffer=0
++//
++//     ; The two remaining tests that can drop a WMO group. They are NOT covered by the master switch,
++//     ; because they make the client draw WMO groups that are off screen; they exist to bisect a bug.
++//     DisableWmoFrustumCull=0   ; exterior WMO groups are never rejected by the view frustum
++//     DisableSceneBoxCull=0     ; WMO groups are never rejected for being outside the scene bounding box
++//
++//     ; Portal culling. A WMO group flagged indoor is only ever drawn by walking portals: from outside, from
++//     ; an exterior group's portals; from inside, from the camera's group. A group with no portal chain to
++//     ; one of those (a WMO whose indoor groups lack an outdoor portal) is never drawn, and the M2 doodads
++//     ; it places go with it. With this on, every group is culled only by its own bounding box (view
++//     ; frustum, occlusion volumes, horizon buffer) and drawn whenever that test passes, portals or not.
++//     ; Costs draw calls (indoor groups out of any portal's sight are drawn and hidden by the depth buffer).
++//     ; Not part of the master switch.
++//     DisablePortalCulling=0
++//
++//     ; Trace (needs [Log] Enabled=1): record WHY a WMO group is not drawn. The value is a case-insensitive
++//     ; part of the WMO file path; "*" matches every WMO (very chatty).
++//     TraceWmo=stormwind
++//
++// The switches are read once, on first use. Edit the ini, restart the client.
++//
++// Diagnostics: with WXL logging on ([Log] Enabled=1) the category CULL records each switch at start-up,
++// a line every time the camera's WMO state changes (see ViewerChanged), and, for TraceWmo, a line every
++// time a traced WMO group changes its verdict (see TraceGroup), plus one summary line each time a whole
++// traced WMO goes from visible to fully hidden or back. The M2 doodads a WMO places are added only when
++// their group passes, so a group's verdict is also theirs.
++#pragma once
++
++namespace wxl::culling
++{
++    /// [Culling] DisableViewerWmoCull (or the master DisableWmoCulling).
++    bool KeepExteriorWhenInsideWmo();
++
++    /// [Culling] DisableWmoOccluders (or the master).
++    bool DisableWmoOccluders();
++
++    /// [Culling] DisableOcclusionVolumes (or the master).
++    bool DisableOcclusionVolumes();
++
++    /// [Culling] DisableHorizonBuffer (or the master).
++    bool DisableHorizonBuffer();
++
++    /// [Culling] DisableWmoFrustumCull (not part of the master).
++    bool DisableWmoFrustumCull();
++
++    /// [Culling] DisableSceneBoxCull (not part of the master).
++    bool DisableSceneBoxCull();
++
++    /// [Culling] DisablePortalCulling (not part of the master): groups are culled by their own bounding box
++    /// and never by portal reachability.
++    bool DisablePortalCulling();
++
++    // ---- trace: why is a WMO group / M2 object not drawn? ----
++
++    /// How far a WMO group got this frame. Each stage overwrites the previous one for the same group, so
++    /// the last verdict of the frame is the reason it is (or is not) drawn. Order of the pipeline:
++    /// CMap::PrepareMapObjDefs, then CWorldScene::CullMapObjDefGroups, then
++    /// CMapObjDef::CullMapObjDefGroupFromExterior.
++    enum class GroupVerdict : int
++    {
++        NotPrepared = 0,        // the WMO instance is not initialised yet
++        NotLoaded,              // the group's file is not loaded yet
++        Disabled,               // the WMO instance is flagged disabled (MAPOBJ_FLAG_DISABLED)
++        OutsideSceneBox,        // outside the scene bounding box built from the view frustum
++        Queued,                 // handed to the exterior sort table
++        CulledFrustum,          // exterior pass: outside the view frustum
++        CulledVolume,           // exterior pass: inside a hardcoded occlusion volume
++        CulledBuffer,           // exterior pass: behind the horizon buffer
++        PassedStage1,           // survived the exterior pass
++        CulledPortalFrustum,    // stage 2: outside the (portal-narrowed) frustum
++        CulledPortalBuffer,     // stage 2: behind the horizon buffer
++        RenderedDirect,         // VISIBLE: group flag 0x10000, rendered directly
++        RenderedViaPortals,     // VISIBLE: exterior group (flag 0x8), entered through its portals
++        NotRenderedFromExterior // survived, but its group flags give the exterior no way to render it
++    };
++
++    /// True when [Culling] TraceWmo is set and `wmoPath` matches it. Cheap (false at once when unset);
++    /// call it before building anything for TraceGroup.
++    bool TraceWmoWanted(const char* wmoPath);
++
++    /// Records this frame's verdict for one WMO group. `key` identifies it (the CMapObjDefGroup pointer);
++    /// `groupName` may be null.
++    void TraceGroup(const void* key, const char* wmoPath, unsigned groupNum, const char* groupName, GroupVerdict v);
++
++    /// Once per frame, after the culling passes: logs the group verdicts that changed since the last frame,
++    /// and the whole-WMO summary lines. Does nothing when no trace is set.
++    void TraceFlush(float camX, float camY, float camZ);
++
++    /// What CWorldScene::Render did with the exterior this frame.
++    enum class ExteriorAction : int
++    {
++        Outdoors = 0,      // the camera is not inside a WMO: the exterior is culled normally
++        PortalCulled = 1,  // inside a WMO whose portals reach the outside: culled through the portal view
++        Cleared = 2,       // inside a WMO with no way out: the exterior sort table was emptied (stock)
++        KeptByToggle = 3,  // inside a WMO, but DisableViewerWmoCull kept the exterior
++    };
++
++    /// Cheap per-frame test: true only when logging is on and (viewerKey, action) differs from the last
++    /// call, i.e. when it is worth building the strings for LogViewer. viewerKey is the viewer's CMapObjDef
++    /// pointer (null outdoors); it is only compared, never dereferenced.
++    bool ViewerChanged(const void* viewerKey, ExteriorAction action);
++
++    /// Writes the CULL line for a change reported by ViewerChanged. `wmo` and `groups` are free text
++    /// (the WMO file name; the group numbers, names and flags the camera is in); either may be null.
++    void LogViewer(ExteriorAction action, const char* wmo, const char* groups, float x, float y, float z);
++}
+diff --git a/WoW/Source/WorldClient/CWorldOcclusion.cpp b/WoW/Source/WorldClient/CWorldOcclusion.cpp
+index 3e94745..577cc20 100644
+--- a/WoW/Source/WorldClient/CWorldOcclusion.cpp
++++ b/WoW/Source/WorldClient/CWorldOcclusion.cpp
+@@ -1,4 +1,5 @@
+ #include "CWorldOcclusion.h"
++#include "Engine/Source/WXL/Culling.h"
+ #include <malloc.h>
+ #include <cmath>
+ #include <cstring>
+@@ -483,7 +484,8 @@ void CWorldOcclusion::UpdateBuffer(const C3Vector* points, int32_t count, uint32
+ // VERIFY: a0f63ed4 manual
+ // OFFSET: 0x0078FC40
+ uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint8_t flags) {
+-    if (!(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
++    // WXLExtendedEquipment.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
++    if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
+         return 0;
+     }
+ 
+@@ -527,7 +529,7 @@ uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint
+ // VERIFY: 3ac5bc19 auto
+ // OFFSET: 0x0078FDC0
+ uint32_t CWorldOcclusion::QueryBuffer(CAaBox* box, uint8_t flags) {
+-    if (!(CWorld::enables & Enable_Culling) || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
++    if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
+         return 0;
+     }
+ 
+@@ -855,6 +857,12 @@ void CWorldScene::CreateOcclusionVolumes(const C3Vector* eye, const C3Vector* co
+     CWorldOcclusion::planeArray.SetCount(0);
+     CWorldOcclusion::clipVolumeArray.SetCount(0);
+ 
++    // WXLExtendedEquipment.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
++    // QueryVolumes finds none and nothing is hidden behind them.
++    if (wxl::culling::DisableOcclusionVolumes()) {
++        return;
++    }
++
+     if (!s_occlusionVolumesInit) {
+         InitOcclusionVolumes();
+     }
+diff --git a/WoW/Source/WorldClient/CWorldSceneRender.cpp b/WoW/Source/WorldClient/CWorldSceneRender.cpp
+index db6b99c..1d839cb 100644
+--- a/WoW/Source/WorldClient/CWorldSceneRender.cpp
++++ b/WoW/Source/WorldClient/CWorldSceneRender.cpp
+@@ -28,6 +28,9 @@
+ #include "Engine/Source/Gx/CGxMatrixStack.h"
+ #include "Engine/Source/ShaderEffect/ShadowCache.h"
+ #include "Engine/Source/Tempest/C44Matrix.h"
++#include "Engine/Source/WXL/Culling.h"
++#include "Engine/Source/WXL/Log.h"
++#include <cstdio>
+ 
+ // VERIFY: 78b69e1a manual
+ // OFFSET: 0x007D5610
+@@ -126,13 +129,88 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
+ 
+         CWorldScene::s_viewerMapObjDef->RenderWithCallback(&CWorldScene::s_viewerMapObjGroups);
+ 
+-        if (CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f) {
++        // Stock behaviour: the camera is inside a WMO. If none of its portals reach the outside
++        // (m_maxViewDepth < 0) the whole exterior sort table (outdoor WMO groups, terrain chunks, liquid,
++        // M2 entities and doodads) is emptied; otherwise the exterior is culled through the portal view.
++        // WXLExtendedEquipment.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
++        // is when the camera stands outdoors (the branch below). Interiors still render through their
++        // portals either way (RenderWithCallback above).
++        const bool noWayOut = CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f;
++        wxl::culling::ExteriorAction exteriorAction;
++
++        if (wxl::culling::KeepExteriorWhenInsideWmo()) {
++            exteriorAction = wxl::culling::ExteriorAction::KeptByToggle;
++            CRect exteriorRect = { 0.0f, 0.0f, 1.0f, 1.0f };
++            CWorldScene::s_occlusionNearDepth = -10000.0f;
++            CWorldScene::CullSortTable(&exteriorRect);
++        } else if (noWayOut) {
++            exteriorAction = wxl::culling::ExteriorAction::Cleared;
+             CWorldScene::sortTable.Clear();
+         } else {
++            exteriorAction = wxl::culling::ExteriorAction::PortalCulled;
+             CWorldScene::s_occlusionNearDepth = CWorldScene::frustumPortalView.m_maxViewDepth + 33.333332f;
+             CWorldScene::CullSortTable(&CWorldScene::frustumPortalView.m_rect);
+         }
+ 
++        // [Culling] DisablePortalCulling=1: also draw this WMO's indoor groups that no portal chain from the camera
++        // reaches (RenderWithCallback above only follows portals), when they are in view. A group already queued
++        // by the portal walk is skipped (its sort-table link is set).
++        if (wxl::culling::DisablePortalCulling()) {
++            CMapObjDef* viewerDef = CWorldScene::s_viewerMapObjDef;
++            CMapObj* viewerObj = viewerDef->m_owner;
++
++            for (uint32_t i = 0; viewerObj && i < viewerObj->m_groupInfoCount; i++) {
++                CMapObjDefGroup* defGroup = viewerDef->m_defGroups[i];
++                CMapObjGroup* group = defGroup ? viewerObj->GetGroup(defGroup->m_groupNum, 0) : nullptr;
++
++                if (!group || (group->m_flags & 0x10008) || defGroup->m_sortTableLink.m_next) {
++                    continue;
++                }
++
++                if (!CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(defGroup->m_bbox)) {
++                    continue;
++                }
++
++                s_curGroupIsInterior = 1;
++                CWorldScene::AddMapObjDefGroupToSortTable(i, viewerDef);
++            }
++        }
++
++        // Diagnostic (WXL.log, category CULL; only when logging is on): one line each time the camera's
++        // WMO or what happened to the exterior changes.
++        if (wxl::culling::ViewerChanged(CWorldScene::s_viewerMapObjDef, exteriorAction)) {
++            CMapObj* owner = CWorldScene::s_viewerMapObjDef->m_owner;
++            const char* wmoName = owner ? owner->m_wmoName : nullptr;
++
++            if (wmoName) {
++                const char* slash = strrchr(wmoName, '\\');
++                wmoName = slash ? slash + 1 : wmoName;
++            }
++
++            char groups[256];
++            size_t used = 0;
++            groups[0] = 0;
++
++            for (uint32_t i = 0; owner && i < CWorldScene::s_viewerMapObjGroups.Count() && i < 6 && used + 80 < sizeof(groups); i++) {
++                const uint32_t num = CWorldScene::s_viewerMapObjGroups[i];
++                CMapObjGroup* group = owner->GetGroup(num, 0);
++                used += snprintf(groups + used, sizeof(groups) - used, "%s#%u '%s' flags 0x%X", i ? ", " : "", num,
++                                 group && group->m_groupName ? group->m_groupName : "?", group ? group->m_flags : 0);
++            }
++
++            if (CWorldScene::s_viewerMapObjGroups.Count() > 6 && used + 12 < sizeof(groups)) {
++                snprintf(groups + used, sizeof(groups) - used, ", +%u more", CWorldScene::s_viewerMapObjGroups.Count() - 6);
++            }
++
++            char detail[320];
++            snprintf(detail, sizeof(detail), "%s%s", groups,
++                     exteriorAction == wxl::culling::ExteriorAction::KeptByToggle
++                         ? (noWayOut ? " (stock would have dropped the exterior)" : " (stock would have portal-culled it)")
++                         : "");
++            wxl::culling::LogViewer(exteriorAction, wmoName, detail, CWorldScene::s_activeWorldView.x,
++                                    CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
++        }
++
+         CRect fullRect = { 0.0f, 0.0f, 1.0f, 1.0f };
+         CWorldScene::CullThroughPortal(&fullRect);
+     } else {
+@@ -146,10 +224,16 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
+         CWorldScene::s_occlusionNearDepth = -10000.0f;
+         CWorldScene::frustumPortalView.m_vertCount = 0;
+         CWorldScene::CullSortTable(&CWorldScene::frustumPortalView.m_rect);
++
++        if (wxl::culling::ViewerChanged(nullptr, wxl::culling::ExteriorAction::Outdoors)) {
++            wxl::culling::LogViewer(wxl::culling::ExteriorAction::Outdoors, nullptr, nullptr, CWorldScene::s_activeWorldView.x,
++                                    CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
++        }
+     }
+ 
+     CWorldScene::CullMapObjDefGroup();
+     CWorldScene::UpdateSortedModels();
++    wxl::culling::TraceFlush(CWorldScene::s_activeWorldView.x, CWorldScene::s_activeWorldView.y, CWorldScene::s_activeWorldView.z);
+     CWorldScene::sortTable.m_pendingExteriorGroupList.UnlinkAll();
+ 
+     DayNight::DNInfo* info = DayNight::GetInfo();
+diff --git a/WoW/Source/WorldClient/Map.cpp b/WoW/Source/WorldClient/Map.cpp
+index 2761afb..cfacf40 100644
+--- a/WoW/Source/WorldClient/Map.cpp
++++ b/WoW/Source/WorldClient/Map.cpp
+@@ -1,4 +1,5 @@
+ #include "Map.h"
++#include "Engine/Source/WXL/Culling.h"
+ #include "Engine/Source/ShaderEffect/ShadowCache.h"
+ #if defined(_MSC_VER)
+ #include <malloc.h>
+@@ -2259,27 +2260,52 @@ void CMap::PrepareMapObjDefs(bool addToScene) {
+                 group->m_distToCamera = groupDist;
+             }
+ 
++            // [Culling] TraceWmo: record how far this group gets (see Engine/Source/WXL/Culling.h).
++            const bool traceGroup = wxl::culling::TraceWmoWanted(mapObj->m_wmoName);
++
+             if (!addToScene || !(mapObjDef->m_flags & MAPOBJ_FLAG_PREPARED)) {
++                if (traceGroup && addToScene) {
++                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::NotPrepared);
++                }
++
+                 continue;
+             }
+ 
+             if (!(group->m_unkLoadedFlag & 1)) {
++                if (traceGroup) {
++                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::NotLoaded);
++                }
++
+                 CWorldScene::s_barrier.AddBarrierMapObjDefGroup(defGroup, 50.0f);
+                 continue;
+             }
+ 
+             if (mapObjDef->m_flags & MAPOBJ_FLAG_DISABLED) {
++                if (traceGroup) {
++                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::Disabled);
++                }
++
+                 continue;
+             }
+ 
+-            if (CWorldScene::boundingBox.Intersects(box)) {
++            // [Culling] DisableSceneBoxCull=1: add the group whether or not it is inside the frustum's bounding box.
++            if (wxl::culling::DisableSceneBoxCull() || CWorldScene::boundingBox.Intersects(box)) {
+                 CWorldScene::AddMapObjDefGroup(mapObjDef, defGroup);
++
++                if (traceGroup) {
++                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::Queued);
++                }
++            } else if (traceGroup) {
++                wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::OutsideSceneBox);
+             }
+ 
+-            for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
+-                C3Vector a = occluder->m_start * mapObjDef->m_mat;
+-                C3Vector b = occluder->m_end * mapObjDef->m_mat;
+-                CWorldView::AddOccluder(a, b);
++            // WXLExtendedEquipment.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
++            if (!wxl::culling::DisableWmoOccluders()) {
++                for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
++                    C3Vector a = occluder->m_start * mapObjDef->m_mat;
++                    C3Vector b = occluder->m_end * mapObjDef->m_mat;
++                    CWorldView::AddOccluder(a, b);
++                }
+             }
+         }
+ 
+diff --git a/WoW/Source/WorldClient/MapObj.cpp b/WoW/Source/WorldClient/MapObj.cpp
+index 5b495f9..8c21bbd 100644
+--- a/WoW/Source/WorldClient/MapObj.cpp
++++ b/WoW/Source/WorldClient/MapObj.cpp
+@@ -1,4 +1,5 @@
+ #include "MapObj.h"
++#include "Engine/Source/WXL/Culling.h"
+ #include <cstdlib>
+ #include <malloc.h>
+ #include <new>
+@@ -2603,7 +2604,30 @@ void CMapObjDef::CullMapObjDefGroupFromExterior(CMapObjDefGroup* mapObjDefGroup,
+ 
+     uint32_t groupFlags = this->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum);
+ 
+-    if (!CWorldScene::FrustumCull(&mapObjDefGroup->m_bbox) && (skipOcclusion || !CWorldOcclusion::QueryBuffer(&mapObjDefGroup->m_bbox, 1))) {
++    // Same test as before, split so the trace can name the stage. [Culling] DisableWmoFrustumCull=1 skips
++    // the frustum part.
++    const bool traced = wxl::culling::TraceWmoWanted(this->m_owner->m_wmoName);
++    CMapObjGroup* tracedGroup = traced ? this->m_owner->GetGroup(mapObjDefGroup->m_groupNum, 0) : nullptr;
++    const char* tracedName = tracedGroup ? tracedGroup->m_groupName : nullptr;
++    const bool frustumOut = !wxl::culling::DisableWmoFrustumCull() && CWorldScene::FrustumCull(&mapObjDefGroup->m_bbox);
++
++    if (frustumOut) {
++        if (traced) {
++            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName, wxl::culling::GroupVerdict::CulledPortalFrustum);
++        }
++    } else if (!skipOcclusion && CWorldOcclusion::QueryBuffer(&mapObjDefGroup->m_bbox, 1)) {
++        if (traced) {
++            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName, wxl::culling::GroupVerdict::CulledPortalBuffer);
++        }
++    } else {
++        if (traced) {
++            wxl::culling::TraceGroup(mapObjDefGroup, this->m_owner->m_wmoName, mapObjDefGroup->m_groupNum, tracedName,
++                                     (groupFlags & 0x10000) ? wxl::culling::GroupVerdict::RenderedDirect
++                                     : (groupFlags & 0x8)   ? wxl::culling::GroupVerdict::RenderedViaPortals
++                                     : wxl::culling::DisablePortalCulling() ? wxl::culling::GroupVerdict::RenderedDirect
++                                                                            : wxl::culling::GroupVerdict::NotRenderedFromExterior);
++        }
++
+         if (groupFlags & 0x10000) {
+             this->m_owner->InvokeRenderCallback(mapObjDefGroup->m_groupNum);
+             CWorldScene::FrustumPop();
+@@ -2617,6 +2641,13 @@ void CMapObjDef::CullMapObjDefGroupFromExterior(CMapObjDefGroup* mapObjDefGroup,
+             ndcRect.maxY = rect->maxY * 2.0f - 1.0f;
+             ndcRect.maxX = 2.0f * rect->maxX - 1.0f;
+             this->m_owner->RenderThruPortalsExterior(this->m_mat, this->m_invMat, CWorldScene::s_activeWorldView, CWorldScene::camTarget, ndcRect, mapObjDefGroup->m_groupNum);
++        } else if (wxl::culling::DisablePortalCulling()) {
++            // An indoor group has no exterior portal of its own to be entered by. [Culling] DisablePortalCulling=1:
++            // it passed its own frustum / occlusion tests above, so draw it. Same as a portal-reached group seen
++            // from outside (RenderThruPortalsExterior passes interior = 0). A group already queued through a
++            // portal this frame is not queued twice (AddMapObjDefGroupToSortTable checks m_sortTableLink).
++            s_curGroupIsInterior = 0;
++            this->m_owner->InvokeRenderCallback(mapObjDefGroup->m_groupNum);
+         }
+     }
+ 
+diff --git a/WoW/Source/WorldClient/World.cpp b/WoW/Source/WorldClient/World.cpp
+index 751945d..fe32c5e 100644
+--- a/WoW/Source/WorldClient/World.cpp
++++ b/WoW/Source/WorldClient/World.cpp
+@@ -1,4 +1,5 @@
+ #include "World.h"
++#include "Engine/Source/WXL/Culling.h"
+ #include <cstdlib>
+ #include <new>
+ #include <algorithm>
+@@ -2192,7 +2193,10 @@ void CWorldScene::AddDoodadDefModelToModelScene(CMapDoodadDef* doodadDef) {
+ // VERIFY: 300a631e auto
+ // OFFSET: 0x00792AD0
+ void CWorldScene::AddMapObjDefGroup(CMapObjDef* mapObjDef, CMapObjDefGroup* mapObjDefGroup) {
+-    if (!(mapObjDef->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum) & 0x10008)) {
++    // Stock: only exterior (0x8) and direct (0x10000) groups enter the sort table; an indoor group is reached
++    // only by walking portals from one of them. [Culling] DisablePortalCulling=1 lets every group in, so it is
++    // culled by its own bounding box and drawn by CMapObjDef::CullMapObjDefGroupFromExterior.
++    if (!(mapObjDef->m_owner->GetGroupFlags(mapObjDefGroup->m_groupNum) & 0x10008) && !wxl::culling::DisablePortalCulling()) {
+         return;
+     }
+ 
+@@ -4062,7 +4066,24 @@ void CWorldScene::CullMapObjDefGroups(CSortEntry* entry, CRect* rect, uint32_t i
+ 
+         CMapObjDef* mapObjDef = static_cast<CMapObjDef*>(group->m_parentLinkList.Head()->m_ref);
+ 
+-        if (CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(group->m_bbox) && !CWorldOcclusion::QueryVolumes(&group->m_sphere) && !CWorldOcclusion::QueryBuffer(&group->m_bbox, 0)) {
++        // Same test as before, split so the trace can name the stage that dropped the group. Order and
++        // short-circuiting are unchanged. [Culling] DisableWmoFrustumCull=1 skips the frustum stage.
++        wxl::culling::GroupVerdict verdict = wxl::culling::GroupVerdict::PassedStage1;
++
++        if (!wxl::culling::DisableWmoFrustumCull() && !CWorldScene::frustumStack[CWorldScene::frustumIndex].Cull(group->m_bbox)) {
++            verdict = wxl::culling::GroupVerdict::CulledFrustum;
++        } else if (CWorldOcclusion::QueryVolumes(&group->m_sphere)) {
++            verdict = wxl::culling::GroupVerdict::CulledVolume;
++        } else if (CWorldOcclusion::QueryBuffer(&group->m_bbox, 0)) {
++            verdict = wxl::culling::GroupVerdict::CulledBuffer;
++        }
++
++        if (wxl::culling::TraceWmoWanted(mapObjDef->m_owner->m_wmoName)) {
++            CMapObjGroup* traced = mapObjDef->m_owner->GetGroup(group->m_groupNum, 0);
++            wxl::culling::TraceGroup(group, mapObjDef->m_owner->m_wmoName, group->m_groupNum, traced ? traced->m_groupName : nullptr, verdict);
++        }
++
++        if (verdict == wxl::culling::GroupVerdict::PassedStage1) {
+             mapObjDef->CullMapObjDefGroupFromExterior(group, rect, 0);
+             CWorldScene::AddDoodadDefs(&group->m_doodadDefLinkList, index);
+         }

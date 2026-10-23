@@ -1,4 +1,5 @@
 #include "Map.h"
+#include "Engine/Source/WXL/Culling.h"
 #include "Engine/Source/ShaderEffect/ShadowCache.h"
 #if defined(_MSC_VER)
 #include <malloc.h>
@@ -2259,27 +2260,52 @@ void CMap::PrepareMapObjDefs(bool addToScene) {
                 group->m_distToCamera = groupDist;
             }
 
+            // [Culling] TraceWmo: record how far this group gets (see Engine/Source/WXL/Culling.h).
+            const bool traceGroup = wxl::culling::TraceWmoWanted(mapObj->m_wmoName);
+
             if (!addToScene || !(mapObjDef->m_flags & MAPOBJ_FLAG_PREPARED)) {
+                if (traceGroup && addToScene) {
+                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::NotPrepared);
+                }
+
                 continue;
             }
 
             if (!(group->m_unkLoadedFlag & 1)) {
+                if (traceGroup) {
+                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::NotLoaded);
+                }
+
                 CWorldScene::s_barrier.AddBarrierMapObjDefGroup(defGroup, 50.0f);
                 continue;
             }
 
             if (mapObjDef->m_flags & MAPOBJ_FLAG_DISABLED) {
+                if (traceGroup) {
+                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::Disabled);
+                }
+
                 continue;
             }
 
-            if (CWorldScene::boundingBox.Intersects(box)) {
+            // [Culling] DisableSceneBoxCull=1: add the group whether or not it is inside the frustum's bounding box.
+            if (wxl::culling::DisableSceneBoxCull() || CWorldScene::boundingBox.Intersects(box)) {
                 CWorldScene::AddMapObjDefGroup(mapObjDef, defGroup);
+
+                if (traceGroup) {
+                    wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::Queued);
+                }
+            } else if (traceGroup) {
+                wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::OutsideSceneBox);
             }
 
-            for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
-                C3Vector a = occluder->m_start * mapObjDef->m_mat;
-                C3Vector b = occluder->m_end * mapObjDef->m_mat;
-                CWorldView::AddOccluder(a, b);
+            // WXLExtendedEquipment.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
+            if (!wxl::culling::DisableWmoOccluders()) {
+                for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
+                    C3Vector a = occluder->m_start * mapObjDef->m_mat;
+                    C3Vector b = occluder->m_end * mapObjDef->m_mat;
+                    CWorldView::AddOccluder(a, b);
+                }
             }
         }
 
