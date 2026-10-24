@@ -58,6 +58,7 @@ namespace wxl::equip::physics
         uint32_t teleports = 0;       // instances re-seeded because the placement jumped
         uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
         uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
+        uint32_t modelsTuned = 0;     // models that [Physics] *Scale multipliers changed (PhysicsTuning.hpp)
         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
         double   worstFrameMs = 0;
     };

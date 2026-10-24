@@ -321,4 +321,19 @@ namespace wxl::scripts::equipextension
      * @param defaultValue  value to return if the ini/section/key can't be found or read
      */
     int WxlIniGetInt(const char* section, const char* key, int defaultValue);
+
+    /**
+     * @brief Same file/section/key resolution as WxlIniGetBool, but returns the raw text of the value, for
+     *        callers that parse it themselves (a decimal number, say: WxlIniGetInt only reads whole numbers).
+     * @param out  receives the value, trimmed by the ini reader; set to "" when the key is missing
+     * @return true when the key exists (even with an empty value), false when the ini, section or key is
+     *         missing or unreadable
+     */
+    bool WxlIniGetString(const char* section, const char* key, char* out, size_t cap);
+
+    /**
+     * @brief The ini file's last-write time as one 64-bit number (FILETIME ticks), 0 when it cannot be read.
+     *        Lets a caller notice that the file was saved, to re-read its keys without restarting.
+     */
+    uint64_t WxlIniStamp();
 }

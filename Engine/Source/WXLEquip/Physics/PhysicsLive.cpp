@@ -25,6 +25,7 @@
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
 #include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
+#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
 #include "Engine/Source/WXLEquip/Physics/physics_domino.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
 
@@ -213,6 +214,37 @@ namespace wxl::equip::physics
         }
     }
 
+    namespace
+    {
+        // [Physics] ...Scale multipliers (PhysicsTuning.hpp). Written by Init (before any hook can run), by
+        // ReloadFiles and by the WatchIni poll, the last two under g_lock; read under g_lock.
+        tuning::Tuning g_tuning;
+        bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
+        uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
+        uint32_t g_lastIniPoll = 0;    // GetTickCount of the last look at it
+
+        bool ReadPhysicsKey(const char* key, char* out, size_t cap)
+        {
+            return wxl::scripts::equipextension::WxlIniGetString("Physics", key, out, cap);
+        }
+
+        void LoadTuning()
+        {
+            std::string problems;
+            g_tuning = tuning::FromIni(&ReadPhysicsKey, &problems);
+            g_iniStamp = wxl::scripts::equipextension::WxlIniStamp();
+            // one log line per problem: a value that is not a number, or outside its range
+            for (size_t b = 0; b < problems.size();)
+            {
+                const size_t e = problems.find('\n', b);
+                wxl::LogCat("PHYS", "physics: ini: %s", problems.substr(b, e == std::string::npos ? e : e - b).c_str());
+                if (e == std::string::npos) break;
+                b = e + 1;
+            }
+            wxl::LogCat("PHYS", "physics: multipliers: %s", tuning::Describe(g_tuning).c_str());
+        }
+    }
+
     void Init()
     {
         if (g_inited) return;
@@ -230,6 +262,9 @@ namespace wxl::equip::physics
             g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
             wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
                         g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+            g_watchIni = WxlIniGetBool("Physics", "WatchIni", false);
+            LoadTuning();
+            if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
         }
         // After the equip extension's handler (subscribers run in subscription order).
         wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
@@ -253,7 +288,8 @@ namespace wxl::equip::physics
         g_inst.clear();
         g_penalty.clear();
         g_stats = Stats{};
-        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files will be read again");
+        LoadTuning();
+        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files and the multipliers will be read again");
     }
 
     Stats GetStats()
@@ -287,6 +323,22 @@ namespace wxl::equip::physics
         std::unique_lock<std::mutex> lk(g_lock);
         const uint32_t now = GetTickCount();
         SweepLocked(now);
+
+        // WatchIni: the ini was saved, so read the multipliers again. Every model is prepared again with them
+        // (the parsed .phy2 files stay cached) and every instance starts over from its animated pose.
+        if (g_watchIni && now - g_lastIniPoll >= 1000)
+        {
+            g_lastIniPoll = now;
+            const uint64_t stamp = wxl::scripts::equipextension::WxlIniStamp();
+            if (stamp && stamp != g_iniStamp)
+            {
+                LoadTuning();
+                g_models.clear();
+                g_inst.clear();
+                g_stats.live = 0;
+                wxl::LogCat("PHYS", "physics: ini saved, multipliers applied to every model again");
+            }
+        }
         {
             // an instance that was re-seeded too often stays animated for a while
             auto pen = g_penalty.find(instance);
@@ -316,6 +368,9 @@ namespace wxl::equip::physics
             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
             int carried = 0;
             model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
+            int tuned = 0;
+            model = tuning::Apply(model, g_tuning, &tuned);   // a copy only when a multiplier changes something
+            if (tuned) ++g_stats.modelsTuned;
             if (carried)
             {
                 ++g_stats.modelsCarried;

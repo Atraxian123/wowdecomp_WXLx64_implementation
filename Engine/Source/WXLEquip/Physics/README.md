@@ -117,3 +117,61 @@ Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLEx
 `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
 and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
 these, and the model named in the log is the one to look at.
+
+---
+
+# Tuning the physics from the ini (global multipliers)
+
+`WXLExtendedEquipment.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
+model at once, so the movement can be tuned without editing the files. `1.0` = as the file has it; a key that is
+missing or blank is `1.0`. Decimals can be written `1.25` or `1,25`. A value outside a key's range is clamped to it
+and a value that is not a number is ignored; both are logged (category `PHYS`).
+
+```ini
+[Physics]
+Enabled=1
+
+GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
+LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
+AngularDampingScale=1.0   ; drag on turning/twisting
+InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns
+MassScale=1.0             ; weight of the parts (shape density, 0.01 .. 100)
+FrictionScale=1.0         ; grip against the collider (result 0 .. 10)
+RestitutionScale=1.0      ; bounce (result 0 .. 1)
+SwingLimitScale=1.0       ; shoulder-joint cone (result 10 .. 170 degrees)
+TwistLimitScale=1.0       ; shoulder twist and revolute range, scaled about their centre; 0 = a tight ~0.5 degree limit
+JointStiffnessScale=1.0   ; joint spring frequency (only where the file has a motor torque)
+JointDampingScale=1.0     ; joint spring damping (same)
+MotorTorqueScale=1.0      ; strongest motor push (same)
+FollowScale=1.0           ; how much of a fast move the anchors take at once (carry, result 0 .. 1)
+
+WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
+```
+
+Ranges are 0 .. 100 unless noted. What each key does to what is in the file:
+
+| Key | Changes | On |
+| --- | --- | --- |
+| GravityScale, LinearDampingScale, AngularDampingScale, InertiaScale | body gravity, linear/angular damping, inertia | dynamic bodies |
+| MassScale | shape density | shapes of dynamic bodies |
+| FrictionScale, RestitutionScale | shape friction, restitution | every shape |
+| SwingLimitScale | shoulder cone | shoulder joints |
+| TwistLimitScale | twist range / revolute range, about its centre (a limit never scales to "none") | shoulder, revolute joints |
+| JointStiffnessScale, JointDampingScale, MotorTorqueScale | spring Hz, spring damping, motor torque | shoulder, revolute, weld joints |
+| FollowScale | carry | kinematic bodies |
+
+Notes:
+
+* **The three joint-spring keys scale numbers the file already has.** A joint whose file value is a motor torque of
+  0 (most of them, including the staff `staff_2h_raidmidnight_d_02`) has no motor, and `0 x anything = 0`, so
+  these keys change nothing for it. Use them on models whose `.phy2` has motor values.
+* **Gravity changes how fast and how far the parts fall; where they come to rest is also set by the joint limits
+  and the collider.** Damping is the most direct way to make movement looser or tighter.
+* **The limits are soft under load**, in the engine as in the client: a hard shake can push a joint past its cone
+  for a moment (the unscaled model does too). Resting poses obey the scaled limit.
+* **Extremes are safe.** Every key from 0 to 100, alone or all at once, was run through a shake and 12 s of rest on the
+  real staff with no non-finite or exploded state. Very low or very high values still look odd, naturally.
+* The multipliers are applied once per model when it is first used, after the guard's own preparation
+  (`PhysicsGuard::PrepareModel`). `WatchIni=1` or `PhysicsLive::ReloadFiles()` applies them again.
+* Log lines: `physics: multipliers: GravityScale=0.5 ...` at start-up and on every re-read; `physics: ini: <key> ...`
+  for a bad value. `Stats::modelsTuned` counts the models a multiplier changed.

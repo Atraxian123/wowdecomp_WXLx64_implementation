@@ -1934,4 +1934,41 @@ namespace wxl::scripts::equipextension
     {
         return WxlIniGetInt(section, key, defaultValue ? 1 : 0) != 0;
     }
+
+    bool WxlIniGetString(const char* section, const char* key, char* out, size_t cap)
+    {
+        if (!out || cap == 0) return false;
+        out[0] = '\0';
+        if (!section || !key) return false;
+
+        char iniPath[260] = {};
+        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return false;
+
+#ifdef _WIN32
+        // A one-character sentinel nobody writes in an ini tells "key missing" from "key present and empty".
+        const DWORD n = GetPrivateProfileStringA(section, key, "\x01", out, static_cast<DWORD>(cap), iniPath);
+        if (n == 1 && out[0] == '\x01')
+        {
+            out[0] = '\0';
+            return false;
+        }
+        return true;
+#else
+        (void)iniPath;
+        return false;
+#endif
+    }
+
+    uint64_t WxlIniStamp()
+    {
+        char iniPath[260] = {};
+        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return 0;
+#ifdef _WIN32
+        WIN32_FILE_ATTRIBUTE_DATA data = {};
+        if (!GetFileAttributesExA(iniPath, GetFileExInfoStandard, &data)) return 0;
+        return (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+#else
+        return 0;
+#endif
+    }
 }

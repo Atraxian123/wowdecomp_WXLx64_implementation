@@ -1,0 +1,579 @@
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp b/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
+index 9ac0f72..78e7647 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
+@@ -25,6 +25,7 @@
+ #include "Engine/Source/WXL/Log.h"
+ #include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
+ #include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
++#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
+ #include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
+ 
+@@ -213,6 +214,37 @@ namespace wxl::equip::physics
+         }
+     }
+ 
++    namespace
++    {
++        // [Physics] ...Scale multipliers (PhysicsTuning.hpp). Written by Init (before any hook can run), by
++        // ReloadFiles and by the WatchIni poll, the last two under g_lock; read under g_lock.
++        tuning::Tuning g_tuning;
++        bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
++        uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
++        uint32_t g_lastIniPoll = 0;    // GetTickCount of the last look at it
++
++        bool ReadPhysicsKey(const char* key, char* out, size_t cap)
++        {
++            return wxl::scripts::equipextension::WxlIniGetString("Physics", key, out, cap);
++        }
++
++        void LoadTuning()
++        {
++            std::string problems;
++            g_tuning = tuning::FromIni(&ReadPhysicsKey, &problems);
++            g_iniStamp = wxl::scripts::equipextension::WxlIniStamp();
++            // one log line per problem: a value that is not a number, or outside its range
++            for (size_t b = 0; b < problems.size();)
++            {
++                const size_t e = problems.find('\n', b);
++                wxl::LogCat("PHYS", "physics: ini: %s", problems.substr(b, e == std::string::npos ? e : e - b).c_str());
++                if (e == std::string::npos) break;
++                b = e + 1;
++            }
++            wxl::LogCat("PHYS", "physics: multipliers: %s", tuning::Describe(g_tuning).c_str());
++        }
++    }
++
+     void Init()
+     {
+         if (g_inited) return;
+@@ -230,6 +262,9 @@ namespace wxl::equip::physics
+             g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
+             wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
+                         g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
++            g_watchIni = WxlIniGetBool("Physics", "WatchIni", false);
++            LoadTuning();
++            if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
+         }
+         // After the equip extension's handler (subscribers run in subscription order).
+         wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
+@@ -253,7 +288,8 @@ namespace wxl::equip::physics
+         g_inst.clear();
+         g_penalty.clear();
+         g_stats = Stats{};
+-        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files will be read again");
++        LoadTuning();
++        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files and the multipliers will be read again");
+     }
+ 
+     Stats GetStats()
+@@ -287,6 +323,22 @@ namespace wxl::equip::physics
+         std::unique_lock<std::mutex> lk(g_lock);
+         const uint32_t now = GetTickCount();
+         SweepLocked(now);
++
++        // WatchIni: the ini was saved, so read the multipliers again. Every model is prepared again with them
++        // (the parsed .phy2 files stay cached) and every instance starts over from its animated pose.
++        if (g_watchIni && now - g_lastIniPoll >= 1000)
++        {
++            g_lastIniPoll = now;
++            const uint64_t stamp = wxl::scripts::equipextension::WxlIniStamp();
++            if (stamp && stamp != g_iniStamp)
++            {
++                LoadTuning();
++                g_models.clear();
++                g_inst.clear();
++                g_stats.live = 0;
++                wxl::LogCat("PHYS", "physics: ini saved, multipliers applied to every model again");
++            }
++        }
+         {
+             // an instance that was re-seeded too often stays animated for a while
+             auto pen = g_penalty.find(instance);
+@@ -316,6 +368,9 @@ namespace wxl::equip::physics
+             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
+             int carried = 0;
+             model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
++            int tuned = 0;
++            model = tuning::Apply(model, g_tuning, &tuned);   // a copy only when a multiplier changes something
++            if (tuned) ++g_stats.modelsTuned;
+             if (carried)
+             {
+                 ++g_stats.modelsCarried;
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp b/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
+index 7a8d0db..d2734c0 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
++++ b/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
+@@ -58,6 +58,7 @@ namespace wxl::equip::physics
+         uint32_t teleports = 0;       // instances re-seeded because the placement jumped
+         uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
+         uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
++        uint32_t modelsTuned = 0;     // models that [Physics] *Scale multipliers changed (PhysicsTuning.hpp)
+         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
+         double   worstFrameMs = 0;
+     };
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp b/Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp
+new file mode 100644
+index 0000000..82676dc
+--- /dev/null
++++ b/Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp
+@@ -0,0 +1,230 @@
++// Global multipliers for the physics of every model. See PhysicsTuning.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++
++namespace wxl::equip::physics::tuning
++{
++    namespace
++    {
++        struct Key
++        {
++            const char* name;
++            float Tuning::* field;
++            float lo, hi;
++        };
++
++        // Ranges: a value outside is clamped to it. 0 is meaningful for most (gravity 0 floats, damping 0 never
++        // slows); inertia and mass must stay above 0 or the solver divides by nothing.
++        constexpr Key kKeys[] = {
++            {"GravityScale", &Tuning::gravity, 0.0f, 100.0f},
++            {"LinearDampingScale", &Tuning::linearDamping, 0.0f, 100.0f},
++            {"AngularDampingScale", &Tuning::angularDamping, 0.0f, 100.0f},
++            {"InertiaScale", &Tuning::inertia, 0.01f, 100.0f},
++            {"MassScale", &Tuning::mass, 0.01f, 100.0f},
++            {"FrictionScale", &Tuning::friction, 0.0f, 100.0f},
++            {"RestitutionScale", &Tuning::restitution, 0.0f, 100.0f},
++            {"SwingLimitScale", &Tuning::swingLimit, 0.0f, 100.0f},
++            {"TwistLimitScale", &Tuning::twistLimit, 0.0f, 100.0f},
++            {"JointStiffnessScale", &Tuning::jointStiffness, 0.0f, 100.0f},
++            {"JointDampingScale", &Tuning::jointDamping, 0.0f, 100.0f},
++            {"MotorTorqueScale", &Tuning::motorTorque, 0.0f, 100.0f},
++            {"FollowScale", &Tuning::follow, 0.0f, 100.0f},
++        };
++
++        constexpr float kMinHalfRangeDeg = 0.5f;   // a limit scaled to nothing stays a (tight) limit
++        constexpr float kConeMinDeg = 10.0f;       // the engine clamps the cone to 10 .. 170 degrees itself
++        constexpr float kConeMaxDeg = 170.0f;
++
++        float Clamp(float v, float lo, float hi) { return std::max(lo, std::min(v, hi)); }
++
++        // v = clamp(v * k, lo, hi), only when k != 1; counts a change
++        void Scale(float& v, float k, float lo, float hi, int& changed)
++        {
++            if (k == 1.0f) return;
++            const float n = Clamp(v * k, lo, hi);
++            if (std::isfinite(n) && n != v)
++            {
++                v = n;
++                ++changed;
++            }
++        }
++
++        // A symmetric-or-not angular range [lo, hi] in degrees, scaled about its centre; only a real range
++        // (lo < hi) is touched, since the engine reads lo >= hi as "no limit" and that must stay so.
++        void ScaleRange(float& lo, float& hi, float k, float clampDeg, int& changed)
++        {
++            if (k == 1.0f || !(lo < hi)) return;
++            const float centre = 0.5f * (lo + hi);
++            const float half = std::max(0.5f * (hi - lo) * k, kMinHalfRangeDeg);
++            const float nl = Clamp(centre - half, -clampDeg, clampDeg), nh = Clamp(centre + half, -clampDeg, clampDeg);
++            if (std::isfinite(nl) && std::isfinite(nh) && nl < nh && (nl != lo || nh != hi))
++            {
++                lo = nl;
++                hi = nh;
++                ++changed;
++            }
++        }
++    }
++
++    bool Tuning::Identity() const
++    {
++        for (const Key& k : kKeys)
++            if (this->*(k.field) != 1.0f) return false;
++        return true;
++    }
++
++    bool ParseMultiplier(const char* text, float* out)
++    {
++        if (!text || !out) return false;
++        while (*text == ' ' || *text == '\t') ++text;
++
++        // "123", "1.25", "1,25", ".5": digits with at most one decimal separator. Done by hand because
++        // strtod follows the process locale and a "," would stop it on an Italian system.
++        double value = 0, scale = 1;
++        bool digits = false, fraction = false;
++        const char* p = text;
++        for (; *p; ++p)
++        {
++            if (*p >= '0' && *p <= '9')
++            {
++                digits = true;
++                if (!fraction) value = value * 10.0 + (*p - '0');
++                else { scale *= 0.1; value += (*p - '0') * scale; }
++                if (value > 1.0e12) return false;
++            }
++            else if ((*p == '.' || *p == ',') && !fraction)
++                fraction = true;
++            else
++                break;
++        }
++        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
++        if (!digits || *p != '\0') return false;   // nothing numeric, a sign, an exponent, or trailing junk
++        *out = static_cast<float>(value);
++        return std::isfinite(*out);
++    }
++
++    Tuning FromIni(ReadFn read, std::string* problems)
++    {
++        Tuning t;
++        if (!read) return t;
++        auto note = [&](const char* fmt, const char* a, const char* b, float c) {
++            if (!problems) return;
++            char buf[200];
++            std::snprintf(buf, sizeof(buf), fmt, a, b, c);
++            *problems += buf;
++            *problems += '\n';
++        };
++        for (const Key& k : kKeys)
++        {
++            char text[64] = {};
++            if (!read(k.name, text, sizeof(text))) continue;
++            {   // a blank value ("GravityScale=") means "not set", not a mistake
++                const char* p = text;
++                while (*p == ' ' || *p == '\t') ++p;
++                if (*p == '\0') continue;
++            }
++            float v = 1.0f;
++            if (!ParseMultiplier(text, &v))
++            {
++                note("%s='%s' is not a number (use 1.25 or 1,25); ignored, stays %g", k.name, text, 1.0f);
++                continue;
++            }
++            const float c = Clamp(v, k.lo, k.hi);
++            if (c != v) note("%s='%s' is outside its range; clamped to %g", k.name, text, c);
++            t.*(k.field) = c;
++        }
++        return t;
++    }
++
++    std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& requested, int* changed)
++    {
++        if (changed) *changed = 0;
++        if (!in || requested.Identity()) return in;
++
++        // Safe whatever the caller passes: every multiplier is brought into its own range (a NaN becomes 1),
++        // the same ranges FromIni uses. Zero inertia or mass would make the solver divide by nothing.
++        Tuning t = requested;
++        for (const Key& k : kKeys)
++        {
++            float& v = t.*(k.field);
++            v = std::isfinite(v) ? Clamp(v, k.lo, k.hi) : 1.0f;
++        }
++
++        auto out = std::make_shared<phys::Model>(*in);
++        int n = 0;
++
++        for (phys::BodyDef& b : out->bodies)
++        {
++            if (b.type == phys::kBodyDynamic)
++            {
++                Scale(b.gravity, t.gravity, 0.0f, 1.0e4f, n);
++                Scale(b.linDamp, t.linearDamping, 0.0f, 1.0e4f, n);
++                Scale(b.angDamp, t.angularDamping, 0.0f, 1.0e4f, n);
++                Scale(b.inertia, t.inertia, 0.0f, 1.0e4f, n);
++            }
++            else if (b.type == phys::kBodyKinematic)
++            {
++                Scale(b.carry, t.follow, 0.0f, 1.0f, n);
++            }
++        }
++
++        for (phys::ShapeDef& s : out->shapes)
++        {
++            Scale(s.friction, t.friction, 0.0f, 10.0f, n);
++            Scale(s.restitution, t.restitution, 0.0f, 1.0f, n);
++            if (s.body < out->bodies.size() && out->bodies[s.body].type == phys::kBodyDynamic)
++                Scale(s.density, t.mass, 1.0e-4f, 1.0e4f, n);
++        }
++
++        for (phys::JointDef& j : out->joints)
++        {
++            switch (j.type)
++            {
++            case phys::kJointShoulder:   // twistLo, twistHi, cone (deg), maxTorque, Hz, damping
++                ScaleRange(j.f[0], j.f[1], t.twistLimit, 180.0f, n);
++                Scale(j.f[2], t.swingLimit, kConeMinDeg, kConeMaxDeg, n);
++                Scale(j.f[3], t.motorTorque, 0.0f, 1.0e6f, n);
++                Scale(j.f[4], t.jointStiffness, 0.0f, 1.0e4f, n);
++                Scale(j.f[5], t.jointDamping, 0.0f, 1.0e4f, n);
++                break;
++            case phys::kJointRevolute:   // lower, upper (deg), maxTorque, Hz, damping
++                ScaleRange(j.f[0], j.f[1], t.twistLimit, 360.0f, n);
++                Scale(j.f[2], t.motorTorque, 0.0f, 1.0e6f, n);
++                Scale(j.f[3], t.jointStiffness, 0.0f, 1.0e4f, n);
++                Scale(j.f[4], t.jointDamping, 0.0f, 1.0e4f, n);
++                break;
++            case phys::kJointWeld:       // angular Hz, angular damping, linear Hz, linear damping
++                Scale(j.f[0], t.jointStiffness, 0.0f, 1.0e4f, n);
++                Scale(j.f[1], t.jointDamping, 0.0f, 1.0e4f, n);
++                Scale(j.f[2], t.jointStiffness, 0.0f, 1.0e4f, n);
++                Scale(j.f[3], t.jointDamping, 0.0f, 1.0e4f, n);
++                break;
++            default:
++                break;   // distance / prismatic / spherical: not touched
++            }
++        }
++
++        if (changed) *changed = n;
++        return out;
++    }
++
++    std::string Describe(const Tuning& t)
++    {
++        std::string s;
++        for (const Key& k : kKeys)
++        {
++            const float v = t.*(k.field);
++            if (v == 1.0f) continue;
++            char buf[64];
++            std::snprintf(buf, sizeof(buf), "%s%s=%.3g", s.empty() ? "" : " ", k.name, v);
++            s += buf;
++        }
++        return s.empty() ? "none" : s;
++    }
++}
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp b/Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp
+new file mode 100644
+index 0000000..47fdfc9
+--- /dev/null
++++ b/Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp
+@@ -0,0 +1,86 @@
++// Global multipliers for the physics of every model, from WXLExtendedEquipment.ini.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// A .phy2 holds one set of numbers per model (gravity, damping, joint limits, ...). These multipliers scale
++// those numbers for every model at once, so the movement can be tuned (looser, heavier, floatier, stiffer)
++// without editing the .phy2 files. 1.0 leaves a value as the file has it; a key that is missing or not a
++// number is 1.0. Nothing here touches the engine: Apply() returns a scaled copy of a Model, and the engine
++// reads that copy as it would read the original.
++//
++//     [Physics]
++//     Enabled=1
++//
++//     ; ---- how the bones fall and settle (dynamic bodies) ----
++//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are.
++//     LinearDampingScale=1.0    ; air drag on movement. Up: slower, gooier. Down: swings longer.
++//     AngularDampingScale=1.0   ; air drag on spinning/twisting. Up: stops turning sooner.
++//     InertiaScale=1.0          ; resistance to being rotated. Up: lazier turns. (0.01 .. 100)
++//     MassScale=1.0             ; weight of the parts (shape density). (0.01 .. 100)
++//
++//     ; ---- contacts (every shape) ----
++//     FrictionScale=1.0         ; grip against the collider. Up: sticks, down: slides.
++//     RestitutionScale=1.0      ; bounciness (the result stays within 0 .. 1)
++//
++//     ; ---- joint limits (how far a bone may bend) ----
++//     SwingLimitScale=1.0       ; shoulder-joint cone: the result stays within 10 .. 170 degrees
++//     TwistLimitScale=1.0       ; shoulder twist range and revolute range, scaled about their centre. 0 = tight
++//                               ; (about half a degree), never "no limit"
++//
++//     ; ---- joint springs (only joints whose file value has a motor torque; most have none) ----
++//     JointStiffnessScale=1.0   ; spring frequency (Hz) of shoulder, revolute and weld joints
++//     JointDampingScale=1.0     ; spring damping
++//     MotorTorqueScale=1.0      ; strongest push the motor may make
++//
++//     ; ---- following a fast move ----
++//     FollowScale=1.0           ; how much of a fast move of the item the anchors take at once (carry, 0 .. 1)
++//
++//     ; Re-read these keys whenever the ini is saved, without restarting the client (the parts snap back to
++//     ; their pose for a moment). Default 0.
++//     WatchIni=0
++//
++// Every multiplier is read as a decimal number, "1.25" or "1,25"; a value outside its range is clamped to it
++// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
++#pragma once
++
++#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
++
++#include <cstddef>
++#include <memory>
++#include <string>
++
++namespace wxl::equip::physics::tuning
++{
++    namespace phys = wow::ec::physics;
++
++    struct Tuning
++    {
++        float gravity = 1, linearDamping = 1, angularDamping = 1, inertia = 1, mass = 1;
++        float friction = 1, restitution = 1;
++        float swingLimit = 1, twistLimit = 1;
++        float jointStiffness = 1, jointDamping = 1, motorTorque = 1;
++        float follow = 1;
++
++        /// True when every multiplier is exactly 1 (Apply then returns its input untouched).
++        bool Identity() const;
++    };
++
++    /// Reads one key of [Physics]: copies its text into out and returns true when the key exists.
++    using ReadFn = bool (*)(const char* key, char* out, size_t cap);
++
++    /// Parses "1.25" / "1,25" (surrounding spaces ignored). False for anything that is not a finite,
++    /// non-negative number; *out is untouched then.
++    bool ParseMultiplier(const char* text, float* out);
++
++    /// Reads every multiplier through `read`. Problems (a value that is not a number, or out of range) are
++    /// described in *problems, one per line, when given. Missing keys stay at 1.
++    Tuning FromIni(ReadFn read, std::string* problems = nullptr);
++
++    /// A scaled copy of `in`; `in` itself when the tuning is the identity or `in` is null. *changed (when
++    /// given) counts the values that ended up different. Only what the .phy2 already uses is touched:
++    /// gravity, damping, inertia on dynamic bodies; density on their shapes; friction and restitution on all
++    /// shapes; limits and springs on shoulder, revolute and weld joints; carry on kinematic bodies.
++    std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& t, int* changed = nullptr);
++
++    /// "GravityScale=0.5 SwingLimitScale=1.2 ..." for every multiplier that is not 1 ("none" otherwise).
++    std::string Describe(const Tuning& t);
++}
+diff --git a/Engine/Source/WXLEquip/Physics/README.md b/Engine/Source/WXLEquip/Physics/README.md
+index fc618b0..a2542a4 100644
+--- a/Engine/Source/WXLEquip/Physics/README.md
++++ b/Engine/Source/WXLEquip/Physics/README.md
+@@ -117,3 +117,61 @@ Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLEx
+ `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
+ and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
+ these, and the model named in the log is the one to look at.
++
++---
++
++# Tuning the physics from the ini (global multipliers)
++
++`WXLExtendedEquipment.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
++model at once, so the movement can be tuned without editing the files. `1.0` = as the file has it; a key that is
++missing or blank is `1.0`. Decimals can be written `1.25` or `1,25`. A value outside a key's range is clamped to it
++and a value that is not a number is ignored; both are logged (category `PHYS`).
++
++```ini
++[Physics]
++Enabled=1
++
++GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
++LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
++AngularDampingScale=1.0   ; drag on turning/twisting
++InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns
++MassScale=1.0             ; weight of the parts (shape density, 0.01 .. 100)
++FrictionScale=1.0         ; grip against the collider (result 0 .. 10)
++RestitutionScale=1.0      ; bounce (result 0 .. 1)
++SwingLimitScale=1.0       ; shoulder-joint cone (result 10 .. 170 degrees)
++TwistLimitScale=1.0       ; shoulder twist and revolute range, scaled about their centre; 0 = a tight ~0.5 degree limit
++JointStiffnessScale=1.0   ; joint spring frequency (only where the file has a motor torque)
++JointDampingScale=1.0     ; joint spring damping (same)
++MotorTorqueScale=1.0      ; strongest motor push (same)
++FollowScale=1.0           ; how much of a fast move the anchors take at once (carry, result 0 .. 1)
++
++WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
++```
++
++Ranges are 0 .. 100 unless noted. What each key does to what is in the file:
++
++| Key | Changes | On |
++| --- | --- | --- |
++| GravityScale, LinearDampingScale, AngularDampingScale, InertiaScale | body gravity, linear/angular damping, inertia | dynamic bodies |
++| MassScale | shape density | shapes of dynamic bodies |
++| FrictionScale, RestitutionScale | shape friction, restitution | every shape |
++| SwingLimitScale | shoulder cone | shoulder joints |
++| TwistLimitScale | twist range / revolute range, about its centre (a limit never scales to "none") | shoulder, revolute joints |
++| JointStiffnessScale, JointDampingScale, MotorTorqueScale | spring Hz, spring damping, motor torque | shoulder, revolute, weld joints |
++| FollowScale | carry | kinematic bodies |
++
++Notes:
++
++* **The three joint-spring keys scale numbers the file already has.** A joint whose file value is a motor torque of
++  0 (most of them, including the staff `staff_2h_raidmidnight_d_02`) has no motor, and `0 x anything = 0`, so
++  these keys change nothing for it. Use them on models whose `.phy2` has motor values.
++* **Gravity changes how fast and how far the parts fall; where they come to rest is also set by the joint limits
++  and the collider.** Damping is the most direct way to make movement looser or tighter.
++* **The limits are soft under load**, in the engine as in the client: a hard shake can push a joint past its cone
++  for a moment (the unscaled model does too). Resting poses obey the scaled limit.
++* **Extremes are safe.** Every key from 0 to 100, alone or all at once, was run through a shake and 12 s of rest on the
++  real staff with no non-finite or exploded state. Very low or very high values still look odd, naturally.
++* The multipliers are applied once per model when it is first used, after the guard's own preparation
++  (`PhysicsGuard::PrepareModel`). `WatchIni=1` or `PhysicsLive::ReloadFiles()` applies them again.
++* Log lines: `physics: multipliers: GravityScale=0.5 ...` at start-up and on every re-read; `physics: ini: <key> ...`
++  for a bad value. `Stats::modelsTuned` counts the models a multiplier changed.
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index 8b7c3d9..abcfa6b 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -1934,4 +1934,41 @@ namespace wxl::scripts::equipextension
+     {
+         return WxlIniGetInt(section, key, defaultValue ? 1 : 0) != 0;
+     }
++
++    bool WxlIniGetString(const char* section, const char* key, char* out, size_t cap)
++    {
++        if (!out || cap == 0) return false;
++        out[0] = '\0';
++        if (!section || !key) return false;
++
++        char iniPath[260] = {};
++        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return false;
++
++#ifdef _WIN32
++        // A one-character sentinel nobody writes in an ini tells "key missing" from "key present and empty".
++        const DWORD n = GetPrivateProfileStringA(section, key, "\x01", out, static_cast<DWORD>(cap), iniPath);
++        if (n == 1 && out[0] == '\x01')
++        {
++            out[0] = '\0';
++            return false;
++        }
++        return true;
++#else
++        (void)iniPath;
++        return false;
++#endif
++    }
++
++    uint64_t WxlIniStamp()
++    {
++        char iniPath[260] = {};
++        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return 0;
++#ifdef _WIN32
++        WIN32_FILE_ATTRIBUTE_DATA data = {};
++        if (!GetFileAttributesExA(iniPath, GetFileExInfoStandard, &data)) return 0;
++        return (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
++#else
++        return 0;
++#endif
++    }
+ }
+diff --git a/Engine/Source/WXLEquip/VirtualPath.hpp b/Engine/Source/WXLEquip/VirtualPath.hpp
+index 6ada4bb..dcb7f46 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.hpp
++++ b/Engine/Source/WXLEquip/VirtualPath.hpp
+@@ -321,4 +321,19 @@ namespace wxl::scripts::equipextension
+      * @param defaultValue  value to return if the ini/section/key can't be found or read
+      */
+     int WxlIniGetInt(const char* section, const char* key, int defaultValue);
++
++    /**
++     * @brief Same file/section/key resolution as WxlIniGetBool, but returns the raw text of the value, for
++     *        callers that parse it themselves (a decimal number, say: WxlIniGetInt only reads whole numbers).
++     * @param out  receives the value, trimmed by the ini reader; set to "" when the key is missing
++     * @return true when the key exists (even with an empty value), false when the ini, section or key is
++     *         missing or unreadable
++     */
++    bool WxlIniGetString(const char* section, const char* key, char* out, size_t cap);
++
++    /**
++     * @brief The ini file's last-write time as one 64-bit number (FILETIME ticks), 0 when it cannot be read.
++     *        Lets a caller notice that the file was saved, to re-read its keys without restarting.
++     */
++    uint64_t WxlIniStamp();
+ }
