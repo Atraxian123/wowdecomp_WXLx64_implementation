@@ -1,0 +1,105 @@
+diff --git a/Engine/Source/Model2/M2Scene.cpp b/Engine/Source/Model2/M2Scene.cpp
+index 3f2b9e1..cfb9c4b 100644
+--- a/Engine/Source/Model2/M2Scene.cpp
++++ b/Engine/Source/Model2/M2Scene.cpp
+@@ -445,11 +445,24 @@ void M2BlendBoneMatrices(const C44Matrix* bones, ubyte4 weights, ubyte4 indices,
+ 
+ // VERIFY: 27fe3564 manual
+ // OFFSET: 0x0081D510
+-M2HitRec* CM2Scene::IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best) {
++M2HitRec* CM2Scene::IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, uint32_t vertexCount, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best) {
+     for (; indices < end; indices += 3) {
+-        const C3Vector& v0 = this->m_hitVerts[indices[0] - vertexStart];
+-        const C3Vector& v1 = this->m_hitVerts[indices[1] - vertexStart];
+-        const C3Vector& v2 = this->m_hitVerts[indices[2] - vertexStart];
++        // m_hitVerts only holds this section's vertexCount vertices, the first one being vertexStart. The
++        // original client let an index below vertexStart wrap around in 32-bit address arithmetic and read
++        // a few KB before the buffer, which is garbage but not a fault. On x64 the same wrap is a 48 GiB
++        // offset and a guaranteed access violation, and models whose skin was filtered (indices zeroed,
++        // WXL geoset filters) have exactly such triangles. A triangle that leaves the section is skipped.
++        const uint32_t i0 = static_cast<uint32_t>(indices[0]) - vertexStart;
++        const uint32_t i1 = static_cast<uint32_t>(indices[1]) - vertexStart;
++        const uint32_t i2 = static_cast<uint32_t>(indices[2]) - vertexStart;
++
++        if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) {
++            continue;
++        }
++
++        const C3Vector& v0 = this->m_hitVerts[i0];
++        const C3Vector& v1 = this->m_hitVerts[i1];
++        const C3Vector& v2 = this->m_hitVerts[i2];
+         float det = (v2.y - v0.y) * (v1.x - v0.x) - (v2.x - v0.x) * (v1.y - v0.y);
+ 
+         if (fabsf(det) < 0.0000099999997f) {
+@@ -654,7 +667,7 @@ M2HitRec* CM2Scene::HitTestGeometry(const CM2Model* model, uint32_t pass, const
+         }
+ 
+         const uint16_t* indices = &skinData->m_indices[section->m_indexStart];
+-        best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, start, pass, rec, t, best);
++        best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, section->m_vertexCount, start, pass, rec, t, best);
+     }
+ 
+     return best;
+@@ -690,7 +703,7 @@ M2HitRec* CM2Scene::HitTestCollision(const CM2Model* model, uint32_t pass, const
+ 
+     const uint16_t* indices = data->m_collisionIndices.Data();
+ 
+-    return this->IntersectHitTestTriangles(indices, indices + data->m_collisionIndices.m_count, 0, start, pass, rec, t, best);
++    return this->IntersectHitTestTriangles(indices, indices + data->m_collisionIndices.m_count, 0, data->m_collisionPositions.m_count, start, pass, rec, t, best);
+ }
+ 
+ // VERIFY: eaeb7d7b manual
+diff --git a/Engine/Source/Model2/M2Scene.h b/Engine/Source/Model2/M2Scene.h
+index f29a267..6915521 100644
+--- a/Engine/Source/Model2/M2Scene.h
++++ b/Engine/Source/Model2/M2Scene.h
+@@ -115,7 +115,7 @@ class CM2Scene {
+     void* EndHitTestCollisionWorld(const C3Vector& start, const C3Vector& end, float& t);
+     M2HitRec* HitTestCollision(const CM2Model* model, uint32_t pass, const C3Vector& dir, float d, const C3Vector& start, M2HitRec* rec, float& t, M2HitRec* best);
+     M2HitRec* HitTestGeometry(const CM2Model* model, uint32_t pass, const C3Vector& dir, float d, const C3Vector& start, M2HitRec* rec, float& t, M2HitRec* best);
+-    M2HitRec* IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best);
++    M2HitRec* IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, uint32_t vertexCount, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best);
+     void PurgeModelCache();
+     void Release();
+     void SelectLights(CM2Lighting* lighting);
+diff --git a/Engine/Source/WXLEquip/EquipExtension.cpp b/Engine/Source/WXLEquip/EquipExtension.cpp
+index c344dec..fee549a 100644
+--- a/Engine/Source/WXLEquip/EquipExtension.cpp
++++ b/Engine/Source/WXLEquip/EquipExtension.cpp
+@@ -1996,7 +1996,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+                         if (start > indexCount || count > indexCount - start) continue;
+                     }
+ 
+-                    std::memset(indices + start, 0, count * sizeof(uint16_t));
++                    // (v,v,v) on the section's own first vertex rather than vertex 0: see VirtualPath.cpp's
++                    // ApplySkinByteFilter -- the cursor hit test needs every index inside the section.
++                    const uint16_t fill = subs[si].m_vertexCount ? subs[si].m_vertexStart : static_cast<uint16_t>(0);
++                    for (uint32_t k = 0; k < count; ++k)
++                        indices[start + k] = fill;
+                 }
+             }
+         }
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index abcfa6b..4a634cc 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -714,9 +714,16 @@ namespace wxl::scripts::equipextension
+                     continue;
+                 }
+ 
+-                std::memset(skinBytes.data() + rawIndexOfs + fullIndexStart * sizeof(uint16_t),
+-                            0,
+-                            indexCount * sizeof(uint16_t));
++                // Collapse the section's triangles onto its OWN first vertex (v,v,v), not onto vertex 0:
++                // still degenerate, so nothing is drawn, but every index stays inside the section's vertex
++                // range, which the hit test (cursor picking) relies on. Index 0 in a section that starts
++                // at vertex N > 0 made it read m_hitVerts[0 - N].
++                const uint16_t vertexStart = ReadU16(skinBytes, sub + 0x04);
++                const uint16_t vertexCount = ReadU16(skinBytes, sub + 0x06);
++                const uint16_t fill = vertexCount ? vertexStart : static_cast<uint16_t>(0);
++                uint8_t* dst = skinBytes.data() + rawIndexOfs + fullIndexStart * sizeof(uint16_t);
++                for (uint32_t k = 0; k < indexCount; ++k)
++                    std::memcpy(dst + k * sizeof(uint16_t), &fill, sizeof(uint16_t));
+                 ++zeroed;
+             }
+             VPathLog("  VPathPopulate: prefiltered skin kept=%u zeroed=%u", kept, zeroed);

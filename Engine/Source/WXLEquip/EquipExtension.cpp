@@ -1996,7 +1996,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                         if (start > indexCount || count > indexCount - start) continue;
                     }
 
-                    std::memset(indices + start, 0, count * sizeof(uint16_t));
+                    // (v,v,v) on the section's own first vertex rather than vertex 0: see VirtualPath.cpp's
+                    // ApplySkinByteFilter -- the cursor hit test needs every index inside the section.
+                    const uint16_t fill = subs[si].m_vertexCount ? subs[si].m_vertexStart : static_cast<uint16_t>(0);
+                    for (uint32_t k = 0; k < count; ++k)
+                        indices[start + k] = fill;
                 }
             }
         }

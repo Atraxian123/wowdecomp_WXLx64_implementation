@@ -445,11 +445,24 @@ void M2BlendBoneMatrices(const C44Matrix* bones, ubyte4 weights, ubyte4 indices,
 
 // VERIFY: 27fe3564 manual
 // OFFSET: 0x0081D510
-M2HitRec* CM2Scene::IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best) {
+M2HitRec* CM2Scene::IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, uint32_t vertexCount, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best) {
     for (; indices < end; indices += 3) {
-        const C3Vector& v0 = this->m_hitVerts[indices[0] - vertexStart];
-        const C3Vector& v1 = this->m_hitVerts[indices[1] - vertexStart];
-        const C3Vector& v2 = this->m_hitVerts[indices[2] - vertexStart];
+        // m_hitVerts only holds this section's vertexCount vertices, the first one being vertexStart. The
+        // original client let an index below vertexStart wrap around in 32-bit address arithmetic and read
+        // a few KB before the buffer, which is garbage but not a fault. On x64 the same wrap is a 48 GiB
+        // offset and a guaranteed access violation, and models whose skin was filtered (indices zeroed,
+        // WXL geoset filters) have exactly such triangles. A triangle that leaves the section is skipped.
+        const uint32_t i0 = static_cast<uint32_t>(indices[0]) - vertexStart;
+        const uint32_t i1 = static_cast<uint32_t>(indices[1]) - vertexStart;
+        const uint32_t i2 = static_cast<uint32_t>(indices[2]) - vertexStart;
+
+        if (i0 >= vertexCount || i1 >= vertexCount || i2 >= vertexCount) {
+            continue;
+        }
+
+        const C3Vector& v0 = this->m_hitVerts[i0];
+        const C3Vector& v1 = this->m_hitVerts[i1];
+        const C3Vector& v2 = this->m_hitVerts[i2];
         float det = (v2.y - v0.y) * (v1.x - v0.x) - (v2.x - v0.x) * (v1.y - v0.y);
 
         if (fabsf(det) < 0.0000099999997f) {
@@ -654,7 +667,7 @@ M2HitRec* CM2Scene::HitTestGeometry(const CM2Model* model, uint32_t pass, const 
         }
 
         const uint16_t* indices = &skinData->m_indices[section->m_indexStart];
-        best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, start, pass, rec, t, best);
+        best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, section->m_vertexCount, start, pass, rec, t, best);
     }
 
     return best;
@@ -690,7 +703,7 @@ M2HitRec* CM2Scene::HitTestCollision(const CM2Model* model, uint32_t pass, const
 
     const uint16_t* indices = data->m_collisionIndices.Data();
 
-    return this->IntersectHitTestTriangles(indices, indices + data->m_collisionIndices.m_count, 0, start, pass, rec, t, best);
+    return this->IntersectHitTestTriangles(indices, indices + data->m_collisionIndices.m_count, 0, data->m_collisionPositions.m_count, start, pass, rec, t, best);
 }
 
 // VERIFY: eaeb7d7b manual

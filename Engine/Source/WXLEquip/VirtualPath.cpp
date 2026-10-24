@@ -714,9 +714,16 @@ namespace wxl::scripts::equipextension
                     continue;
                 }
 
-                std::memset(skinBytes.data() + rawIndexOfs + fullIndexStart * sizeof(uint16_t),
-                            0,
-                            indexCount * sizeof(uint16_t));
+                // Collapse the section's triangles onto its OWN first vertex (v,v,v), not onto vertex 0:
+                // still degenerate, so nothing is drawn, but every index stays inside the section's vertex
+                // range, which the hit test (cursor picking) relies on. Index 0 in a section that starts
+                // at vertex N > 0 made it read m_hitVerts[0 - N].
+                const uint16_t vertexStart = ReadU16(skinBytes, sub + 0x04);
+                const uint16_t vertexCount = ReadU16(skinBytes, sub + 0x06);
+                const uint16_t fill = vertexCount ? vertexStart : static_cast<uint16_t>(0);
+                uint8_t* dst = skinBytes.data() + rawIndexOfs + fullIndexStart * sizeof(uint16_t);
+                for (uint32_t k = 0; k < indexCount; ++k)
+                    std::memcpy(dst + k * sizeof(uint16_t), &fill, sizeof(uint16_t));
                 ++zeroed;
             }
             VPathLog("  VPathPopulate: prefiltered skin kept=%u zeroed=%u", kept, zeroed);

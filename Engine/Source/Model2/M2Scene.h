@@ -115,7 +115,7 @@ class CM2Scene {
     void* EndHitTestCollisionWorld(const C3Vector& start, const C3Vector& end, float& t);
     M2HitRec* HitTestCollision(const CM2Model* model, uint32_t pass, const C3Vector& dir, float d, const C3Vector& start, M2HitRec* rec, float& t, M2HitRec* best);
     M2HitRec* HitTestGeometry(const CM2Model* model, uint32_t pass, const C3Vector& dir, float d, const C3Vector& start, M2HitRec* rec, float& t, M2HitRec* best);
-    M2HitRec* IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best);
+    M2HitRec* IntersectHitTestTriangles(const uint16_t* indices, const uint16_t* end, uint32_t vertexStart, uint32_t vertexCount, const C3Vector& start, uint32_t pass, M2HitRec* rec, float& t, M2HitRec* best);
     void PurgeModelCache();
     void Release();
     void SelectLights(CM2Lighting* lighting);
