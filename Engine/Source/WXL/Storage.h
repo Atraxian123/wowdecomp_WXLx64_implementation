@@ -41,4 +41,8 @@ namespace wxl::storage
     using NativeReadFn = bool (*)(const char* name, std::vector<uint8_t>& out);
     void SetNativeReader(NativeReadFn fn);
     bool ReadNative(const char* name, std::vector<uint8_t>& out);
+
+    /// Same read without the log lines on a miss, for callers that probe for files that are normally
+    /// absent (a module looking for a per-model sidecar next to every model it sees).
+    bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out);
 }

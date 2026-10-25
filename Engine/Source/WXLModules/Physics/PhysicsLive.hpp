@@ -1,19 +1,20 @@
-// Runtime physics for model instances, built into the client.
+// Runtime physics for model instances: the WXL "physics" module.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
-// Ported from wxl-equip-plus (PhysicsLive.cpp). The simulation is the retail "Domino" engine port
-// in physics_domino.{h,cpp}; this file only feeds the client's bone matrices into it and writes the
-// simulated bones back.
+// Ported from wxl-equip-plus (PhysicsLive.cpp). The simulation is the retail "Domino" engine port in
+// physics_domino.{h,cpp}; this file feeds the client's bone matrices into it and writes the simulated bones
+// back. It is a DLL module (wxl_physics.dll, WXL\Modules\) and sees the client only through
+// Engine/Source/WXL/Sdk/wxl_api.h.
 //
-// Where the physics comes from: NOT one table for every model. Each model's physics sits in a
-// .phy2 file beside the model, under the same name and in the same folder:
+// Where the physics comes from: NOT one table for every model. Each model's physics sits in a .phy2 file
+// beside the model, under the same name and in the same folder:
 //
 //     item\objectcomponents\weapon\staff_2h_raidmidnight_d_02.m2
 //     item\objectcomponents\weapon\staff_2h_raidmidnight_d_02.phy2
 //
-// A model reached through a virtual path (VirtualPath.hpp) uses the .phy2 of the ORIGINAL .m2 the
-// virtual path was made from. A model with no .phy2 is left alone. The .phy2 files come from
-// tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
+// A model reached through a virtual path (VirtualPath.hpp) uses the .phy2 of the ORIGINAL .m2 the virtual
+// path was made from. A model with no .phy2 is left alone. The .phy2 files come from
+// Tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
 //
 // Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
 //
@@ -25,20 +26,22 @@
 //                          placement jumps (teleport), is dropped and re-seeded from the animated pose
 //     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
 //     TeleportYards=6      a placement move farther than this in one frame is a teleport
+// and the multipliers of PhysicsTuning.hpp.
 //
-// The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT,
-// original 0x0082F0F0). Init() subscribes AFTER the equip extension's own handler, and subscribers
-// run in order, so physics sees the palette after the equip remap/mirror, as the injected build did.
-// The event can fire on the client's animate threads: everything here is thread-safe.
+// The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT).
+// Modules load after the built-in extensions, so this subscriber runs after the equip extension's own and
+// sees the palette after its remap/mirror. The event can fire on the client's animate threads: everything
+// here is thread-safe.
 #pragma once
+
+#include "wxl_api.h"
 
 #include <cstdint>
 
 namespace wxl::equip::physics
 {
-    /// Reads the ini and subscribes to OnBuildBonePalette. Call once, after the equip extension's
-    /// Create() (so physics runs after the equip handler). Safe to call twice.
-    void Init();
+    /// Reads the ini and subscribes to OnBuildBonePalette. Safe to call twice.
+    bool Init(const WxlApi* api);
 
     bool Enabled();
     /// Switches physics on or off at run time; instances go back to their animated pose.
@@ -64,7 +67,6 @@ namespace wxl::equip::physics
     };
     Stats GetStats();
 
-    /// The hook body (public so tests and tools can drive it): `instance` is a CM2Model* whose bone
-    /// palette the engine has just written.
+    /// The hook body (public so tests can drive it): `instance` is the handle the event carried.
     void AfterBonePalette(void* instance);
 }

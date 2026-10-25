@@ -113,6 +113,7 @@
 #include "WoW/Source/WowSvcs/WowSvcsClient/FriendList.h"
 #include "WoW/Source/WowSysMessageOutput.h"
 #include "Engine/Source/WXL/WXL.h"
+#include "Engine/Source/WXLApi/ApiHost.h"
 #include "Engine/Source/WXLEquip/Equip.h"
 
 namespace {
@@ -1740,6 +1741,7 @@ bool InitializeGlobal() {
     BaseInitializeGlobal();
     wxl::InitModules();
     wxl::equip::Init();
+    wxl::api::LoadModules();   // WXL\Modules\*.dll, after the built-in extensions so their handlers run first
     EventInitialize(1, 0);
 
     CVar* timingTestError = CVar::Register("timingTestError", "Error reported by the timing validation system", 6, "0", nullptr, CATEGORY_DEFAULT, false, nullptr, false);

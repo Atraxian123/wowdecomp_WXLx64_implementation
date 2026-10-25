@@ -1,7 +1,7 @@
 // Global multipliers for the physics of every model. See PhysicsTuning.hpp.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 
-#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
+#include "PhysicsTuning.hpp"
 
 #include <algorithm>
 #include <cmath>

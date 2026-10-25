@@ -1,7 +1,7 @@
 // See PhysicsGuard.hpp.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 
-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
+#include "PhysicsGuard.hpp"
 
 #include <algorithm>
 #include <cmath>

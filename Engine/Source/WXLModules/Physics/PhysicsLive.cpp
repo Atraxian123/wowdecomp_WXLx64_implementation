@@ -2,37 +2,32 @@
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
 // What it does, per animated instance, each time the engine has built its bone palette:
-//   * bone world = palette bone x the scene matrix (CM2Scene::m_viewInv, a MIRROR: never decomposed);
-//     the placement = the instance's own matrix (CM2Model::m_matrixF4) x the scene matrix;
-//   * each dynamic body's model-space bone goes back as bone x m_matrixF4, and every bone under a
-//     moved one is carried by its parent's delta;
-//   * time comes from the scene's clock (CM2Scene::m_time, ms); a second build in one frame takes 0 s;
-//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded;
+//   * bone world = palette bone x the scene matrix (a MIRROR: never decomposed); the placement = the
+//     instance's own matrix x the scene matrix;
+//   * each dynamic body's model-space bone goes back as bone x own matrix, and every bone under a moved
+//     one is carried by its parent's delta;
+//   * time comes from the scene's clock (ms); a second build in one frame takes 0 s;
+//   * state per instance, forgotten when unseen for 2 s;
 //   * stuck items: see PhysicsGuard.hpp. The model is prepared once (extra anchors carry their followers),
 //     and each frame the simulated bones are compared with the animated ones; an instance that stays far
 //     off, or whose placement teleports, is dropped (it is re-seeded from the animated pose next frame)
 //     and the palette is left as the engine built it for that frame. Re-seeding too often switches the
 //     instance's physics off for 10 s. There is no sleeping to wake: the engine never sleeps an item world.
+//
+// Every read and write of client memory happens inside the core (WxlApi::readInstance / readBones /
+// writePalette, guarded there): nothing in this file can fault on a stale instance.
 
-#include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
+#include "PhysicsLive.hpp"
 
-#include "Engine/Source/BlizzardCore/SFile2-Core.h"
-#include "Engine/Source/Model2/M2Data.h"
-#include "Engine/Source/Model2/M2Model.h"
-#include "Engine/Source/Model2/M2Scene.h"
-#include "Engine/Source/Model2/M2Shared.h"
-#include "Engine/Source/WXL/Event.h"
-#include "Engine/Source/WXL/Log.h"
-#include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
-#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
-#include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
-
-#include <windows.h>
+#include "ModuleHost.hpp"
+#include "Phy2Library.hpp"
+#include "PhysicsGuard.hpp"
+#include "PhysicsTuning.hpp"
+#include "physics_domino.h"
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -45,22 +40,29 @@
 namespace wxl::equip::physics
 {
     namespace phys = wow::ec::physics;
+    namespace host = wxl::modules::host;
 
-    static_assert(sizeof(C44Matrix) == 64, "the bone palette and the matrices are 16 floats");
+    static_assert(sizeof(phys::V3) == 12, "pivots are handed to the API as 3 floats per bone");
 
     namespace
     {
-        constexpr uint32_t kMaxBones = 256;
+        using Clock = std::chrono::steady_clock;
+
         constexpr uint32_t kForgetMs = 2000;
+
+        uint32_t NowMs()
+        {
+            return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+        }
 
         struct InstState
         {
-            void*                            shared = nullptr;
+            const void*                      shared = nullptr;
             std::unique_ptr<phys::Instance>  sim;
             uint32_t lastClock = 0;       // scene clock at the last step
-            uint32_t lastSeen  = 0;       // GetTickCount at the last build
-            LARGE_INTEGER stillSince{};   // when the scene clock stopped moving
-            LARGE_INTEGER lastQpc{};
+            uint32_t lastSeen  = 0;       // NowMs at the last build
+            Clock::time_point stillSince{};   // when the scene clock stopped moving
+            Clock::time_point lastTime{};
             bool     haveClock = false;
             std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
             guard::Limits limits;                 // how far each dynamic bone may stray
@@ -82,10 +84,10 @@ namespace wxl::equip::physics
             std::shared_ptr<phys::Model> model;   // null: no physics for this model
         };
 
-        std::mutex g_lock;                                            // guards the three below and g_stats
-        std::unordered_map<void*, ModelEntry> g_models;               // shared model -> its physics
-        std::unordered_map<void*, InstState> g_inst;                  // instance -> simulation
-        std::unordered_map<void*, Penalty> g_penalty;                 // instance -> re-seed history
+        std::mutex g_lock;                                                // guards the three below and g_stats
+        std::unordered_map<const void*, ModelEntry> g_models;             // loaded model -> its physics
+        std::unordered_map<void*, InstState> g_inst;                      // instance -> simulation
+        std::unordered_map<void*, Penalty> g_penalty;                     // instance -> re-seed history
         guard::Config g_guardCfg;
         bool g_carryAnchors = true;
         constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
@@ -93,103 +95,18 @@ namespace wxl::equip::physics
         uint32_t g_lastSweep = 0;
         std::atomic<bool> g_enabled{false};
         bool g_inited = false;
-        LARGE_INTEGER g_qpcFreq{};
 
         // ---- where the .phy2 files are read from ----
-        // The client's own open/size/read/close. Archives only first, then archives plus loose files
-        // under Data\ (open flag 1), the same order as the equip extension's native reader, so a .phy2
-        // dropped loose next to where the model lives is found too. No logging here: a miss is the
-        // normal answer for almost every model.
+        // The core's reader: the client's own archives, then loose files under Data\. A model's physics is a
+        // few KB; a miss is the normal answer for almost every model and costs no log line.
         bool ReadArchiveFile(const char* name, std::vector<uint8_t>& out)
         {
-            for (uint32_t flags = 0; flags <= 1; ++flags)
-            {
-                SFileImpl* file = nullptr;
-                if (!SFile::OpenEx(nullptr, name, flags, &file) || !file) continue;
-                uint32_t sizeHigh = 0;
-                const uint32_t size = SFileGetFileSize(file, &sizeHigh);
-                bool ok = false;
-                if (size > 0 && size <= (4u << 20) && sizeHigh == 0)   // a model's physics is a few KB
-                {
-                    out.resize(size);
-                    uint32_t got = 0;
-                    ok = SFileReadFile(file, out.data(), size, &got, nullptr, 0) && got == size;
-                    if (!ok) out.clear();
-                }
-                SFileCloseFile(file);
-                if (ok) return true;
-            }
-            return false;
-        }
-
-        phy2::Library g_lib(&ReadArchiveFile, &wxl::scripts::equipextension::VPathIsVirtualKey);
-
-        // ---- guarded client memory access (no C++ objects inside __try) ----
-        bool SafeCopy(void* dst, const void* src, size_t n) noexcept
-        {
-            __try { std::memcpy(dst, src, n); return true; }
-            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-        }
-
-        // The instance's inputs, copied out of client memory in one guarded pass.
-        struct Snapshot
-        {
-            CM2Shared*   shared = nullptr;
-            const C44Matrix* palette = nullptr;   // the instance's live palette (written back to)
-            const M2CompBone* bones = nullptr;    // the model's bone records
-            uint32_t boneCount = 0;
-            uint32_t clock = 0;
-            float    sceneMat[16];
-            float    ownMat[16];
-            char     stem[260];
-        };
-
-        // Returns 0 when every input was read, else the stage that stopped it (for the log).
-        int ReadSnapshot(void* instance, Snapshot& s) noexcept
-        {
-            const CM2Model* m = static_cast<const CM2Model*>(instance);
-            const CM2Scene* scene = nullptr;
-            uint32_t instFlags = 0;
-            const M2Data* hdr = nullptr;
-            uint32_t sharedFlags = 0;
-            s.stem[0] = 0;
-
-            if (!SafeCopy(&s.shared, &m->m_shared, sizeof(s.shared)) || !s.shared) return 1;
-            if (!SafeCopy(s.stem, s.shared->m_fileName, sizeof(s.stem) - 1)) { s.stem[0] = 0; return 11; }
-            s.stem[sizeof(s.stem) - 1] = 0;
-            // The model must be fully loaded AND parsed: before that bit is set the header's arrays are
-            // not relocated, and Data() points at garbage (see EquipExtension SharedFullyParsed).
-            if (!SafeCopy(&sharedFlags, &s.shared->m_flags, 4) || !(sharedFlags & 1u)) return 12;
-            if (!SafeCopy(&hdr, &s.shared->m_data, sizeof(hdr)) || !hdr) return 4;
-            if (!SafeCopy(&s.boneCount, &hdr->m_bones.m_count, 4)) return 5;
-            if (s.boneCount < 2 || s.boneCount > kMaxBones) return 6;   // one bone: nothing can swing
-            if (!SafeCopy(&instFlags, &m->m_fFlags, 4) || !(instFlags & 1u)) return 13;   // animation data not ready
-            if (!SafeCopy(&scene, &m->m_scene, sizeof(scene)) || !scene) return 2;
-            if (!SafeCopy(&s.palette, &m->m_boneMatrices, sizeof(s.palette)) || !s.palette) return 3;
-            s.bones = hdr->m_bones.Data();
-            if (!s.bones) return 7;
-            if (!SafeCopy(&s.clock, &scene->m_time, 4)) return 8;
-            if (!SafeCopy(s.sceneMat, &scene->m_viewInv, sizeof(s.sceneMat))) return 9;
-            if (!SafeCopy(s.ownMat, &m->m_matrixF4, sizeof(s.ownMat))) return 10;
-            return 0;
-        }
-
-        bool ReadBones(const Snapshot& s, float* bones, int16_t* parents, phys::V3* pivots) noexcept
-        {
-            if (!SafeCopy(bones, s.palette, size_t(s.boneCount) * 64)) return false;
-            for (uint32_t k = 0; k < s.boneCount; ++k)
-            {
-                uint16_t parent = 0xFFFF;
-                C3Vector pivot{};
-                if (!SafeCopy(&parent, &s.bones[k].m_parentIndex, 2)) return false;
-                if (!SafeCopy(&pivot, &s.bones[k].m_pivot, sizeof(pivot))) return false;
-                parents[k] = static_cast<int16_t>(parent);   // 0xFFFF = no parent, as the engine reads it
-                pivots[k].x = pivot.x;
-                pivots[k].y = pivot.y;
-                pivots[k].z = pivot.z;
-            }
+            if (!host::ReadFile(name, out)) return false;
+            if (out.empty() || out.size() > (4u << 20)) { out.clear(); return false; }
             return true;
         }
+
+        phy2::Library g_lib(&ReadArchiveFile, &host::IsVirtualKey);
 
         void SweepLocked(uint32_t now)
         {
@@ -210,7 +127,7 @@ namespace wxl::equip::physics
 
         void OnBuildBonePalette(void* /*user*/, const void* args)
         {
-            AfterBonePalette(static_cast<const wxl::events::BuildBonePaletteArgs*>(args)->renderCtx);
+            if (args) AfterBonePalette(static_cast<const WxlBuildBonePaletteArgs*>(args)->instance);
         }
     }
 
@@ -221,18 +138,18 @@ namespace wxl::equip::physics
         tuning::Tuning g_tuning;
         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
-        uint32_t g_lastIniPoll = 0;    // GetTickCount of the last look at it
+        uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
 
         bool ReadPhysicsKey(const char* key, char* out, size_t cap)
         {
-            return wxl::scripts::equipextension::WxlIniGetString("Physics", key, out, cap);
+            return host::IniGetString("Physics", key, out, cap);
         }
 
         void LoadTuning()
         {
             std::string problems;
             g_tuning = tuning::FromIni(&ReadPhysicsKey, &problems);
-            g_iniStamp = wxl::scripts::equipextension::WxlIniStamp();
+            g_iniStamp = host::IniStamp();
             // one log line per problem: a value that is not a number, or outside its range
             for (size_t b = 0; b < problems.size();)
             {
@@ -245,29 +162,28 @@ namespace wxl::equip::physics
         }
     }
 
-    void Init()
+    bool Init(const WxlApi* api)
     {
-        if (g_inited) return;
+        if (g_inited) return true;
+        if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, writePalette)) return false;
+        host::SetApi(api);
         g_inited = true;
-        QueryPerformanceFrequency(&g_qpcFreq);
-        g_enabled = wxl::scripts::equipextension::WxlIniGetBool("Physics", "Enabled", false);
+
+        g_enabled = host::IniGetBool("Physics", "Enabled", false);
         wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
                     g_enabled ? "on" : "off");
-        {
-            using wxl::scripts::equipextension::WxlIniGetBool;
-            using wxl::scripts::equipextension::WxlIniGetInt;
-            g_carryAnchors = WxlIniGetBool("Physics", "CarryAnchors", true);
-            g_guardCfg.enabled = WxlIniGetBool("Physics", "Unstick", true);
-            g_guardCfg.reach = float(std::max(WxlIniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
-            g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
-            wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
-                        g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
-            g_watchIni = WxlIniGetBool("Physics", "WatchIni", false);
-            LoadTuning();
-            if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
-        }
-        // After the equip extension's handler (subscribers run in subscription order).
-        wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
+        g_carryAnchors = host::IniGetBool("Physics", "CarryAnchors", true);
+        g_guardCfg.enabled = host::IniGetBool("Physics", "Unstick", true);
+        g_guardCfg.reach = float(std::max(host::IniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
+        g_guardCfg.teleportYards = float(std::max(host::IniGetInt("Physics", "TeleportYards", 6), 1));
+        wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
+                    g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+        g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
+        LoadTuning();
+        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
+
+        // After the built-in extensions' handlers (subscribers run in subscription order; modules load last).
+        return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnBuildBonePalette, nullptr) == 0;
     }
 
     bool Enabled() { return g_enabled; }
@@ -304,24 +220,30 @@ namespace wxl::equip::physics
     void AfterBonePalette(void* instance)
     {
         if (!g_enabled || !instance) return;
+        const WxlApi* api = host::Api();
+        if (!api) return;
 
-        LARGE_INTEGER t0;
-        QueryPerformanceCounter(&t0);
+        const Clock::time_point t0 = Clock::now();
 
-        Snapshot s;
-        static volatile long calls = 0;
-        if (InterlockedIncrement(&calls) == 1) wxl::LogCat("PHYS", "physics: first bone build seen (hook is live)");
-        const int stage = ReadSnapshot(instance, s);
+        static std::atomic<int> calls{0};
+        if (calls.fetch_add(1) == 0) wxl::LogCat("PHYS", "physics: first bone build seen (hook is live)");
+
+        WxlInstanceView s = {};
+        s.structSize = sizeof(s);
+        const int stage = api->readInstance(instance, &s);
         if (stage)
         {
             // Stages 6 (one bone), 12 and 13 (not loaded / animated yet) are the common, harmless cases.
-            if (stage != 6 && stage != 12 && stage != 13 && s.shared && wxl::LogThrottle("phys.skip", 40, 500))
-                wxl::LogCat("PHYS", "physics: skip '%s' at read stage %d", s.stem[0] ? s.stem : "(no path)", stage);
+            if (stage != WXL_READ_BONE_COUNT && stage != WXL_READ_NOT_PARSED && stage != WXL_READ_NOT_ANIMATED &&
+                s.model && wxl::LogThrottle("phys.skip", 40, 500))
+                wxl::LogCat("PHYS", "physics: skip '%s' at read stage %d", s.path[0] ? s.path : "(no path)", stage);
             return;
         }
+        const char* stem = s.path;
+        const uint32_t boneCount = s.boneCount;
 
         std::unique_lock<std::mutex> lk(g_lock);
-        const uint32_t now = GetTickCount();
+        const uint32_t now = NowMs();
         SweepLocked(now);
 
         // WatchIni: the ini was saved, so read the multipliers again. Every model is prepared again with them
@@ -329,7 +251,7 @@ namespace wxl::equip::physics
         if (g_watchIni && now - g_lastIniPoll >= 1000)
         {
             g_lastIniPoll = now;
-            const uint64_t stamp = wxl::scripts::equipextension::WxlIniStamp();
+            const uint64_t stamp = host::IniStamp();
             if (stamp && stamp != g_iniStamp)
             {
                 LoadTuning();
@@ -348,21 +270,21 @@ namespace wxl::equip::physics
         // This model's physics, looked up once (and again if the slot was reused by another file).
         // The lookup reads files, so it runs with the lock released: other animate threads keep going.
         std::shared_ptr<phys::Model> model;
-        auto mi = g_models.find(s.shared);
-        if (mi == g_models.end() || mi->second.stem != s.stem)
+        auto mi = g_models.find(s.model);
+        if (mi == g_models.end() || mi->second.stem != stem)
         {
             lk.unlock();
             bool fresh = false;
-            const phy2::Result res = g_lib.For(s.stem, &fresh);
+            const phy2::Result res = g_lib.For(stem, &fresh);
             if (fresh)
             {
                 if (res.model)
-                    wxl::LogCat("PHYS", "physics: MATCH '%s' <- %s (%u bones): %zu bodies, %zu joints", s.stem,
-                                res.path.c_str(), s.boneCount, res.model->bodies.size(), res.model->joints.size());
+                    wxl::LogCat("PHYS", "physics: MATCH '%s' <- %s (%u bones): %zu bodies, %zu joints", stem,
+                                res.path.c_str(), boneCount, res.model->bodies.size(), res.model->joints.size());
                 else if (!res.error.empty())
-                    wxl::LogCat("PHYS", "physics: '%s' has a .phy2 that cannot be used: %s", s.stem, res.error.c_str());
-                else if (std::strstr(s.stem, "objectcomponents") && wxl::LogThrottle("phys.nofile", 100, 0))
-                    wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", s.stem, s.boneCount);
+                    wxl::LogCat("PHYS", "physics: '%s' has a .phy2 that cannot be used: %s", stem, res.error.c_str());
+                else if (std::strstr(stem, "objectcomponents") && wxl::LogThrottle("phys.nofile", 100, 0))
+                    wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", stem, boneCount);
             }
             lk.lock();
             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
@@ -375,33 +297,37 @@ namespace wxl::equip::physics
             {
                 ++g_stats.modelsCarried;
                 wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
-                            s.stem, carried);
+                            stem, carried);
             }
-            g_models[s.shared] = ModelEntry{ s.stem, model };
+            g_models[s.model] = ModelEntry{ stem, model };
         }
         else model = mi->second.model;
         if (!model) return;
 
-        std::vector<float> before(size_t(s.boneCount) * 16);
-        std::vector<int16_t> parents(s.boneCount);
-        std::vector<phys::V3> pivots(s.boneCount);
-        if (!ReadBones(s, before.data(), parents.data(), pivots.data())) { ++g_stats.faults; return; }
+        std::vector<float> before(size_t(boneCount) * 16);
+        std::vector<int16_t> parents(boneCount);
+        std::vector<phys::V3> pivots(boneCount);
+        if (api->readBones(instance, boneCount, before.data(), parents.data(), reinterpret_cast<float*>(pivots.data())) != WXL_READ_OK)
+        {
+            ++g_stats.faults;
+            return;
+        }
         for (const phys::BodyDef& b : model->bodies)
-            if (b.bone != 0xFFFF && b.bone >= s.boneCount)
+            if (b.bone != 0xFFFF && b.bone >= boneCount)
             {
                 if (wxl::LogThrottle("phys.bones", 20, 0))
-                    wxl::LogCat("PHYS", "physics: .phy2 for '%s' names bone %u but the model has %u", s.stem, b.bone, s.boneCount);
+                    wxl::LogCat("PHYS", "physics: .phy2 for '%s' names bone %u but the model has %u", stem, b.bone, boneCount);
                 return;   // the physics does not fit this model
             }
 
         InstState& st = g_inst[instance];
-        if (st.shared != s.shared || !st.sim)
+        if (st.shared != s.model || !st.sim)
         {
             st = InstState{};
-            st.shared = s.shared;
+            st.shared = s.model;
             st.model = model;
             st.sim = std::make_unique<phys::Instance>(model.get());
-            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), s.boneCount, g_guardCfg);
+            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), boneCount, g_guardCfg);
         }
         st.lastSeen = now;
 
@@ -410,53 +336,53 @@ namespace wxl::equip::physics
         float dt = 0;
         if (st.haveClock)
         {
-            if (s.clock != st.lastClock)
+            if (s.clockMs != st.lastClock)
             {
-                dt = float(s.clock - st.lastClock) * 0.001f;
+                dt = float(s.clockMs - st.lastClock) * 0.001f;
                 st.stillSince = t0;
             }
-            else if (g_qpcFreq.QuadPart && double(t0.QuadPart - st.stillSince.QuadPart) / g_qpcFreq.QuadPart > 0.1)
+            else if (std::chrono::duration<double>(t0 - st.stillSince).count() > 0.1)
             {
-                dt = float(double(t0.QuadPart - st.lastQpc.QuadPart) / g_qpcFreq.QuadPart);
+                dt = float(std::chrono::duration<double>(t0 - st.lastTime).count());
             }
         }
         else st.stillSince = t0;
         if (dt < 0 || dt > 1.0f) dt = 0;   // clock wrapped or the instance was away
         st.haveClock = true;
-        st.lastClock = s.clock;
-        st.lastQpc = t0;
+        st.lastClock = s.clockMs;
+        st.lastTime = t0;
 
         // inputs
-        std::vector<double> world(size_t(s.boneCount) * 16);
-        for (uint32_t k = 0; k < s.boneCount; ++k)
-            phys::World(&before[size_t(k) * 16], s.sceneMat, &world[size_t(k) * 16]);
+        std::vector<double> world(size_t(boneCount) * 16);
+        for (uint32_t k = 0; k < boneCount; ++k)
+            phys::World(&before[size_t(k) * 16], s.sceneMatrix, &world[size_t(k) * 16]);
         phys::Frame f;
         f.boneWorld = reinterpret_cast<const double (*)[16]>(world.data());
         f.pivots = pivots.data();
-        f.boneCount = s.boneCount;
-        phys::World(s.ownMat, s.sceneMat, f.placement);
+        f.boneCount = boneCount;
+        phys::World(s.ownMatrix, s.sceneMatrix, f.placement);
         f.dt = dt;
         st.sim->Step(f);
-        if (dt > 0 && ++g_stats.steps == 1) wxl::LogCat("PHYS", "physics: first simulation step ran ('%s')", s.stem);
+        if (dt > 0 && ++g_stats.steps == 1) wxl::LogCat("PHYS", "physics: first simulation step ran ('%s')", stem);
 
         // outputs: each dynamic body's bone, then everything under a moved bone
         std::vector<float> bones(before);
-        std::vector<uint8_t> movedBytes(s.boneCount, 0);
+        std::vector<uint8_t> movedBytes(boneCount, 0);
         bool any = false;
         for (size_t b = 0; b < model->bodies.size(); ++b)
         {
             const uint16_t bone = model->bodies[b].bone;
-            if (bone >= s.boneCount) continue;
+            if (bone >= boneCount) continue;
             double M[16];
             if (!st.sim->Output(b, M)) continue;
-            phys::FromModel(M, s.ownMat, &bones[size_t(bone) * 16]);
+            phys::FromModel(M, s.ownMatrix, &bones[size_t(bone) * 16]);
             movedBytes[bone] = 1;
             any = true;
         }
         if (!any) return;
-        std::unique_ptr<bool[]> moved(new bool[s.boneCount]);
-        for (uint32_t k = 0; k < s.boneCount; ++k) moved[k] = movedBytes[k] != 0;
-        phys::Carry(parents.data(), s.boneCount, before.data(), bones.data(), moved.get());
+        std::unique_ptr<bool[]> moved(new bool[boneCount]);
+        for (uint32_t k = 0; k < boneCount; ++k) moved[k] = movedBytes[k] != 0;
+        phys::Carry(parents.data(), boneCount, before.data(), bones.data(), moved.get());
         for (float v : bones)
             if (!(v == v)) { ++g_stats.faults; g_inst.erase(instance); return; }   // never write a NaN
 
@@ -466,7 +392,7 @@ namespace wxl::equip::physics
         {
             // |simulated bone - animated bone| at each checked bone's pivot, in model units (the palette is
             // camera-relative and carries the model's scale, so the distance is divided by that scale)
-            const float* own = s.ownMat;
+            const float* own = s.ownMatrix;
             const float scale = std::max(std::sqrt(own[4] * own[4] + own[5] * own[5] + own[6] * own[6]), 0.016f);
             float dispBuf[64];
             std::vector<float> dispHeap;
@@ -496,7 +422,7 @@ namespace wxl::equip::physics
                 if (teleport) ++g_stats.teleports; else ++g_stats.unstuck;
                 if (wxl::LogThrottle("phys.unstick", 60, 50))
                     wxl::LogCat("PHYS", "physics: %s '%s': %s, re-seeding (bone %u at %.0f%% of its limit, dt %.3f s)",
-                                teleport ? "teleport" : "stuck", s.stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
+                                teleport ? "teleport" : "stuck", stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
                                 unsigned(worstBone), worst * 100.0f, dt);
 
                 Penalty& pen = g_penalty[instance];
@@ -508,28 +434,23 @@ namespace wxl::equip::physics
                     pen.disabledUntil = now + kPenaltyOffMs;
                     ++g_stats.disabled;
                     if (wxl::LogThrottle("phys.disabled", 20, 0))
-                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", s.stem, kPenaltyMax,
+                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", stem, kPenaltyMax,
                                     kPenaltyWindowMs / 1000, kPenaltyOffMs / 1000);
                 }
                 g_inst.erase(instance);
                 return;
             }
         }
-        if (!SafeCopy(const_cast<C44Matrix*>(s.palette), bones.data(), bones.size() * sizeof(float)))
+        if (api->writePalette(instance, bones.data(), boneCount) != WXL_READ_OK)
         {
             ++g_stats.faults;
             g_inst.erase(instance);
             return;
         }
 
-        LARGE_INTEGER t1;
-        QueryPerformanceCounter(&t1);
-        if (g_qpcFreq.QuadPart)
-        {
-            const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / g_qpcFreq.QuadPart;
-            g_stats.lastFrameMs = ms;
-            if (ms > g_stats.worstFrameMs) g_stats.worstFrameMs = ms;
-        }
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+        g_stats.lastFrameMs = ms;
+        if (ms > g_stats.worstFrameMs) g_stats.worstFrameMs = ms;
         g_stats.live = uint32_t(g_inst.size());
     }
 }

@@ -13,7 +13,7 @@
 // beside the ORIGINAL .m2 the virtual path was minted from.
 #pragma once
 
-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+#include "physics_domino.h"
 
 #include <cstddef>
 #include <cstdint>

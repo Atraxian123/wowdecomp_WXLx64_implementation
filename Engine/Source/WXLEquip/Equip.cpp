@@ -6,7 +6,6 @@
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLEquip/CreatureExtension.hpp"
 #include "Engine/Source/WXLEquip/EquipExtension.hpp"
-#include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 #include "Engine/Source/WXLEquip/WeaponExtension.hpp"
 
@@ -98,9 +97,8 @@ namespace wxl::equip
         wxl::scripts::equipextension::Create();
         wxl::scripts::weaponextension::Create();
         wxl::scripts::creatureextension::Create();
-        // Last on purpose: physics subscribes to OnBuildBonePalette and must run after the equip
-        // extension's handler (subscribers run in subscription order), so it sees the remapped palette.
-        wxl::equip::physics::Init();
+        // Physics is a module now (WXL\Modules\wxl_physics.dll, loaded by wxl::api::LoadModules() right after
+        // this): modules subscribe after the extensions above, so they see the palette after the equip remap.
         ReportSidecarsOnDisk();
 
         // One glance at which events have handlers; "fired" counts follow once the game reaches each hook.

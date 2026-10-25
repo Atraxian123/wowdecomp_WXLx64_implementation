@@ -42,7 +42,7 @@
 // (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
 #pragma once
 
-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+#include "physics_domino.h"
 
 #include <cstddef>
 #include <memory>

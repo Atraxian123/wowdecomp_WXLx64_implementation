@@ -38,6 +38,11 @@ target_include_directories(WowClient
 
 target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
 
+# The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
+if (TARGET wxl_physics)
+    add_dependencies(WowClient wxl_physics)
+endif ()
+
 target_link_libraries(WowClient
     PRIVATE
         BLPFile
@@ -57,6 +62,7 @@ target_link_libraries(WowClient
         Model2
         WXLCore
         WXLEquip
+        WXLApi
         Os
         Scrn
         Services

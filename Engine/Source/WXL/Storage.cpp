@@ -64,6 +64,11 @@ namespace wxl::storage
         wxl::LogCat("STORAGE", "native reader %s", fn ? "installed" : "cleared");
     }
 
+    bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out)
+    {
+        return g_nativeReader && name && g_nativeReader(name, out);
+    }
+
     bool ReadNative(const char* name, std::vector<uint8_t>& out)
     {
         if (!g_nativeReader)

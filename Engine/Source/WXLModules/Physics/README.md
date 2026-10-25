@@ -1,3 +1,7 @@
+> **Physics is a WXL module now**: `wxl_physics.dll`, built from this folder, loaded from `WXL\Modules\` by the
+> 64-bit client. It sees the client only through `Engine/Source/WXL/Sdk/wxl_api.h` (see the README there).
+> Tests: `Tools/PhysicsGuardTest` (the engine and the guard) and `Tools/WxlModuleTest` (the module through the C ABI).
+
 # Third-party: Kirazul's port of retail's physics engine
 
 `physics_domino.h` and `physics_domino.cpp` are copied unchanged from

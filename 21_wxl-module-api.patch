@@ -1,0 +1,2385 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4d7deb8..49226e8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -86,6 +86,8 @@ add_subdirectory(Engine/Source/Storm)
+ add_subdirectory(Engine/Source/Tempest)
+ add_subdirectory(Engine/Source/WXL)
+ add_subdirectory(Engine/Source/WXLEquip)
++add_subdirectory(Engine/Source/WXLApi)
++add_subdirectory(Engine/Source/WXLModules/Physics)
+ add_subdirectory(WoW/Common)
+ add_subdirectory(WoW/Source/Battlenet)
+ add_subdirectory(WoW/Source/Console)
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+new file mode 100644
+index 0000000..b780afc
+--- /dev/null
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -0,0 +1,81 @@
++# WXL module API (64-bit client)
++
++A **module** is a DLL in `<client folder>\WXL\Modules\` that extends the client through `wxl_api.h` and nothing
++else. The built-in extensions (equip, weapon, creature) are still compiled into the client; the physics is the
++first extension that is a module (`Engine/Source/WXLModules/Physics`).
++
++## Why this shape
++
++* **No engine headers in a module.** The client's structs (`CM2Model`, `M2Data`, `M2Array` with its 32-bit
++  self-relative offsets) are free to change; a module never has to be rebuilt for it. The core reads them for
++  the module (`WXLApi/ModelAccess.cpp`, under SEH) and hands over plain numbers.
++* **C ABI only.** No `std::vector`/`std::string`/exception crosses the boundary, so a module may use any
++  compiler or CRT. Memory goes back to the side that allocated it (`readFile` -> `freeBuffer`).
++* **Events by name.** `subscribe("OnBuildBonePalette", ...)`: the core can add or reorder events without
++  breaking a built module.
++* **Versioned and grow-only.** `WxlApi` has `abiVersion` and `structSize`; new functions are only ever added
++  at its end, and a module checks `WXL_API_HAS(api, member)` before calling one newer than ABI 1.0.
++
++## Loading
++
++`wxl::api::LoadModules()` runs right after `wxl::equip::Init()`, so a module's handlers run **after** the
++built-in extensions' (subscribers run in subscription order). DLLs load in file-name order (`10_x.dll` before
++`20_y.dll`). For each DLL the loader reads the PE header (a 32-bit DLL is reported as such), loads it, checks
++`WxlModuleAbiVersion()`, then calls `WxlModuleInit(api, info)`; a DLL that is not a module, has another ABI,
++refuses (returns nonzero) or faults is logged (category `MODULE`) and skipped. Nothing is loaded by a 32-bit
++build of the client.
++
++```ini
++[Modules]
++Enabled=1                     ; 0 = load nothing
++Disable=wxl_physics.dll       ; skip these files (';' or ',' separated)
++```
++
++## A module in 20 lines
++
++```cpp
++#include "wxl_api.h"
++WXL_DEFINE_MODULE_ABI()
++
++static const WxlApi* g;
++static void OnPalette(void*, const void* args)
++{
++    void* instance = static_cast<const WxlBuildBonePaletteArgs*>(args)->instance;
++    WxlInstanceView v = {}; v.structSize = sizeof(v);
++    if (g->readInstance(instance, &v) != WXL_READ_OK) return;     // not loaded / animated yet: normal
++    // v.boneCount, v.clockMs, v.sceneMatrix, v.ownMatrix, v.path ... g->readBones(...), g->writePalette(...)
++}
++
++WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
++{
++    if (api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, writePalette)) return 1;
++    g = api;
++    std::strncpy(info->name, "mymodule", sizeof(info->name) - 1);
++    return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnPalette, nullptr);
++}
++```
++
++CMake (see `Engine/Source/WXLModules/Physics/CMakeLists.txt`): a `SHARED` library, includes `Sdk/` and its own
++folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64` is set.
++
++## What the table gives a module today
++
++| Area | Members |
++|---|---|
++| Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`) |
++| Events | `subscribe` (by name). Args structs for `OnBuildBonePalette`, `OnUpdate`, `OnWorldEnter/Leave` are in the header |
++| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXLExtendedEquipment.ini) |
++| Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |
++| Model instances | `readInstance`, `readBones`, `writePalette` |
++
++The equip, weapon and creature extensions need more (item/creature display records, attaching models, texture
++creation); those calls are the next additions to the table, and their sources move to modules the same way the
++physics did: engine access through the table, sources that include only `wxl_api.h`.
++
++## Tests
++
++`Tools/WxlModuleTest/host_test.cpp` is a fake core: it builds a module as a shared library, loads it through
++the C ABI, fires `OnBuildBonePalette` for a plume on a jumping character and checks what the module wrote back
++(ABI refusals, buffer ownership, virtual-key lookup, the ini switch, shutdown). `make_test_data.py` builds its
++`.phy2` with the repo's own converter. The part that cannot be tested off Windows is `WXLApi/ModelAccess.cpp`
++(it reads the real `CM2Model`) and the Win32 loader.
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+new file mode 100644
+index 0000000..f09d927
+--- /dev/null
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -0,0 +1,192 @@
++/*
++ * WarcraftXL module API (ABI 1), for the 64-bit client.
++ * Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++ *
++ * A module is a DLL in <client folder>\WXL\Modules\ that talks to the core through the table below and
++ * through nothing else: no engine header, no import library of the client, no C++ type crosses the
++ * boundary, so a module never has to be rebuilt because the engine's structs changed, and it can be
++ * built with any compiler that makes 64-bit Windows DLLs.
++ *
++ * What a module exports (see WXL_DEFINE_MODULE_ABI below for the first one):
++ *
++ *     uint32_t WxlModuleAbiVersion(void);                        the ABI it was built against
++ *     int      WxlModuleInit(const WxlApi*, WxlModuleInfo*);     0 = loaded, anything else = refuse
++ *     void     WxlModuleShutdown(void);                          optional, called at exit
++ * all declared WXL_MODULE_API (unmangled C names).
++ *
++ * Rules of the boundary
++ *   - Only C types cross it. Memory is freed by the side that allocated it: a buffer the core hands out
++ *     (readFile) goes back through freeBuffer, never free() / delete in the module.
++ *   - Strings are UTF-8 / ASCII, NUL-terminated, valid only for the duration of the call.
++ *   - Exceptions must not leave a module function or a handler.
++ *   - Handlers run on whatever thread the engine fires the event on (the animate threads, for
++ *     OnBuildBonePalette): a module guards its own state.
++ *   - The table only ever grows at its end. A module checks WXL_API_HAS(api, member) before it calls a
++ *     member that is newer than ABI 1.0.
++ *   - A model "instance" and a loaded "model" are opaque handles: a module compares them, keeps them as
++ *     map keys, hands them back to the API, and never dereferences them.
++ */
++#ifndef WXL_API_H
++#define WXL_API_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* The module API is for the 64-bit client only. (A 32-bit build of the client defines
++ * WXL_ALLOW_32BIT_HEADER to compile the declarations; it neither builds the API table nor loads a module.) */
++#ifndef WXL_ALLOW_32BIT_HEADER
++#  ifdef __cplusplus
++static_assert(sizeof(void*) == 8, "WXL modules are 64-bit only");
++#  else
++_Static_assert(sizeof(void*) == 8, "WXL modules are 64-bit only");
++#  endif
++#endif
++
++#define WXL_ABI_VERSION 1u
++
++#if defined(_WIN32)
++#  define WXL_EXPORT __declspec(dllexport)
++#else
++#  define WXL_EXPORT __attribute__((visibility("default")))
++#endif
++/* a module's exported functions: unmangled C names, whatever language the module is written in */
++#ifdef __cplusplus
++#  define WXL_MODULE_API extern "C" WXL_EXPORT
++#else
++#  define WXL_MODULE_API WXL_EXPORT
++#endif
++
++/* ---- events ----------------------------------------------------------------------------------- */
++
++/* Events are subscribed by NAME, so a module keeps working when the core adds events. A handler gets
++ * the opaque pointer given to subscribe() and a const pointer to that event's args struct. */
++typedef void (*WxlEventHandler)(void* user, const void* args);
++
++#define WXL_EVENT_BUILD_BONE_PALETTE "OnBuildBonePalette"
++#define WXL_EVENT_UPDATE             "OnUpdate"
++#define WXL_EVENT_WORLD_ENTER        "OnWorldEnter"
++#define WXL_EVENT_WORLD_LEAVE        "OnWorldLeave"
++
++/* OnBuildBonePalette: the engine has just filled the bone palette of one model instance. A subscriber may
++ * overwrite it through writePalette. Handlers run in subscription order, and modules load after the
++ * built-in extensions, so a module sees the palette after they have had their say. */
++typedef struct WxlBuildBonePaletteArgs { void* instance; } WxlBuildBonePaletteArgs;
++/* OnUpdate: once per frame. */
++typedef struct WxlUpdateArgs { float dt; uint32_t timeMs; } WxlUpdateArgs;
++/* OnWorldEnter / OnWorldLeave */
++typedef struct WxlWorldArgs { uint32_t mapId; } WxlWorldArgs;
++
++/* ---- files ------------------------------------------------------------------------------------ */
++
++typedef struct WxlBuffer
++{
++    void*  data;
++    size_t size;
++} WxlBuffer;
++
++/* ---- model instances -------------------------------------------------------------------------- */
++
++/* readInstance / readBones / writePalette return 0 on success, otherwise the step that stopped them.
++ * 12 and 13 ("not loaded yet" / "animation not ready") and 6 (fewer than 2 bones) are ordinary. */
++enum
++{
++    WXL_READ_OK             = 0,
++    WXL_READ_NO_MODEL       = 1,   /* the instance has no loaded model */
++    WXL_READ_NO_SCENE       = 2,
++    WXL_READ_NO_PALETTE     = 3,
++    WXL_READ_NO_HEADER      = 4,
++    WXL_READ_NO_BONE_COUNT  = 5,
++    WXL_READ_BONE_COUNT     = 6,   /* fewer than 2 bones, or more than WXL_MAX_BONES */
++    WXL_READ_NO_BONES       = 7,
++    WXL_READ_NO_CLOCK       = 8,
++    WXL_READ_NO_SCENE_MAT   = 9,
++    WXL_READ_NO_OWN_MAT     = 10,
++    WXL_READ_NO_PATH        = 11,
++    WXL_READ_NOT_PARSED     = 12,  /* the model file is not fully loaded and parsed yet */
++    WXL_READ_NOT_ANIMATED   = 13   /* the instance's animation data is not ready yet */
++};
++
++#define WXL_MAX_BONES 256
++#define WXL_PATH_MAX  260
++
++typedef struct WxlInstanceView
++{
++    uint32_t    structSize;        /* sizeof(WxlInstanceView), set by the caller */
++    uint32_t    boneCount;
++    uint32_t    clockMs;           /* the scene clock the engine animates with, milliseconds */
++    uint32_t    reserved;
++    const void* model;             /* opaque id of the loaded model file behind the instance */
++    float       sceneMatrix[16];   /* camera space -> world (the engine's inverse view matrix). It is a mirror:
++                                      never decompose it. Row-vector layout, translation in [12..14]. */
++    float       ownMatrix[16];     /* the instance's own matrix in camera space, same layout */
++    char        path[WXL_PATH_MAX];/* the model's path as the engine keyed it (a virtual path for minted models) */
++} WxlInstanceView;
++
++/* ---- the table -------------------------------------------------------------------------------- */
++
++typedef struct WxlApi
++{
++    uint32_t abiVersion;           /* WXL_ABI_VERSION of the core */
++    uint32_t structSize;           /* sizeof(WxlApi) in the core: members past it do not exist */
++
++    /* log: one finished line in a category; the core adds the time and the thread. logThrottle is the same
++     * rate limiter the core uses (first N occurrences, then one per `every`). */
++    void (*log)(const char* category, const char* message);
++    int  (*logThrottle)(const char* key, uint32_t first, uint32_t every);
++
++    /* events: 0 on success, nonzero for an unknown event name */
++    int  (*subscribe)(const char* eventName, WxlEventHandler handler, void* user);
++
++    /* WXLExtendedEquipment.ini, next to the client. iniGetString returns 1 when the key exists. */
++    int      (*iniGetString)(const char* section, const char* key, char* out, size_t cap);
++    int      (*iniGetInt)(const char* section, const char* key, int defaultValue);
++    int      (*iniGetBool)(const char* section, const char* key, int defaultValue);
++    uint64_t (*iniStamp)(void);    /* last-write time of the ini, 0 when unknown: changes when it is saved */
++
++    /* files: reads a file the way the client does (archives, then loose files under Data\), quietly: a
++     * miss is the normal answer for most probes. Returns 1 and fills *out, which goes back through
++     * freeBuffer; returns 0 when the file is not there. */
++    int  (*readFile)(const char* name, WxlBuffer* out);
++    void (*freeBuffer)(WxlBuffer* buffer);
++
++    /* virtual paths minted by the equip/creature extensions: 1 when the name is one of them */
++    int  (*isVirtualKey)(const char* name);
++
++    /* model instances */
++    int  (*readInstance)(void* instance, WxlInstanceView* out);
++    /* palette: boneCount x 16 floats (the bone matrices); parents: boneCount x int16 (-1 = none);
++     * pivots: boneCount x 3 floats. Any of the three may be NULL. count must equal the instance's bone count. */
++    int  (*readBones)(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots);
++    int  (*writePalette)(void* instance, const float* palette, uint32_t count);
++} WxlApi;
++
++#define WXL_API_HAS(api, member) \
++    ((api) && (api)->structSize >= offsetof(WxlApi, member) + sizeof(((WxlApi*)0)->member))
++
++/* ---- what a module exports -------------------------------------------------------------------- */
++
++typedef struct WxlModuleInfo
++{
++    uint32_t structSize;           /* set by the core */
++    char     name[32];             /* filled by the module: short name for the log */
++    uint32_t versionMajor;
++    uint32_t versionMinor;
++} WxlModuleInfo;
++
++/* Put this once in a module's source file. */
++#define WXL_DEFINE_MODULE_ABI() \
++    WXL_MODULE_API uint32_t WxlModuleAbiVersion(void) { return WXL_ABI_VERSION; }
++
++typedef uint32_t (*WxlModuleAbiVersionFn)(void);
++typedef int      (*WxlModuleInitFn)(const WxlApi* api, WxlModuleInfo* info);
++typedef void     (*WxlModuleShutdownFn)(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* WXL_API_H */
+diff --git a/Engine/Source/WXL/Storage.cpp b/Engine/Source/WXL/Storage.cpp
+index a71818e..d14a92d 100644
+--- a/Engine/Source/WXL/Storage.cpp
++++ b/Engine/Source/WXL/Storage.cpp
+@@ -64,6 +64,11 @@ namespace wxl::storage
+         wxl::LogCat("STORAGE", "native reader %s", fn ? "installed" : "cleared");
+     }
+ 
++    bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out)
++    {
++        return g_nativeReader && name && g_nativeReader(name, out);
++    }
++
+     bool ReadNative(const char* name, std::vector<uint8_t>& out)
+     {
+         if (!g_nativeReader)
+diff --git a/Engine/Source/WXL/Storage.h b/Engine/Source/WXL/Storage.h
+index 27694d7..0f8709a 100644
+--- a/Engine/Source/WXL/Storage.h
++++ b/Engine/Source/WXL/Storage.h
+@@ -41,4 +41,8 @@ namespace wxl::storage
+     using NativeReadFn = bool (*)(const char* name, std::vector<uint8_t>& out);
+     void SetNativeReader(NativeReadFn fn);
+     bool ReadNative(const char* name, std::vector<uint8_t>& out);
++
++    /// Same read without the log lines on a miss, for callers that probe for files that are normally
++    /// absent (a module looking for a per-model sidecar next to every model it sees).
++    bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out);
+ }
+diff --git a/Engine/Source/WXLApi/ApiHost.h b/Engine/Source/WXLApi/ApiHost.h
+new file mode 100644
+index 0000000..bf63341
+--- /dev/null
++++ b/Engine/Source/WXLApi/ApiHost.h
+@@ -0,0 +1,41 @@
++// The core's side of the module API (Engine/Source/WXL/Sdk/wxl_api.h).
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++#pragma once
++
++#include "Engine/Source/WXL/Sdk/wxl_api.h"
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace wxl::api
++{
++    /// The table every module receives. Static, valid for the life of the process.
++    const WxlApi* Table();
++
++    /**
++     * @brief Loads every DLL in <client folder>\WXL\Modules (64-bit client only; a no-op on Win32).
++     *
++     * Call once, after wxl::equip::Init(): modules subscribe to events, subscribers run in subscription order,
++     * and a module that wants to see the palette after the built-in extensions have changed it must subscribe
++     * after them. DLLs load in file-name order (prefix a name with 10_, 20_ ... to order them).
++     *
++     * [Modules] in WXLExtendedEquipment.ini:  Enabled=1 (default), Disable=a.dll;b.dll
++     * A DLL that is not a 64-bit module, has the wrong ABI, or refuses to initialize is skipped and logged.
++     */
++    void LoadModules();
++
++    /// Calls every loaded module's WxlModuleShutdown (when it has one), in reverse order, then frees them.
++    void UnloadModules();
++
++    struct ModuleStatus
++    {
++        std::string file;      ///< file name
++        std::string name;      ///< what the module called itself ("" until it initialized)
++        uint32_t    major = 0, minor = 0;
++        bool        loaded = false;
++        std::string note;      ///< why it was skipped, or "ok"
++    };
++    /// What LoadModules found, in load order.
++    std::vector<ModuleStatus> Modules();
++}
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+new file mode 100644
+index 0000000..24ff4d3
+--- /dev/null
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -0,0 +1,113 @@
++// The table every module receives. See ApiHost.h and Engine/Source/WXL/Sdk/wxl_api.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Every entry is a thin C-ABI face over something the core already has. Where a function takes or returns a
++// C++ type (std::vector in the storage layer, bool in the ini helpers) this file is the only place that
++// converts, so the types never reach a module.
++
++#include "Engine/Source/WXLApi/ApiHost.h"
++
++#include "Engine/Source/WXL/Event.h"
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/Storage.h"
++#include "Engine/Source/WXLApi/ModelAccess.h"
++#include "Engine/Source/WXLEquip/VirtualPath.hpp"
++
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++namespace wxl::api
++{
++    namespace
++    {
++        namespace eq = wxl::scripts::equipextension;
++
++        void Log(const char* category, const char* message)
++        {
++            wxl::LogCat(category && *category ? category : "MODULE", "%s", message ? message : "");
++        }
++
++        int LogThrottle(const char* key, uint32_t first, uint32_t every)
++        {
++            return wxl::LogThrottle(key ? key : "", first, every) ? 1 : 0;
++        }
++
++        // Events are matched by name so a module survives the core adding or reordering events.
++        int Subscribe(const char* eventName, WxlEventHandler handler, void* user)
++        {
++            if (!eventName || !handler) return 1;
++            const uint32_t count = static_cast<uint32_t>(wxl::events::Event::Count);
++            for (uint32_t i = 0; i < count; ++i)
++            {
++                const auto e = static_cast<wxl::events::Event>(i);
++                if (std::strcmp(wxl::events::EventName(e), eventName) == 0)
++                {
++                    wxl::events::Subscribe(e, handler, user);   // same signature: void (*)(void*, const void*)
++                    return 0;
++                }
++            }
++            wxl::LogCat("MODULE", "subscribe: unknown event '%s'", eventName);
++            return 2;
++        }
++
++        int IniGetString(const char* section, const char* key, char* out, size_t cap)
++        {
++            return eq::WxlIniGetString(section, key, out, cap) ? 1 : 0;
++        }
++        int IniGetInt(const char* section, const char* key, int defaultValue)
++        {
++            return eq::WxlIniGetInt(section, key, defaultValue);
++        }
++        int IniGetBool(const char* section, const char* key, int defaultValue)
++        {
++            return eq::WxlIniGetBool(section, key, defaultValue != 0) ? 1 : 0;
++        }
++        uint64_t IniStamp() { return eq::WxlIniStamp(); }
++
++        int ReadFile(const char* name, WxlBuffer* out)
++        {
++            if (!name || !out) return 0;
++            out->data = nullptr;
++            out->size = 0;
++            std::vector<uint8_t> bytes;
++            if (!wxl::storage::ReadNativeQuiet(name, bytes) || bytes.empty()) return 0;
++            void* copy = std::malloc(bytes.size());
++            if (!copy) return 0;
++            std::memcpy(copy, bytes.data(), bytes.size());
++            out->data = copy;
++            out->size = bytes.size();
++            return 1;
++        }
++
++        void FreeBuffer(WxlBuffer* buffer)
++        {
++            if (!buffer) return;
++            std::free(buffer->data);
++            buffer->data = nullptr;
++            buffer->size = 0;
++        }
++
++        int IsVirtualKey(const char* name) { return name && eq::VPathIsVirtualKey(name) ? 1 : 0; }
++
++        const WxlApi g_table = {
++            WXL_ABI_VERSION,
++            sizeof(WxlApi),
++            &Log,
++            &LogThrottle,
++            &Subscribe,
++            &IniGetString,
++            &IniGetInt,
++            &IniGetBool,
++            &IniStamp,
++            &ReadFile,
++            &FreeBuffer,
++            &IsVirtualKey,
++            &wxl::api::model::ReadInstance,
++            &wxl::api::model::ReadBones,
++            &wxl::api::model::WritePalette,
++        };
++    }
++
++    const WxlApi* Table() { return &g_table; }
++}
+diff --git a/Engine/Source/WXLApi/CMakeLists.txt b/Engine/Source/WXLApi/CMakeLists.txt
+new file mode 100644
+index 0000000..9f3459b
+--- /dev/null
++++ b/Engine/Source/WXLApi/CMakeLists.txt
+@@ -0,0 +1,28 @@
++# The module API of the 64-bit client: the table modules call (ApiTable.cpp), the guarded engine reads behind
++# it (ModelAccess.cpp) and the loader that finds WXL\Modules\*.dll (ModuleLoader.cpp). The table is built
++# from what WXLCore and WXLEquip already provide, so this library sits above both. The public header for a
++# module is Engine/Source/WXL/Sdk/wxl_api.h: nothing here is meant to be included by one.
++file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
++if (NOT WOWDECOMP_ARCH_64)
++    # the module API is 64-bit only: a 32-bit client keeps just the loader's "no modules here" stub
++    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "(ApiTable|ModelAccess)\\.cpp$")
++endif ()
++
++add_library(WXLApi STATIC
++    ${PRIVATE_SOURCES}
++)
++
++if (NOT WOWDECOMP_ARCH_64)
++    target_compile_definitions(WXLApi PUBLIC WXL_ALLOW_32BIT_HEADER=1)
++endif ()
++
++target_include_directories(WXLApi
++    PUBLIC
++        ${CMAKE_SOURCE_DIR}
++)
++
++target_link_libraries(WXLApi
++    PUBLIC
++        WXLCore
++        WXLEquip
++)
+diff --git a/Engine/Source/WXLApi/ModelAccess.cpp b/Engine/Source/WXLApi/ModelAccess.cpp
+new file mode 100644
+index 0000000..3111e02
+--- /dev/null
++++ b/Engine/Source/WXLApi/ModelAccess.cpp
+@@ -0,0 +1,125 @@
++// Guarded reads of the engine's model instances. See ModelAccess.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// What this does is what the in-tree physics glue did before it became a module: copy an instance's inputs out
++// of client memory in guarded steps, report the step that failed, and write a bone palette back the same way.
++//   * bone world = palette bone x the scene matrix (CM2Scene::m_viewInv, a MIRROR: handed over as 16 floats);
++//   * the placement is the instance's own matrix (CM2Model::m_matrixF4);
++//   * the clock is the scene's (CM2Scene::m_time, ms).
++
++#include "Engine/Source/WXLApi/ModelAccess.h"
++
++#include "Engine/Source/Model2/M2Data.h"
++#include "Engine/Source/Model2/M2Model.h"
++#include "Engine/Source/Model2/M2Scene.h"
++#include "Engine/Source/Model2/M2Shared.h"
++
++#include <windows.h>
++
++#include <cstring>
++
++namespace wxl::api::model
++{
++    static_assert(sizeof(C44Matrix) == 64, "the bone palette and the matrices are 16 floats");
++
++    namespace
++    {
++        // No C++ objects in a function with __try, so every guarded copy is its own tiny function.
++        bool SafeCopy(void* dst, const void* src, size_t n) noexcept
++        {
++            __try { std::memcpy(dst, src, n); return true; }
++            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
++        }
++
++        struct Resolved
++        {
++            const CM2Model*   model = nullptr;
++            CM2Shared*        shared = nullptr;
++            const CM2Scene*   scene = nullptr;
++            const C44Matrix*  palette = nullptr;    // the instance's live palette
++            const M2CompBone* bones = nullptr;      // the model's bone records
++            uint32_t          boneCount = 0;
++            char              path[WXL_PATH_MAX] = {};
++        };
++
++        // Stops at the first step that does not hold and returns its WXL_READ_* code.
++        int Resolve(void* instance, Resolved& r) noexcept
++        {
++            r.model = static_cast<const CM2Model*>(instance);
++            if (!r.model) return WXL_READ_NO_MODEL;
++            const M2Data* hdr = nullptr;
++            uint32_t sharedFlags = 0, instFlags = 0;
++
++            if (!SafeCopy(&r.shared, &r.model->m_shared, sizeof(r.shared)) || !r.shared) return WXL_READ_NO_MODEL;
++            if (!SafeCopy(r.path, r.shared->m_fileName, sizeof(r.path) - 1)) { r.path[0] = 0; return WXL_READ_NO_PATH; }
++            r.path[sizeof(r.path) - 1] = 0;
++            // The model must be fully loaded AND parsed: before that bit is set the header's arrays are not
++            // relocated, and Data() points at garbage.
++            if (!SafeCopy(&sharedFlags, &r.shared->m_flags, 4) || !(sharedFlags & 1u)) return WXL_READ_NOT_PARSED;
++            if (!SafeCopy(&hdr, &r.shared->m_data, sizeof(hdr)) || !hdr) return WXL_READ_NO_HEADER;
++            if (!SafeCopy(&r.boneCount, &hdr->m_bones.m_count, 4)) return WXL_READ_NO_BONE_COUNT;
++            if (r.boneCount < 2 || r.boneCount > WXL_MAX_BONES) return WXL_READ_BONE_COUNT;   // one bone: nothing can swing
++            if (!SafeCopy(&instFlags, &r.model->m_fFlags, 4) || !(instFlags & 1u)) return WXL_READ_NOT_ANIMATED;
++            if (!SafeCopy(&r.scene, &r.model->m_scene, sizeof(r.scene)) || !r.scene) return WXL_READ_NO_SCENE;
++            if (!SafeCopy(&r.palette, &r.model->m_boneMatrices, sizeof(r.palette)) || !r.palette) return WXL_READ_NO_PALETTE;
++            r.bones = hdr->m_bones.Data();
++            if (!r.bones) return WXL_READ_NO_BONES;
++            return WXL_READ_OK;
++        }
++    }
++
++    int ReadInstance(void* instance, WxlInstanceView* out)
++    {
++        if (!out || out->structSize < sizeof(WxlInstanceView)) return WXL_READ_NO_MODEL;
++        Resolved r;
++        const int stage = Resolve(instance, r);
++        // the path and the model id are worth having even when a later step failed (the module logs them)
++        std::memcpy(out->path, r.path, sizeof(out->path));
++        out->model = r.shared;
++        out->boneCount = r.boneCount;
++        if (stage) return stage;
++
++        if (!SafeCopy(&out->clockMs, &r.scene->m_time, 4)) return WXL_READ_NO_CLOCK;
++        if (!SafeCopy(out->sceneMatrix, &r.scene->m_viewInv, sizeof(out->sceneMatrix))) return WXL_READ_NO_SCENE_MAT;
++        if (!SafeCopy(out->ownMatrix, &r.model->m_matrixF4, sizeof(out->ownMatrix))) return WXL_READ_NO_OWN_MAT;
++        return WXL_READ_OK;
++    }
++
++    int ReadBones(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots)
++    {
++        Resolved r;
++        const int stage = Resolve(instance, r);
++        if (stage) return stage;
++        if (count != r.boneCount) return WXL_READ_BONE_COUNT;
++
++        if (palette && !SafeCopy(palette, r.palette, size_t(count) * 64)) return WXL_READ_NO_PALETTE;
++        if (parents || pivots)
++        {
++            for (uint32_t k = 0; k < count; ++k)
++            {
++                uint16_t parent = 0xFFFF;
++                C3Vector pivot{};
++                if (!SafeCopy(&parent, &r.bones[k].m_parentIndex, 2)) return WXL_READ_NO_BONES;
++                if (!SafeCopy(&pivot, &r.bones[k].m_pivot, sizeof(pivot))) return WXL_READ_NO_BONES;
++                if (parents) parents[k] = static_cast<int16_t>(parent);   // 0xFFFF = no parent, as the engine reads it
++                if (pivots)
++                {
++                    pivots[k * 3 + 0] = pivot.x;
++                    pivots[k * 3 + 1] = pivot.y;
++                    pivots[k * 3 + 2] = pivot.z;
++                }
++            }
++        }
++        return WXL_READ_OK;
++    }
++
++    int WritePalette(void* instance, const float* palette, uint32_t count)
++    {
++        if (!palette) return WXL_READ_NO_PALETTE;
++        Resolved r;
++        const int stage = Resolve(instance, r);
++        if (stage) return stage;
++        if (count != r.boneCount) return WXL_READ_BONE_COUNT;
++        return SafeCopy(const_cast<C44Matrix*>(r.palette), palette, size_t(count) * 64) ? WXL_READ_OK : WXL_READ_NO_PALETTE;
++    }
++}
+diff --git a/Engine/Source/WXLApi/ModelAccess.h b/Engine/Source/WXLApi/ModelAccess.h
+new file mode 100644
+index 0000000..9cc7271
+--- /dev/null
++++ b/Engine/Source/WXLApi/ModelAccess.h
+@@ -0,0 +1,16 @@
++// Guarded reads of the engine's model instances, behind WxlApi::readInstance / readBones / writePalette.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// The only file of the module API that knows what a CM2Model is. A module never sees these types: it gets
++// plain numbers, and every read of client memory is done here under SEH, so a stale instance costs one frame
++// of one module, not the client.
++#pragma once
++
++#include "Engine/Source/WXL/Sdk/wxl_api.h"
++
++namespace wxl::api::model
++{
++    int ReadInstance(void* instance, WxlInstanceView* out);
++    int ReadBones(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots);
++    int WritePalette(void* instance, const float* palette, uint32_t count);
++}
+diff --git a/Engine/Source/WXLApi/ModuleLoader.cpp b/Engine/Source/WXLApi/ModuleLoader.cpp
+new file mode 100644
+index 0000000..6e08589
+--- /dev/null
++++ b/Engine/Source/WXLApi/ModuleLoader.cpp
+@@ -0,0 +1,291 @@
++// Finds and loads WXL\Modules\*.dll. See ApiHost.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// 64-bit client only: the module API is defined for 64-bit DLLs, and a 32-bit build neither loads nor looks
++// for any. Nothing here touches the engine; it needs the log, the ini helpers and the API table.
++
++#include "Engine/Source/WXLApi/ApiHost.h"
++
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXLEquip/VirtualPath.hpp"
++
++#include <algorithm>
++#include <cctype>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <vector>
++
++#if defined(_WIN32)
++#include <windows.h>
++#endif
++
++namespace wxl::api
++{
++#if defined(_WIN32) && defined(WOWDECOMP_ARCH_64)
++
++    namespace
++    {
++        namespace eq = wxl::scripts::equipextension;
++
++        struct Loaded
++        {
++            ModuleStatus     status;
++            HMODULE          dll = nullptr;
++            WxlModuleShutdownFn shutdown = nullptr;
++        };
++
++        std::mutex           g_lock;
++        std::vector<Loaded>  g_modules;
++        bool                 g_done = false;
++
++        std::string Narrow(const std::wstring& w)
++        {
++            if (w.empty()) return {};
++            const int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr, 0, nullptr, nullptr);
++            std::string s(static_cast<size_t>(n), '\0');
++            WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n, nullptr, nullptr);
++            return s;
++        }
++
++        std::string Lower(std::string s)
++        {
++            for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            return s;
++        }
++
++        // The folder the client runs from, with a trailing backslash.
++        std::wstring ExeFolder()
++        {
++            wchar_t path[MAX_PATH] = {};
++            const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
++            if (n == 0 || n >= MAX_PATH) return {};
++            std::wstring p(path, n);
++            const size_t slash = p.find_last_of(L'\\');
++            return slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1);
++        }
++
++        // "a.dll;b.dll" / "a.dll,b.dll" -> lower-case names
++        std::vector<std::string> SplitList(const char* text)
++        {
++            std::vector<std::string> out;
++            std::string cur;
++            for (const char* p = text; ; ++p)
++            {
++                if (*p == ';' || *p == ',' || *p == '\0')
++                {
++                    size_t b = 0, e = cur.size();
++                    while (b < e && std::isspace(static_cast<unsigned char>(cur[b]))) ++b;
++                    while (e > b && std::isspace(static_cast<unsigned char>(cur[e - 1]))) --e;
++                    if (e > b) out.push_back(Lower(cur.substr(b, e - b)));
++                    cur.clear();
++                    if (*p == '\0') break;
++                }
++                else cur.push_back(*p);
++            }
++            return out;
++        }
++
++        // The DLL's machine type from its PE header, so a 32-bit module is reported as such instead of as
++        // "error 193" from LoadLibrary. Returns 0 when the file cannot be read as a PE image.
++        uint16_t PeMachine(const std::wstring& path)
++        {
++            HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
++            if (f == INVALID_HANDLE_VALUE) return 0;
++            uint8_t head[0x40] = {};
++            DWORD got = 0;
++            uint16_t machine = 0;
++            if (ReadFile(f, head, sizeof(head), &got, nullptr) && got == sizeof(head) && head[0] == 'M' && head[1] == 'Z')
++            {
++                uint32_t peOffset = 0;
++                std::memcpy(&peOffset, head + 0x3C, 4);
++                uint8_t pe[6] = {};
++                if (SetFilePointer(f, static_cast<LONG>(peOffset), nullptr, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
++                    ReadFile(f, pe, sizeof(pe), &got, nullptr) && got == sizeof(pe) && pe[0] == 'P' && pe[1] == 'E' && pe[2] == 0 && pe[3] == 0)
++                    std::memcpy(&machine, pe + 4, 2);
++            }
++            CloseHandle(f);
++            return machine;
++        }
++
++        // Structured-exception guards around the three calls into foreign code. Plain functions, no C++
++        // objects, so __try is allowed. A module that faults is reported and skipped, not allowed to take
++        // the client down on startup.
++        bool CallAbi(WxlModuleAbiVersionFn fn, uint32_t* out) noexcept
++        {
++            __try { *out = fn(); return true; }
++            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
++        }
++        bool CallInit(WxlModuleInitFn fn, const WxlApi* api, WxlModuleInfo* info, int* result) noexcept
++        {
++            __try { *result = fn(api, info); return true; }
++            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
++        }
++        void CallShutdown(WxlModuleShutdownFn fn) noexcept
++        {
++            __try { fn(); }
++            __except (EXCEPTION_EXECUTE_HANDLER) {}
++        }
++
++        void Skip(Loaded& m, const char* why)
++        {
++            m.status.loaded = false;
++            m.status.note = why;
++            wxl::LogCat("MODULE", "%s: skipped, %s", m.status.file.c_str(), why);
++        }
++
++        void LoadOne(const std::wstring& path, const std::string& file, Loaded& m)
++        {
++            m.status.file = file;
++
++            const uint16_t machine = PeMachine(path);
++            if (machine == 0) { Skip(m, "not a readable DLL"); return; }
++            if (machine != IMAGE_FILE_MACHINE_AMD64) { Skip(m, "not a 64-bit DLL (modules are for the 64-bit client)"); return; }
++
++            m.dll = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
++            if (!m.dll)
++            {
++                char why[96];
++                std::snprintf(why, sizeof(why), "LoadLibrary failed (error %lu: a missing dependency?)", GetLastError());
++                Skip(m, why);
++                return;
++            }
++
++            auto abiFn  = reinterpret_cast<WxlModuleAbiVersionFn>(GetProcAddress(m.dll, "WxlModuleAbiVersion"));
++            auto initFn = reinterpret_cast<WxlModuleInitFn>(GetProcAddress(m.dll, "WxlModuleInit"));
++            m.shutdown  = reinterpret_cast<WxlModuleShutdownFn>(GetProcAddress(m.dll, "WxlModuleShutdown"));
++            if (!abiFn || !initFn)
++            {
++                Skip(m, "does not export WxlModuleAbiVersion / WxlModuleInit: not a WXL module");
++                FreeLibrary(m.dll);
++                m.dll = nullptr;
++                return;
++            }
++
++            uint32_t abi = 0;
++            if (!CallAbi(abiFn, &abi)) { Skip(m, "faulted in WxlModuleAbiVersion"); FreeLibrary(m.dll); m.dll = nullptr; return; }
++            if (abi != WXL_ABI_VERSION)
++            {
++                char why[96];
++                std::snprintf(why, sizeof(why), "built for module ABI %u, this client speaks %u", abi, WXL_ABI_VERSION);
++                Skip(m, why);
++                FreeLibrary(m.dll);
++                m.dll = nullptr;
++                return;
++            }
++
++            WxlModuleInfo info = {};
++            info.structSize = sizeof(info);
++            int result = -1;
++            if (!CallInit(initFn, Table(), &info, &result))
++            {
++                // a fault inside the module's init: the module may be half set up, so it stays loaded and is never called again
++                Skip(m, "faulted in WxlModuleInit");
++                m.shutdown = nullptr;
++                return;
++            }
++            if (result != 0)
++            {
++                char why[96];
++                std::snprintf(why, sizeof(why), "WxlModuleInit refused (returned %d)", result);
++                Skip(m, why);
++                FreeLibrary(m.dll);
++                m.dll = nullptr;
++                m.shutdown = nullptr;
++                return;
++            }
++
++            info.name[sizeof(info.name) - 1] = '\0';
++            m.status.name = info.name;
++            m.status.major = info.versionMajor;
++            m.status.minor = info.versionMinor;
++            m.status.loaded = true;
++            m.status.note = "ok";
++            wxl::LogCat("MODULE", "%s: loaded '%s' %u.%u", file.c_str(), info.name[0] ? info.name : "(unnamed)", info.versionMajor, info.versionMinor);
++        }
++    }
++
++    void LoadModules()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        if (g_done) return;
++        g_done = true;
++
++        if (!eq::WxlIniGetBool("Modules", "Enabled", true))
++        {
++            wxl::LogCat("MODULE", "modules are switched off ([Modules] Enabled=0 in WXLExtendedEquipment.ini)");
++            return;
++        }
++
++        const std::wstring folder = ExeFolder() + L"WXL\\Modules\\";
++        WIN32_FIND_DATAW fd = {};
++        HANDLE h = FindFirstFileW((folder + L"*.dll").c_str(), &fd);
++        if (h == INVALID_HANDLE_VALUE)
++        {
++            wxl::LogCat("MODULE", "no modules (no *.dll in %s)", Narrow(folder).c_str());
++            return;
++        }
++
++        std::vector<std::wstring> names;
++        do
++        {
++            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) names.emplace_back(fd.cFileName);
++        } while (FindNextFileW(h, &fd));
++        FindClose(h);
++        std::sort(names.begin(), names.end(), [](const std::wstring& a, const std::wstring& b) {
++            return Lower(Narrow(a)) < Lower(Narrow(b));
++        });
++
++        char disableText[512] = {};
++        eq::WxlIniGetString("Modules", "Disable", disableText, sizeof(disableText));
++        const std::vector<std::string> disabled = SplitList(disableText);
++
++        wxl::LogCat("MODULE", "module API %u, looking in %s (%zu file%s)", WXL_ABI_VERSION, Narrow(folder).c_str(),
++                    names.size(), names.size() == 1 ? "" : "s");
++        g_modules.reserve(names.size());
++        for (const std::wstring& name : names)
++        {
++            g_modules.emplace_back();
++            Loaded& m = g_modules.back();
++            const std::string file = Narrow(name);
++            if (std::find(disabled.begin(), disabled.end(), Lower(file)) != disabled.end())
++            {
++                m.status.file = file;
++                Skip(m, "listed in [Modules] Disable");
++                continue;
++            }
++            LoadOne(folder + name, file, m);
++        }
++    }
++
++    void UnloadModules()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        for (auto it = g_modules.rbegin(); it != g_modules.rend(); ++it)
++        {
++            if (it->shutdown) CallShutdown(it->shutdown);
++            // the DLL stays mapped: its event handlers are still in the bus, and the process is going away
++            it->shutdown = nullptr;
++        }
++    }
++
++    std::vector<ModuleStatus> Modules()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        std::vector<ModuleStatus> out;
++        for (const Loaded& m : g_modules) out.push_back(m.status);
++        return out;
++    }
++
++#else   // 32-bit build, or not Windows: the module API is 64-bit only
++
++    void LoadModules()
++    {
++        wxl::LogCat("MODULE", "the module API is for the 64-bit client: no modules are loaded in this build");
++    }
++    void UnloadModules() {}
++    std::vector<ModuleStatus> Modules() { return {}; }
++
++#endif
++}
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index 8c4bc72..2ed1329 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -6,7 +6,6 @@
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLEquip/CreatureExtension.hpp"
+ #include "Engine/Source/WXLEquip/EquipExtension.hpp"
+-#include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ #include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+ 
+@@ -98,9 +97,8 @@ namespace wxl::equip
+         wxl::scripts::equipextension::Create();
+         wxl::scripts::weaponextension::Create();
+         wxl::scripts::creatureextension::Create();
+-        // Last on purpose: physics subscribes to OnBuildBonePalette and must run after the equip
+-        // extension's handler (subscribers run in subscription order), so it sees the remapped palette.
+-        wxl::equip::physics::Init();
++        // Physics is a module now (WXL\Modules\wxl_physics.dll, loaded by wxl::api::LoadModules() right after
++        // this): modules subscribe after the extensions above, so they see the palette after the equip remap.
+         ReportSidecarsOnDisk();
+ 
+         // One glance at which events have handlers; "fired" counts follow once the game reaches each hook.
+diff --git a/Engine/Source/WXLModules/Physics/CMakeLists.txt b/Engine/Source/WXLModules/Physics/CMakeLists.txt
+new file mode 100644
+index 0000000..868b045
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/CMakeLists.txt
+@@ -0,0 +1,25 @@
++# WXL physics module: wxl_physics.dll, loaded from <client folder>\WXL\Modules\ by the 64-bit client.
++# It is built against Engine/Source/WXL/Sdk/wxl_api.h and its own folder only: no engine header, no import
++# library of the client. physics_domino.* is third-party code (see README.md).
++if (NOT WOWDECOMP_ARCH_64)
++    message(STATUS "WXL modules are 64-bit only: wxl_physics is not built")
++    return()
++endif ()
++
++file(GLOB PHYSICS_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
++
++add_library(wxl_physics SHARED ${PHYSICS_SOURCES})
++
++target_include_directories(wxl_physics
++    PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/Engine/Source/WXL/Sdk
++)
++
++set_target_properties(wxl_physics PROPERTIES
++    PREFIX ""
++    CXX_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON
++    # "$<1:...>" keeps Visual Studio from adding a Debug/Release sub-folder: the loader looks in WXL\Modules
++    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/bin/Win/WXL/Modules>"
++)
+diff --git a/Engine/Source/WXLModules/Physics/Module.cpp b/Engine/Source/WXLModules/Physics/Module.cpp
+new file mode 100644
+index 0000000..87ec82d
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/Module.cpp
+@@ -0,0 +1,25 @@
++// The physics module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "PhysicsLive.hpp"
++
++#include <cstring>
++
++WXL_DEFINE_MODULE_ABI()
++
++WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
++{
++    if (info)
++    {
++        std::strncpy(info->name, "physics", sizeof(info->name) - 1);
++        info->versionMajor = 1;
++        info->versionMinor = 0;
++    }
++    return wxl::equip::physics::Init(api) ? 0 : 1;
++}
++
++WXL_MODULE_API void WxlModuleShutdown(void)
++{
++    // the event handler stays subscribed until the process ends; make it a no-op, and drop every instance
++    wxl::equip::physics::SetEnabled(false);
++}
+diff --git a/Engine/Source/WXLModules/Physics/ModuleHost.cpp b/Engine/Source/WXLModules/Physics/ModuleHost.cpp
+new file mode 100644
+index 0000000..0b26927
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/ModuleHost.cpp
+@@ -0,0 +1,67 @@
++// See ModuleHost.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "ModuleHost.hpp"
++
++#include <cstdarg>
++#include <cstdio>
++#include <cstring>
++
++namespace wxl::modules::host
++{
++    namespace { const WxlApi* g_api = nullptr; }
++
++    void SetApi(const WxlApi* api) { g_api = api; }
++    const WxlApi* Api() { return g_api; }
++
++    bool IniGetBool(const char* section, const char* key, bool defaultValue)
++    {
++        return g_api && g_api->iniGetBool ? g_api->iniGetBool(section, key, defaultValue ? 1 : 0) != 0 : defaultValue;
++    }
++    int IniGetInt(const char* section, const char* key, int defaultValue)
++    {
++        return g_api && g_api->iniGetInt ? g_api->iniGetInt(section, key, defaultValue) : defaultValue;
++    }
++    bool IniGetString(const char* section, const char* key, char* out, size_t cap)
++    {
++        if (out && cap) out[0] = '\0';
++        return g_api && g_api->iniGetString && g_api->iniGetString(section, key, out, cap) != 0;
++    }
++    uint64_t IniStamp() { return g_api && g_api->iniStamp ? g_api->iniStamp() : 0; }
++
++    bool ReadFile(const char* name, std::vector<uint8_t>& out)
++    {
++        if (!g_api || !g_api->readFile || !g_api->freeBuffer) return false;
++        WxlBuffer buf = {};
++        if (!g_api->readFile(name, &buf) || !buf.data) return false;
++        out.assign(static_cast<const uint8_t*>(buf.data), static_cast<const uint8_t*>(buf.data) + buf.size);
++        g_api->freeBuffer(&buf);   // freed by the side that allocated it
++        return true;
++    }
++
++    bool IsVirtualKey(const char* name)
++    {
++        return g_api && g_api->isVirtualKey && g_api->isVirtualKey(name) != 0;
++    }
++}
++
++namespace wxl
++{
++    void LogCat(const char* category, const char* format, ...)
++    {
++        const WxlApi* api = modules::host::Api();
++        if (!api || !api->log) return;
++        char line[1024];
++        va_list args;
++        va_start(args, format);
++        std::vsnprintf(line, sizeof(line), format, args);
++        va_end(args);
++        api->log(category, line);
++    }
++
++    bool LogThrottle(const char* key, unsigned first, unsigned every)
++    {
++        const WxlApi* api = modules::host::Api();
++        return api && api->logThrottle && api->logThrottle(key, first, every) != 0;
++    }
++}
+diff --git a/Engine/Source/WXLModules/Physics/ModuleHost.hpp b/Engine/Source/WXLModules/Physics/ModuleHost.hpp
+new file mode 100644
+index 0000000..7f151db
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/ModuleHost.hpp
+@@ -0,0 +1,32 @@
++// The module's side of the boundary: the API table, and the few helpers that wrap it.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// wxl::LogCat / wxl::LogThrottle are defined here for THIS module only (they are not exported), so code
++// moved out of the client keeps calling them unchanged while they end up in the core's log through the API.
++#pragma once
++
++#include "wxl_api.h"
++
++#include <cstdint>
++#include <vector>
++
++namespace wxl
++{
++    void LogCat(const char* category, const char* format, ...);
++    bool LogThrottle(const char* key, unsigned first = 8, unsigned every = 1000);
++}
++
++namespace wxl::modules::host
++{
++    void SetApi(const WxlApi* api);
++    const WxlApi* Api();
++
++    bool     IniGetBool(const char* section, const char* key, bool defaultValue);
++    int      IniGetInt(const char* section, const char* key, int defaultValue);
++    bool     IniGetString(const char* section, const char* key, char* out, size_t cap);
++    uint64_t IniStamp();
++
++    /// A whole file through the client's own reader (quiet on a miss); false when it is not there.
++    bool ReadFile(const char* name, std::vector<uint8_t>& out);
++    bool IsVirtualKey(const char* name);
++}
+diff --git a/Engine/Source/WXLEquip/Physics/Phy2Library.cpp b/Engine/Source/WXLModules/Physics/Phy2Library.cpp
+similarity index 99%
+rename from Engine/Source/WXLEquip/Physics/Phy2Library.cpp
+rename to Engine/Source/WXLModules/Physics/Phy2Library.cpp
+index f46ca35..994642a 100644
+--- a/Engine/Source/WXLEquip/Physics/Phy2Library.cpp
++++ b/Engine/Source/WXLModules/Physics/Phy2Library.cpp
+@@ -1,7 +1,7 @@
+ // Per-model physics files. See Phy2Library.hpp.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ 
+-#include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
++#include "Phy2Library.hpp"
+ 
+ #include <algorithm>
+ #include <cstring>
+diff --git a/Engine/Source/WXLEquip/Physics/Phy2Library.hpp b/Engine/Source/WXLModules/Physics/Phy2Library.hpp
+similarity index 98%
+rename from Engine/Source/WXLEquip/Physics/Phy2Library.hpp
+rename to Engine/Source/WXLModules/Physics/Phy2Library.hpp
+index fd71ddc..08a81f5 100644
+--- a/Engine/Source/WXLEquip/Physics/Phy2Library.hpp
++++ b/Engine/Source/WXLModules/Physics/Phy2Library.hpp
+@@ -13,7 +13,7 @@
+ // beside the ORIGINAL .m2 the virtual path was minted from.
+ #pragma once
+ 
+-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
++#include "physics_domino.h"
+ 
+ #include <cstddef>
+ #include <cstdint>
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp b/Engine/Source/WXLModules/Physics/PhysicsGuard.cpp
+similarity index 98%
+rename from Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp
+rename to Engine/Source/WXLModules/Physics/PhysicsGuard.cpp
+index 2cef7ff..f9113d1 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsGuard.cpp
+@@ -1,7 +1,7 @@
+ // See PhysicsGuard.hpp.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ 
+-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
++#include "PhysicsGuard.hpp"
+ 
+ #include <algorithm>
+ #include <cmath>
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp b/Engine/Source/WXLModules/Physics/PhysicsGuard.hpp
+similarity index 98%
+rename from Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp
+rename to Engine/Source/WXLModules/Physics/PhysicsGuard.hpp
+index f538623..cfa599c 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsGuard.hpp
+@@ -20,7 +20,7 @@
+ //    physics_domino.cpp, "item bodies are made with sleeping off"), so "stuck" is never sleep.
+ #pragma once
+ 
+-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
++#include "physics_domino.h"
+ 
+ #include <cstddef>
+ #include <cstdint>
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+similarity index 54%
+rename from Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
+rename to Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+index 78e7647..e8d2b70 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+@@ -2,37 +2,32 @@
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+ // What it does, per animated instance, each time the engine has built its bone palette:
+-//   * bone world = palette bone x the scene matrix (CM2Scene::m_viewInv, a MIRROR: never decomposed);
+-//     the placement = the instance's own matrix (CM2Model::m_matrixF4) x the scene matrix;
+-//   * each dynamic body's model-space bone goes back as bone x m_matrixF4, and every bone under a
+-//     moved one is carried by its parent's delta;
+-//   * time comes from the scene's clock (CM2Scene::m_time, ms); a second build in one frame takes 0 s;
+-//   * state per instance, forgotten when unseen for 2 s; every client read and write is guarded;
++//   * bone world = palette bone x the scene matrix (a MIRROR: never decomposed); the placement = the
++//     instance's own matrix x the scene matrix;
++//   * each dynamic body's model-space bone goes back as bone x own matrix, and every bone under a moved
++//     one is carried by its parent's delta;
++//   * time comes from the scene's clock (ms); a second build in one frame takes 0 s;
++//   * state per instance, forgotten when unseen for 2 s;
+ //   * stuck items: see PhysicsGuard.hpp. The model is prepared once (extra anchors carry their followers),
+ //     and each frame the simulated bones are compared with the animated ones; an instance that stays far
+ //     off, or whose placement teleports, is dropped (it is re-seeded from the animated pose next frame)
+ //     and the palette is left as the engine built it for that frame. Re-seeding too often switches the
+ //     instance's physics off for 10 s. There is no sleeping to wake: the engine never sleeps an item world.
++//
++// Every read and write of client memory happens inside the core (WxlApi::readInstance / readBones /
++// writePalette, guarded there): nothing in this file can fault on a stale instance.
+ 
+-#include "Engine/Source/WXLEquip/Physics/PhysicsLive.hpp"
+-
+-#include "Engine/Source/BlizzardCore/SFile2-Core.h"
+-#include "Engine/Source/Model2/M2Data.h"
+-#include "Engine/Source/Model2/M2Model.h"
+-#include "Engine/Source/Model2/M2Scene.h"
+-#include "Engine/Source/Model2/M2Shared.h"
+-#include "Engine/Source/WXL/Event.h"
+-#include "Engine/Source/WXL/Log.h"
+-#include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
+-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
+-#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
+-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+-#include "Engine/Source/WXLEquip/VirtualPath.hpp"   // WxlIniGetBool, VPathIsVirtualKey
++#include "PhysicsLive.hpp"
+ 
+-#include <windows.h>
++#include "ModuleHost.hpp"
++#include "Phy2Library.hpp"
++#include "PhysicsGuard.hpp"
++#include "PhysicsTuning.hpp"
++#include "physics_domino.h"
+ 
+ #include <algorithm>
+ #include <atomic>
++#include <chrono>
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
+@@ -45,22 +40,29 @@
+ namespace wxl::equip::physics
+ {
+     namespace phys = wow::ec::physics;
++    namespace host = wxl::modules::host;
+ 
+-    static_assert(sizeof(C44Matrix) == 64, "the bone palette and the matrices are 16 floats");
++    static_assert(sizeof(phys::V3) == 12, "pivots are handed to the API as 3 floats per bone");
+ 
+     namespace
+     {
+-        constexpr uint32_t kMaxBones = 256;
++        using Clock = std::chrono::steady_clock;
++
+         constexpr uint32_t kForgetMs = 2000;
+ 
++        uint32_t NowMs()
++        {
++            return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
++        }
++
+         struct InstState
+         {
+-            void*                            shared = nullptr;
++            const void*                      shared = nullptr;
+             std::unique_ptr<phys::Instance>  sim;
+             uint32_t lastClock = 0;       // scene clock at the last step
+-            uint32_t lastSeen  = 0;       // GetTickCount at the last build
+-            LARGE_INTEGER stillSince{};   // when the scene clock stopped moving
+-            LARGE_INTEGER lastQpc{};
++            uint32_t lastSeen  = 0;       // NowMs at the last build
++            Clock::time_point stillSince{};   // when the scene clock stopped moving
++            Clock::time_point lastTime{};
+             bool     haveClock = false;
+             std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
+             guard::Limits limits;                 // how far each dynamic bone may stray
+@@ -82,10 +84,10 @@ namespace wxl::equip::physics
+             std::shared_ptr<phys::Model> model;   // null: no physics for this model
+         };
+ 
+-        std::mutex g_lock;                                            // guards the three below and g_stats
+-        std::unordered_map<void*, ModelEntry> g_models;               // shared model -> its physics
+-        std::unordered_map<void*, InstState> g_inst;                  // instance -> simulation
+-        std::unordered_map<void*, Penalty> g_penalty;                 // instance -> re-seed history
++        std::mutex g_lock;                                                // guards the three below and g_stats
++        std::unordered_map<const void*, ModelEntry> g_models;             // loaded model -> its physics
++        std::unordered_map<void*, InstState> g_inst;                      // instance -> simulation
++        std::unordered_map<void*, Penalty> g_penalty;                     // instance -> re-seed history
+         guard::Config g_guardCfg;
+         bool g_carryAnchors = true;
+         constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
+@@ -93,104 +95,19 @@ namespace wxl::equip::physics
+         uint32_t g_lastSweep = 0;
+         std::atomic<bool> g_enabled{false};
+         bool g_inited = false;
+-        LARGE_INTEGER g_qpcFreq{};
+ 
+         // ---- where the .phy2 files are read from ----
+-        // The client's own open/size/read/close. Archives only first, then archives plus loose files
+-        // under Data\ (open flag 1), the same order as the equip extension's native reader, so a .phy2
+-        // dropped loose next to where the model lives is found too. No logging here: a miss is the
+-        // normal answer for almost every model.
++        // The core's reader: the client's own archives, then loose files under Data\. A model's physics is a
++        // few KB; a miss is the normal answer for almost every model and costs no log line.
+         bool ReadArchiveFile(const char* name, std::vector<uint8_t>& out)
+         {
+-            for (uint32_t flags = 0; flags <= 1; ++flags)
+-            {
+-                SFileImpl* file = nullptr;
+-                if (!SFile::OpenEx(nullptr, name, flags, &file) || !file) continue;
+-                uint32_t sizeHigh = 0;
+-                const uint32_t size = SFileGetFileSize(file, &sizeHigh);
+-                bool ok = false;
+-                if (size > 0 && size <= (4u << 20) && sizeHigh == 0)   // a model's physics is a few KB
+-                {
+-                    out.resize(size);
+-                    uint32_t got = 0;
+-                    ok = SFileReadFile(file, out.data(), size, &got, nullptr, 0) && got == size;
+-                    if (!ok) out.clear();
+-                }
+-                SFileCloseFile(file);
+-                if (ok) return true;
+-            }
+-            return false;
+-        }
+-
+-        phy2::Library g_lib(&ReadArchiveFile, &wxl::scripts::equipextension::VPathIsVirtualKey);
+-
+-        // ---- guarded client memory access (no C++ objects inside __try) ----
+-        bool SafeCopy(void* dst, const void* src, size_t n) noexcept
+-        {
+-            __try { std::memcpy(dst, src, n); return true; }
+-            __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+-        }
+-
+-        // The instance's inputs, copied out of client memory in one guarded pass.
+-        struct Snapshot
+-        {
+-            CM2Shared*   shared = nullptr;
+-            const C44Matrix* palette = nullptr;   // the instance's live palette (written back to)
+-            const M2CompBone* bones = nullptr;    // the model's bone records
+-            uint32_t boneCount = 0;
+-            uint32_t clock = 0;
+-            float    sceneMat[16];
+-            float    ownMat[16];
+-            char     stem[260];
+-        };
+-
+-        // Returns 0 when every input was read, else the stage that stopped it (for the log).
+-        int ReadSnapshot(void* instance, Snapshot& s) noexcept
+-        {
+-            const CM2Model* m = static_cast<const CM2Model*>(instance);
+-            const CM2Scene* scene = nullptr;
+-            uint32_t instFlags = 0;
+-            const M2Data* hdr = nullptr;
+-            uint32_t sharedFlags = 0;
+-            s.stem[0] = 0;
+-
+-            if (!SafeCopy(&s.shared, &m->m_shared, sizeof(s.shared)) || !s.shared) return 1;
+-            if (!SafeCopy(s.stem, s.shared->m_fileName, sizeof(s.stem) - 1)) { s.stem[0] = 0; return 11; }
+-            s.stem[sizeof(s.stem) - 1] = 0;
+-            // The model must be fully loaded AND parsed: before that bit is set the header's arrays are
+-            // not relocated, and Data() points at garbage (see EquipExtension SharedFullyParsed).
+-            if (!SafeCopy(&sharedFlags, &s.shared->m_flags, 4) || !(sharedFlags & 1u)) return 12;
+-            if (!SafeCopy(&hdr, &s.shared->m_data, sizeof(hdr)) || !hdr) return 4;
+-            if (!SafeCopy(&s.boneCount, &hdr->m_bones.m_count, 4)) return 5;
+-            if (s.boneCount < 2 || s.boneCount > kMaxBones) return 6;   // one bone: nothing can swing
+-            if (!SafeCopy(&instFlags, &m->m_fFlags, 4) || !(instFlags & 1u)) return 13;   // animation data not ready
+-            if (!SafeCopy(&scene, &m->m_scene, sizeof(scene)) || !scene) return 2;
+-            if (!SafeCopy(&s.palette, &m->m_boneMatrices, sizeof(s.palette)) || !s.palette) return 3;
+-            s.bones = hdr->m_bones.Data();
+-            if (!s.bones) return 7;
+-            if (!SafeCopy(&s.clock, &scene->m_time, 4)) return 8;
+-            if (!SafeCopy(s.sceneMat, &scene->m_viewInv, sizeof(s.sceneMat))) return 9;
+-            if (!SafeCopy(s.ownMat, &m->m_matrixF4, sizeof(s.ownMat))) return 10;
+-            return 0;
+-        }
+-
+-        bool ReadBones(const Snapshot& s, float* bones, int16_t* parents, phys::V3* pivots) noexcept
+-        {
+-            if (!SafeCopy(bones, s.palette, size_t(s.boneCount) * 64)) return false;
+-            for (uint32_t k = 0; k < s.boneCount; ++k)
+-            {
+-                uint16_t parent = 0xFFFF;
+-                C3Vector pivot{};
+-                if (!SafeCopy(&parent, &s.bones[k].m_parentIndex, 2)) return false;
+-                if (!SafeCopy(&pivot, &s.bones[k].m_pivot, sizeof(pivot))) return false;
+-                parents[k] = static_cast<int16_t>(parent);   // 0xFFFF = no parent, as the engine reads it
+-                pivots[k].x = pivot.x;
+-                pivots[k].y = pivot.y;
+-                pivots[k].z = pivot.z;
+-            }
++            if (!host::ReadFile(name, out)) return false;
++            if (out.empty() || out.size() > (4u << 20)) { out.clear(); return false; }
+             return true;
+         }
+ 
++        phy2::Library g_lib(&ReadArchiveFile, &host::IsVirtualKey);
++
+         void SweepLocked(uint32_t now)
+         {
+             if (now - g_lastSweep < 500) return;
+@@ -210,7 +127,7 @@ namespace wxl::equip::physics
+ 
+         void OnBuildBonePalette(void* /*user*/, const void* args)
+         {
+-            AfterBonePalette(static_cast<const wxl::events::BuildBonePaletteArgs*>(args)->renderCtx);
++            if (args) AfterBonePalette(static_cast<const WxlBuildBonePaletteArgs*>(args)->instance);
+         }
+     }
+ 
+@@ -221,18 +138,18 @@ namespace wxl::equip::physics
+         tuning::Tuning g_tuning;
+         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
+         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
+-        uint32_t g_lastIniPoll = 0;    // GetTickCount of the last look at it
++        uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
+ 
+         bool ReadPhysicsKey(const char* key, char* out, size_t cap)
+         {
+-            return wxl::scripts::equipextension::WxlIniGetString("Physics", key, out, cap);
++            return host::IniGetString("Physics", key, out, cap);
+         }
+ 
+         void LoadTuning()
+         {
+             std::string problems;
+             g_tuning = tuning::FromIni(&ReadPhysicsKey, &problems);
+-            g_iniStamp = wxl::scripts::equipextension::WxlIniStamp();
++            g_iniStamp = host::IniStamp();
+             // one log line per problem: a value that is not a number, or outside its range
+             for (size_t b = 0; b < problems.size();)
+             {
+@@ -245,29 +162,28 @@ namespace wxl::equip::physics
+         }
+     }
+ 
+-    void Init()
++    bool Init(const WxlApi* api)
+     {
+-        if (g_inited) return;
++        if (g_inited) return true;
++        if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, writePalette)) return false;
++        host::SetApi(api);
+         g_inited = true;
+-        QueryPerformanceFrequency(&g_qpcFreq);
+-        g_enabled = wxl::scripts::equipextension::WxlIniGetBool("Physics", "Enabled", false);
++
++        g_enabled = host::IniGetBool("Physics", "Enabled", false);
+         wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
+                     g_enabled ? "on" : "off");
+-        {
+-            using wxl::scripts::equipextension::WxlIniGetBool;
+-            using wxl::scripts::equipextension::WxlIniGetInt;
+-            g_carryAnchors = WxlIniGetBool("Physics", "CarryAnchors", true);
+-            g_guardCfg.enabled = WxlIniGetBool("Physics", "Unstick", true);
+-            g_guardCfg.reach = float(std::max(WxlIniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
+-            g_guardCfg.teleportYards = float(std::max(WxlIniGetInt("Physics", "TeleportYards", 6), 1));
+-            wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
+-                        g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+-            g_watchIni = WxlIniGetBool("Physics", "WatchIni", false);
+-            LoadTuning();
+-            if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
+-        }
+-        // After the equip extension's handler (subscribers run in subscription order).
+-        wxl::events::Subscribe(wxl::events::Event::OnBuildBonePalette, &OnBuildBonePalette, nullptr);
++        g_carryAnchors = host::IniGetBool("Physics", "CarryAnchors", true);
++        g_guardCfg.enabled = host::IniGetBool("Physics", "Unstick", true);
++        g_guardCfg.reach = float(std::max(host::IniGetInt("Physics", "UnstickReach", 300), 100)) / 100.0f;
++        g_guardCfg.teleportYards = float(std::max(host::IniGetInt("Physics", "TeleportYards", 6), 1));
++        wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
++                    g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
++        g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
++        LoadTuning();
++        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
++
++        // After the built-in extensions' handlers (subscribers run in subscription order; modules load last).
++        return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnBuildBonePalette, nullptr) == 0;
+     }
+ 
+     bool Enabled() { return g_enabled; }
+@@ -304,24 +220,30 @@ namespace wxl::equip::physics
+     void AfterBonePalette(void* instance)
+     {
+         if (!g_enabled || !instance) return;
++        const WxlApi* api = host::Api();
++        if (!api) return;
++
++        const Clock::time_point t0 = Clock::now();
+ 
+-        LARGE_INTEGER t0;
+-        QueryPerformanceCounter(&t0);
++        static std::atomic<int> calls{0};
++        if (calls.fetch_add(1) == 0) wxl::LogCat("PHYS", "physics: first bone build seen (hook is live)");
+ 
+-        Snapshot s;
+-        static volatile long calls = 0;
+-        if (InterlockedIncrement(&calls) == 1) wxl::LogCat("PHYS", "physics: first bone build seen (hook is live)");
+-        const int stage = ReadSnapshot(instance, s);
++        WxlInstanceView s = {};
++        s.structSize = sizeof(s);
++        const int stage = api->readInstance(instance, &s);
+         if (stage)
+         {
+             // Stages 6 (one bone), 12 and 13 (not loaded / animated yet) are the common, harmless cases.
+-            if (stage != 6 && stage != 12 && stage != 13 && s.shared && wxl::LogThrottle("phys.skip", 40, 500))
+-                wxl::LogCat("PHYS", "physics: skip '%s' at read stage %d", s.stem[0] ? s.stem : "(no path)", stage);
++            if (stage != WXL_READ_BONE_COUNT && stage != WXL_READ_NOT_PARSED && stage != WXL_READ_NOT_ANIMATED &&
++                s.model && wxl::LogThrottle("phys.skip", 40, 500))
++                wxl::LogCat("PHYS", "physics: skip '%s' at read stage %d", s.path[0] ? s.path : "(no path)", stage);
+             return;
+         }
++        const char* stem = s.path;
++        const uint32_t boneCount = s.boneCount;
+ 
+         std::unique_lock<std::mutex> lk(g_lock);
+-        const uint32_t now = GetTickCount();
++        const uint32_t now = NowMs();
+         SweepLocked(now);
+ 
+         // WatchIni: the ini was saved, so read the multipliers again. Every model is prepared again with them
+@@ -329,7 +251,7 @@ namespace wxl::equip::physics
+         if (g_watchIni && now - g_lastIniPoll >= 1000)
+         {
+             g_lastIniPoll = now;
+-            const uint64_t stamp = wxl::scripts::equipextension::WxlIniStamp();
++            const uint64_t stamp = host::IniStamp();
+             if (stamp && stamp != g_iniStamp)
+             {
+                 LoadTuning();
+@@ -348,21 +270,21 @@ namespace wxl::equip::physics
+         // This model's physics, looked up once (and again if the slot was reused by another file).
+         // The lookup reads files, so it runs with the lock released: other animate threads keep going.
+         std::shared_ptr<phys::Model> model;
+-        auto mi = g_models.find(s.shared);
+-        if (mi == g_models.end() || mi->second.stem != s.stem)
++        auto mi = g_models.find(s.model);
++        if (mi == g_models.end() || mi->second.stem != stem)
+         {
+             lk.unlock();
+             bool fresh = false;
+-            const phy2::Result res = g_lib.For(s.stem, &fresh);
++            const phy2::Result res = g_lib.For(stem, &fresh);
+             if (fresh)
+             {
+                 if (res.model)
+-                    wxl::LogCat("PHYS", "physics: MATCH '%s' <- %s (%u bones): %zu bodies, %zu joints", s.stem,
+-                                res.path.c_str(), s.boneCount, res.model->bodies.size(), res.model->joints.size());
++                    wxl::LogCat("PHYS", "physics: MATCH '%s' <- %s (%u bones): %zu bodies, %zu joints", stem,
++                                res.path.c_str(), boneCount, res.model->bodies.size(), res.model->joints.size());
+                 else if (!res.error.empty())
+-                    wxl::LogCat("PHYS", "physics: '%s' has a .phy2 that cannot be used: %s", s.stem, res.error.c_str());
+-                else if (std::strstr(s.stem, "objectcomponents") && wxl::LogThrottle("phys.nofile", 100, 0))
+-                    wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", s.stem, s.boneCount);
++                    wxl::LogCat("PHYS", "physics: '%s' has a .phy2 that cannot be used: %s", stem, res.error.c_str());
++                else if (std::strstr(stem, "objectcomponents") && wxl::LogThrottle("phys.nofile", 100, 0))
++                    wxl::LogCat("PHYS", "physics: no .phy2 for item model '%s' (%u bones)", stem, boneCount);
+             }
+             lk.lock();
+             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
+@@ -375,33 +297,37 @@ namespace wxl::equip::physics
+             {
+                 ++g_stats.modelsCarried;
+                 wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
+-                            s.stem, carried);
++                            stem, carried);
+             }
+-            g_models[s.shared] = ModelEntry{ s.stem, model };
++            g_models[s.model] = ModelEntry{ stem, model };
+         }
+         else model = mi->second.model;
+         if (!model) return;
+ 
+-        std::vector<float> before(size_t(s.boneCount) * 16);
+-        std::vector<int16_t> parents(s.boneCount);
+-        std::vector<phys::V3> pivots(s.boneCount);
+-        if (!ReadBones(s, before.data(), parents.data(), pivots.data())) { ++g_stats.faults; return; }
++        std::vector<float> before(size_t(boneCount) * 16);
++        std::vector<int16_t> parents(boneCount);
++        std::vector<phys::V3> pivots(boneCount);
++        if (api->readBones(instance, boneCount, before.data(), parents.data(), reinterpret_cast<float*>(pivots.data())) != WXL_READ_OK)
++        {
++            ++g_stats.faults;
++            return;
++        }
+         for (const phys::BodyDef& b : model->bodies)
+-            if (b.bone != 0xFFFF && b.bone >= s.boneCount)
++            if (b.bone != 0xFFFF && b.bone >= boneCount)
+             {
+                 if (wxl::LogThrottle("phys.bones", 20, 0))
+-                    wxl::LogCat("PHYS", "physics: .phy2 for '%s' names bone %u but the model has %u", s.stem, b.bone, s.boneCount);
++                    wxl::LogCat("PHYS", "physics: .phy2 for '%s' names bone %u but the model has %u", stem, b.bone, boneCount);
+                 return;   // the physics does not fit this model
+             }
+ 
+         InstState& st = g_inst[instance];
+-        if (st.shared != s.shared || !st.sim)
++        if (st.shared != s.model || !st.sim)
+         {
+             st = InstState{};
+-            st.shared = s.shared;
++            st.shared = s.model;
+             st.model = model;
+             st.sim = std::make_unique<phys::Instance>(model.get());
+-            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), s.boneCount, g_guardCfg);
++            if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), boneCount, g_guardCfg);
+         }
+         st.lastSeen = now;
+ 
+@@ -410,53 +336,53 @@ namespace wxl::equip::physics
+         float dt = 0;
+         if (st.haveClock)
+         {
+-            if (s.clock != st.lastClock)
++            if (s.clockMs != st.lastClock)
+             {
+-                dt = float(s.clock - st.lastClock) * 0.001f;
++                dt = float(s.clockMs - st.lastClock) * 0.001f;
+                 st.stillSince = t0;
+             }
+-            else if (g_qpcFreq.QuadPart && double(t0.QuadPart - st.stillSince.QuadPart) / g_qpcFreq.QuadPart > 0.1)
++            else if (std::chrono::duration<double>(t0 - st.stillSince).count() > 0.1)
+             {
+-                dt = float(double(t0.QuadPart - st.lastQpc.QuadPart) / g_qpcFreq.QuadPart);
++                dt = float(std::chrono::duration<double>(t0 - st.lastTime).count());
+             }
+         }
+         else st.stillSince = t0;
+         if (dt < 0 || dt > 1.0f) dt = 0;   // clock wrapped or the instance was away
+         st.haveClock = true;
+-        st.lastClock = s.clock;
+-        st.lastQpc = t0;
++        st.lastClock = s.clockMs;
++        st.lastTime = t0;
+ 
+         // inputs
+-        std::vector<double> world(size_t(s.boneCount) * 16);
+-        for (uint32_t k = 0; k < s.boneCount; ++k)
+-            phys::World(&before[size_t(k) * 16], s.sceneMat, &world[size_t(k) * 16]);
++        std::vector<double> world(size_t(boneCount) * 16);
++        for (uint32_t k = 0; k < boneCount; ++k)
++            phys::World(&before[size_t(k) * 16], s.sceneMatrix, &world[size_t(k) * 16]);
+         phys::Frame f;
+         f.boneWorld = reinterpret_cast<const double (*)[16]>(world.data());
+         f.pivots = pivots.data();
+-        f.boneCount = s.boneCount;
+-        phys::World(s.ownMat, s.sceneMat, f.placement);
++        f.boneCount = boneCount;
++        phys::World(s.ownMatrix, s.sceneMatrix, f.placement);
+         f.dt = dt;
+         st.sim->Step(f);
+-        if (dt > 0 && ++g_stats.steps == 1) wxl::LogCat("PHYS", "physics: first simulation step ran ('%s')", s.stem);
++        if (dt > 0 && ++g_stats.steps == 1) wxl::LogCat("PHYS", "physics: first simulation step ran ('%s')", stem);
+ 
+         // outputs: each dynamic body's bone, then everything under a moved bone
+         std::vector<float> bones(before);
+-        std::vector<uint8_t> movedBytes(s.boneCount, 0);
++        std::vector<uint8_t> movedBytes(boneCount, 0);
+         bool any = false;
+         for (size_t b = 0; b < model->bodies.size(); ++b)
+         {
+             const uint16_t bone = model->bodies[b].bone;
+-            if (bone >= s.boneCount) continue;
++            if (bone >= boneCount) continue;
+             double M[16];
+             if (!st.sim->Output(b, M)) continue;
+-            phys::FromModel(M, s.ownMat, &bones[size_t(bone) * 16]);
++            phys::FromModel(M, s.ownMatrix, &bones[size_t(bone) * 16]);
+             movedBytes[bone] = 1;
+             any = true;
+         }
+         if (!any) return;
+-        std::unique_ptr<bool[]> moved(new bool[s.boneCount]);
+-        for (uint32_t k = 0; k < s.boneCount; ++k) moved[k] = movedBytes[k] != 0;
+-        phys::Carry(parents.data(), s.boneCount, before.data(), bones.data(), moved.get());
++        std::unique_ptr<bool[]> moved(new bool[boneCount]);
++        for (uint32_t k = 0; k < boneCount; ++k) moved[k] = movedBytes[k] != 0;
++        phys::Carry(parents.data(), boneCount, before.data(), bones.data(), moved.get());
+         for (float v : bones)
+             if (!(v == v)) { ++g_stats.faults; g_inst.erase(instance); return; }   // never write a NaN
+ 
+@@ -466,7 +392,7 @@ namespace wxl::equip::physics
+         {
+             // |simulated bone - animated bone| at each checked bone's pivot, in model units (the palette is
+             // camera-relative and carries the model's scale, so the distance is divided by that scale)
+-            const float* own = s.ownMat;
++            const float* own = s.ownMatrix;
+             const float scale = std::max(std::sqrt(own[4] * own[4] + own[5] * own[5] + own[6] * own[6]), 0.016f);
+             float dispBuf[64];
+             std::vector<float> dispHeap;
+@@ -496,7 +422,7 @@ namespace wxl::equip::physics
+                 if (teleport) ++g_stats.teleports; else ++g_stats.unstuck;
+                 if (wxl::LogThrottle("phys.unstick", 60, 50))
+                     wxl::LogCat("PHYS", "physics: %s '%s': %s, re-seeding (bone %u at %.0f%% of its limit, dt %.3f s)",
+-                                teleport ? "teleport" : "stuck", s.stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
++                                teleport ? "teleport" : "stuck", stem, teleport ? "placement moved far in one frame" : "bones far from the animated pose",
+                                 unsigned(worstBone), worst * 100.0f, dt);
+ 
+                 Penalty& pen = g_penalty[instance];
+@@ -508,28 +434,23 @@ namespace wxl::equip::physics
+                     pen.disabledUntil = now + kPenaltyOffMs;
+                     ++g_stats.disabled;
+                     if (wxl::LogThrottle("phys.disabled", 20, 0))
+-                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", s.stem, kPenaltyMax,
++                        wxl::LogCat("PHYS", "physics: '%s' re-seeded %u times in %u s: physics off for it for %u s", stem, kPenaltyMax,
+                                     kPenaltyWindowMs / 1000, kPenaltyOffMs / 1000);
+                 }
+                 g_inst.erase(instance);
+                 return;
+             }
+         }
+-        if (!SafeCopy(const_cast<C44Matrix*>(s.palette), bones.data(), bones.size() * sizeof(float)))
++        if (api->writePalette(instance, bones.data(), boneCount) != WXL_READ_OK)
+         {
+             ++g_stats.faults;
+             g_inst.erase(instance);
+             return;
+         }
+ 
+-        LARGE_INTEGER t1;
+-        QueryPerformanceCounter(&t1);
+-        if (g_qpcFreq.QuadPart)
+-        {
+-            const double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / g_qpcFreq.QuadPart;
+-            g_stats.lastFrameMs = ms;
+-            if (ms > g_stats.worstFrameMs) g_stats.worstFrameMs = ms;
+-        }
++        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
++        g_stats.lastFrameMs = ms;
++        if (ms > g_stats.worstFrameMs) g_stats.worstFrameMs = ms;
+         g_stats.live = uint32_t(g_inst.size());
+     }
+ }
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+similarity index 70%
+rename from Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
+rename to Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+index d2734c0..fa2b902 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsLive.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+@@ -1,19 +1,20 @@
+-// Runtime physics for model instances, built into the client.
++// Runtime physics for model instances: the WXL "physics" module.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+-// Ported from wxl-equip-plus (PhysicsLive.cpp). The simulation is the retail "Domino" engine port
+-// in physics_domino.{h,cpp}; this file only feeds the client's bone matrices into it and writes the
+-// simulated bones back.
++// Ported from wxl-equip-plus (PhysicsLive.cpp). The simulation is the retail "Domino" engine port in
++// physics_domino.{h,cpp}; this file feeds the client's bone matrices into it and writes the simulated bones
++// back. It is a DLL module (wxl_physics.dll, WXL\Modules\) and sees the client only through
++// Engine/Source/WXL/Sdk/wxl_api.h.
+ //
+-// Where the physics comes from: NOT one table for every model. Each model's physics sits in a
+-// .phy2 file beside the model, under the same name and in the same folder:
++// Where the physics comes from: NOT one table for every model. Each model's physics sits in a .phy2 file
++// beside the model, under the same name and in the same folder:
+ //
+ //     item\objectcomponents\weapon\staff_2h_raidmidnight_d_02.m2
+ //     item\objectcomponents\weapon\staff_2h_raidmidnight_d_02.phy2
+ //
+-// A model reached through a virtual path (VirtualPath.hpp) uses the .phy2 of the ORIGINAL .m2 the
+-// virtual path was made from. A model with no .phy2 is left alone. The .phy2 files come from
+-// tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
++// A model reached through a virtual path (VirtualPath.hpp) uses the .phy2 of the ORIGINAL .m2 the virtual
++// path was made from. A model with no .phy2 is left alone. The .phy2 files come from
++// Tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
+ //
+ // Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
+ //
+@@ -25,20 +26,22 @@
+ //                          placement jumps (teleport), is dropped and re-seeded from the animated pose
+ //     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
+ //     TeleportYards=6      a placement move farther than this in one frame is a teleport
++// and the multipliers of PhysicsTuning.hpp.
+ //
+-// The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT,
+-// original 0x0082F0F0). Init() subscribes AFTER the equip extension's own handler, and subscribers
+-// run in order, so physics sees the palette after the equip remap/mirror, as the injected build did.
+-// The event can fire on the client's animate threads: everything here is thread-safe.
++// The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT).
++// Modules load after the built-in extensions, so this subscriber runs after the equip extension's own and
++// sees the palette after its remap/mirror. The event can fire on the client's animate threads: everything
++// here is thread-safe.
+ #pragma once
+ 
++#include "wxl_api.h"
++
+ #include <cstdint>
+ 
+ namespace wxl::equip::physics
+ {
+-    /// Reads the ini and subscribes to OnBuildBonePalette. Call once, after the equip extension's
+-    /// Create() (so physics runs after the equip handler). Safe to call twice.
+-    void Init();
++    /// Reads the ini and subscribes to OnBuildBonePalette. Safe to call twice.
++    bool Init(const WxlApi* api);
+ 
+     bool Enabled();
+     /// Switches physics on or off at run time; instances go back to their animated pose.
+@@ -64,7 +67,6 @@ namespace wxl::equip::physics
+     };
+     Stats GetStats();
+ 
+-    /// The hook body (public so tests and tools can drive it): `instance` is a CM2Model* whose bone
+-    /// palette the engine has just written.
++    /// The hook body (public so tests can drive it): `instance` is the handle the event carried.
+     void AfterBonePalette(void* instance);
+ }
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+similarity index 99%
+rename from Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp
+rename to Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+index 82676dc..2f77cbf 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsTuning.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+@@ -1,7 +1,7 @@
+ // Global multipliers for the physics of every model. See PhysicsTuning.hpp.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ 
+-#include "Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp"
++#include "PhysicsTuning.hpp"
+ 
+ #include <algorithm>
+ #include <cmath>
+diff --git a/Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+similarity index 98%
+rename from Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp
+rename to Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+index 47fdfc9..553b753 100644
+--- a/Engine/Source/WXLEquip/Physics/PhysicsTuning.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+@@ -42,7 +42,7 @@
+ // (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
+ #pragma once
+ 
+-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
++#include "physics_domino.h"
+ 
+ #include <cstddef>
+ #include <memory>
+diff --git a/Engine/Source/WXLEquip/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+similarity index 96%
+rename from Engine/Source/WXLEquip/Physics/README.md
+rename to Engine/Source/WXLModules/Physics/README.md
+index a2542a4..6680e88 100644
+--- a/Engine/Source/WXLEquip/Physics/README.md
++++ b/Engine/Source/WXLModules/Physics/README.md
+@@ -1,3 +1,7 @@
++> **Physics is a WXL module now**: `wxl_physics.dll`, built from this folder, loaded from `WXL\Modules\` by the
++> 64-bit client. It sees the client only through `Engine/Source/WXL/Sdk/wxl_api.h` (see the README there).
++> Tests: `Tools/PhysicsGuardTest` (the engine and the guard) and `Tools/WxlModuleTest` (the module through the C ABI).
++
+ # Third-party: Kirazul's port of retail's physics engine
+ 
+ `physics_domino.h` and `physics_domino.cpp` are copied unchanged from
+diff --git a/Engine/Source/WXLEquip/Physics/physics_domino.cpp b/Engine/Source/WXLModules/Physics/physics_domino.cpp
+similarity index 100%
+rename from Engine/Source/WXLEquip/Physics/physics_domino.cpp
+rename to Engine/Source/WXLModules/Physics/physics_domino.cpp
+diff --git a/Engine/Source/WXLEquip/Physics/physics_domino.h b/Engine/Source/WXLModules/Physics/physics_domino.h
+similarity index 100%
+rename from Engine/Source/WXLEquip/Physics/physics_domino.h
+rename to Engine/Source/WXLModules/Physics/physics_domino.h
+diff --git a/Tools/PhysicsGuardTest/physics_guard_test.cpp b/Tools/PhysicsGuardTest/physics_guard_test.cpp
+index 9fcc23a..26ad176 100644
+--- a/Tools/PhysicsGuardTest/physics_guard_test.cpp
++++ b/Tools/PhysicsGuardTest/physics_guard_test.cpp
+@@ -1,8 +1,8 @@
+ // Test program for the physics "unstick" work. Standalone: no client, no CMake target.
+ //
+-//   g++ -std=c++17 -O1 -I <repo root> physics_guard_test.cpp \
+-//       <repo root>/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp \
+-//       <repo root>/Engine/Source/WXLEquip/Physics/physics_domino.cpp -o physics_guard_test
++//   g++ -std=c++17 -O1 -I <repo root>/Engine/Source/WXLModules/Physics physics_guard_test.cpp \
++//       <repo root>/Engine/Source/WXLModules/Physics/PhysicsGuard.cpp \
++//       <repo root>/Engine/Source/WXLModules/Physics/physics_domino.cpp -o physics_guard_test
+ //   ./physics_guard_test            (exit code 0 = every check passed)
+ //
+ // It drives the real engine (physics_domino.cpp, unchanged) with synthetic items and a character that
+@@ -11,7 +11,7 @@
+ //      flight of stairs; PrepareModel fixes it;
+ //   2. Judge never fires on a healthy item (no false positives);
+ //   3. Judge does fire on a flung chain (stuck) and on a teleport.
+-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
++#include "PhysicsGuard.hpp"
+ 
+ #include <cmath>
+ #include <cstdio>
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index 54aa4b3..96518de 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -38,6 +38,11 @@ target_include_directories(WowClient
+ 
+ target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+ 
++# The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
++if (TARGET wxl_physics)
++    add_dependencies(WowClient wxl_physics)
++endif ()
++
+ target_link_libraries(WowClient
+     PRIVATE
+         BLPFile
+@@ -57,6 +62,7 @@ target_link_libraries(WowClient
+         Model2
+         WXLCore
+         WXLEquip
++        WXLApi
+         Os
+         Scrn
+         Services
+diff --git a/Tools/WxlModuleTest/host_test.cpp b/Tools/WxlModuleTest/host_test.cpp
+new file mode 100644
+index 0000000..c65453a
+--- /dev/null
++++ b/Tools/WxlModuleTest/host_test.cpp
+@@ -0,0 +1,332 @@
++// End-to-end test of a WXL module through the C ABI, without the client.
++//
++//   build the module as a shared library, then this host (g++, Linux or MinGW), and run it from a folder that has
++//   data/item/objectcomponents/head/plume_test.phy2 (see make_test_data.py):
++//
++//   R=<repo root>; M=$R/Engine/Source/WXLModules/Physics
++//   g++ -std=c++17 -O1 -fPIC -shared -fvisibility=hidden -I $R/Engine/Source/WXL/Sdk -I $M $M/*.cpp -o libwxl_physics.so
++//   g++ -std=c++17 -O1 -I $R/Engine/Source/WXL/Sdk host_test.cpp -ldl -o host_test
++//   ./host_test ./libwxl_physics.so         (exit code 0 = every check passed)
++//
++// The host plays the core: it implements WxlApi on top of a fake model instance (a plume hanging from an anchor
++// bone), loads the module the way the client's loader does (ABI check, init, event subscription), fires
++// OnBuildBonePalette once per frame as a character jumps and climbs stairs, and checks what the module wrote
++// back into the palette.
++#include "wxl_api.h"
++
++#include <dlfcn.h>
++
++#include <cmath>
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <iterator>
++#include <map>
++#include <string>
++#include <vector>
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++
++    // ---- the fake client ------------------------------------------------------------------------
++    struct FakeInstance
++    {
++        std::string path = "item\\objectcomponents\\head\\plume_test.m2";
++        uint32_t    bones = 5;                 // 0 root, 1 anchor, 2..4 plume segments
++        uint32_t    clockMs = 0;
++        float       own[16];                   // row-vector layout, translation in [12..14]
++        std::vector<float> palette;            // bones x 16
++        int         readStage = 0;             // what readInstance reports (0 = fine)
++        const void* modelId = reinterpret_cast<const void*>(0x1000);
++    };
++    FakeInstance* g_inst = nullptr;
++
++    std::map<std::string, std::map<std::string, std::string>> g_ini;
++    std::vector<std::string> g_log;
++    struct Sub { std::string event; WxlEventHandler fn; void* user; };
++    std::vector<Sub> g_subs;
++    bool g_virtualKeys = false;
++    int g_blobsAllocated = 0, g_blobsFreed = 0;
++
++    void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
++    int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
++    int  ApiSubscribe(const char* name, WxlEventHandler fn, void* user)
++    {
++        if (std::strcmp(name, WXL_EVENT_BUILD_BONE_PALETTE) != 0) return 2;   // the fake core knows one event
++        g_subs.push_back({ name, fn, user });
++        return 0;
++    }
++    int ApiIniString(const char* sec, const char* key, char* out, size_t cap)
++    {
++        auto s = g_ini.find(sec);
++        if (s == g_ini.end()) return 0;
++        auto k = s->second.find(key);
++        if (k == s->second.end()) return 0;
++        std::snprintf(out, cap, "%s", k->second.c_str());
++        return 1;
++    }
++    int ApiIniInt(const char* sec, const char* key, int def)
++    {
++        char buf[64];
++        return ApiIniString(sec, key, buf, sizeof(buf)) ? std::atoi(buf) : def;
++    }
++    int ApiIniBool(const char* sec, const char* key, int def) { return ApiIniInt(sec, key, def) != 0; }
++    uint64_t ApiIniStamp() { return 1; }
++
++    int ApiReadFile(const char* name, WxlBuffer* out)
++    {
++        std::string p = std::string("data/") + name;
++        for (char& c : p) if (c == '\\') c = '/';
++        std::ifstream f(p, std::ios::binary);
++        if (!f) return 0;
++        std::vector<char> bytes((std::istreambuf_iterator<char>(f)), {});
++        if (bytes.empty()) return 0;
++        out->data = std::malloc(bytes.size());
++        std::memcpy(out->data, bytes.data(), bytes.size());
++        out->size = bytes.size();
++        ++g_blobsAllocated;
++        return 1;
++    }
++    void ApiFree(WxlBuffer* b) { if (b && b->data) { std::free(b->data); b->data = nullptr; b->size = 0; ++g_blobsFreed; } }
++    int  ApiIsVirtual(const char*) { return g_virtualKeys ? 1 : 0; }
++
++    int ApiReadInstance(void* inst, WxlInstanceView* v)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (!v || v->structSize < sizeof(*v)) return WXL_READ_NO_MODEL;
++        std::snprintf(v->path, sizeof(v->path), "%s", i->path.c_str());
++        v->model = i->modelId;
++        v->boneCount = i->bones;
++        if (i->readStage) return i->readStage;
++        v->clockMs = i->clockMs;
++        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
++        std::memcpy(v->sceneMatrix, identity, sizeof(identity));   // camera space == world space in this fake
++        std::memcpy(v->ownMatrix, i->own, sizeof(i->own));
++        return WXL_READ_OK;
++    }
++    int ApiReadBones(void* inst, uint32_t count, float* palette, int16_t* parents, float* pivots)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (count != i->bones) return WXL_READ_BONE_COUNT;
++        if (palette) std::memcpy(palette, i->palette.data(), size_t(count) * 64);
++        for (uint32_t k = 0; k < count; ++k)
++        {
++            // bone 0 root; 1 hangs from 0; 2 from 1; 3 from 2; 4 from 3
++            if (parents) parents[k] = k == 0 ? -1 : int16_t(k - 1);
++            if (pivots)
++            {
++                pivots[k * 3 + 0] = 0; pivots[k * 3 + 1] = 0;
++                pivots[k * 3 + 2] = k >= 2 ? -0.25f * float(k - 2) : 0.0f;   // matches the .phy2 bodies' rest origins
++            }
++        }
++        return WXL_READ_OK;
++    }
++    int ApiWritePalette(void* inst, const float* palette, uint32_t count)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (count != i->bones) return WXL_READ_BONE_COUNT;
++        std::memcpy(i->palette.data(), palette, size_t(count) * 64);
++        return WXL_READ_OK;
++    }
++
++    WxlApi MakeApi()
++    {
++        WxlApi a = {};
++        a.abiVersion = WXL_ABI_VERSION;
++        a.structSize = sizeof(WxlApi);
++        a.log = ApiLog; a.logThrottle = ApiThrottle; a.subscribe = ApiSubscribe;
++        a.iniGetString = ApiIniString; a.iniGetInt = ApiIniInt; a.iniGetBool = ApiIniBool; a.iniStamp = ApiIniStamp;
++        a.readFile = ApiReadFile; a.freeBuffer = ApiFree; a.isVirtualKey = ApiIsVirtual;
++        a.readInstance = ApiReadInstance; a.readBones = ApiReadBones; a.writePalette = ApiWritePalette;
++        return a;
++    }
++
++    void SetOwn(FakeInstance& i, double x, double y, double z)
++    {
++        const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, float(x),float(y),float(z),1 };
++        std::memcpy(i.own, m, sizeof(m));
++    }
++    // a still model: every bone's palette matrix is the instance's own matrix (no animation)
++    void ResetPalette(FakeInstance& i)
++    {
++        i.palette.assign(size_t(i.bones) * 16, 0.0f);
++        for (uint32_t k = 0; k < i.bones; ++k) std::memcpy(&i.palette[size_t(k) * 16], i.own, sizeof(i.own));
++    }
++
++    void Fire(FakeInstance& i)
++    {
++        WxlBuildBonePaletteArgs args = { &i };
++        for (const Sub& s : g_subs) s.fn(s.user, &args);
++    }
++
++    double Tip(const FakeInstance& i)   // world position of the last segment's origin (bone 4 translation row)
++    {
++        const float* m = &i.palette[4 * 16];
++        const float* own = i.own;
++        const double dx = m[12] - own[12], dy = m[13] - own[13], dz = m[14] - own[14];
++        return std::sqrt(dx * dx + dy * dy + dz * dz);
++    }
++
++    struct Module
++    {
++        void* h = nullptr;
++        WxlModuleAbiVersionFn abi = nullptr;
++        WxlModuleInitFn init = nullptr;
++        WxlModuleShutdownFn shutdown = nullptr;
++    };
++    Module Load(const char* path)
++    {
++        Module m;
++        m.h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++        if (!m.h) { std::printf("dlopen failed: %s\n", dlerror()); return m; }
++        m.abi = reinterpret_cast<WxlModuleAbiVersionFn>(dlsym(m.h, "WxlModuleAbiVersion"));
++        m.init = reinterpret_cast<WxlModuleInitFn>(dlsym(m.h, "WxlModuleInit"));
++        m.shutdown = reinterpret_cast<WxlModuleShutdownFn>(dlsym(m.h, "WxlModuleShutdown"));
++        return m;
++    }
++
++    // Plays a jump (and then a rest) and returns the largest the plume strayed from hanging straight.
++    struct Run { double maxStray = 0, finalStray = 0; bool nan = false; bool anchorTouched = false; uint32_t changedBones = 0; };
++    Run Play(FakeInstance& i, double fps, double jumpSeconds, double holdSeconds)
++    {
++        Run r;
++        const double dt = 1.0 / fps;
++        for (double t = 0; t <= jumpSeconds + holdSeconds + 1e-9; t += dt)
++        {
++            const double tt = std::min(t, jumpSeconds);
++            double z = 7.9555 * tt - 0.5 * 19.29 * tt * tt;
++            if (z < 0) z = 0;
++            SetOwn(i, -8913.2 + 7 * tt, 543.7, 122.4 + z);   // a real map position
++            ResetPalette(i);                                  // what the engine just built
++            const std::vector<float> before = i.palette;
++            i.clockMs += uint32_t(dt * 1000.0 + 0.5);
++            Fire(i);
++            for (float v : i.palette) if (!(v == v)) r.nan = true;
++            for (uint32_t k = 0; k < i.bones; ++k)
++                if (std::memcmp(&before[size_t(k) * 16], &i.palette[size_t(k) * 16], 64) != 0)
++                {
++                    if (k <= 1) r.anchorTouched = true;
++                    if (k >= 2) ++r.changedBones;
++                }
++            const double d = Tip(i);
++            r.maxStray = std::max(r.maxStray, d);
++            if (t > jumpSeconds) r.finalStray = d;
++        }
++        return r;
++    }
++}
++
++int main(int argc, char** argv)
++{
++    const char* path = argc > 1 ? argv[1] : "./libwxl_physics.so";
++    std::printf("module: %s\n", path);
++
++    std::printf("1. loading, as the client's loader does\n");
++    Module m = Load(path);
++    Check(m.h && m.abi && m.init, "exports WxlModuleAbiVersion and WxlModuleInit");
++    if (!m.h || !m.abi || !m.init) return 1;
++    Check(m.abi() == WXL_ABI_VERSION, "reports the ABI it was built for");
++    Check(dlsym(m.h, "Instance") == nullptr && dlsym(m.h, "_ZN3wxl6LogCatEPKcS1_z") == nullptr,
++          "exports nothing but the module entry points (engine and helper symbols are hidden)");
++
++    WxlApi api = MakeApi();
++    g_ini["Physics"]["Enabled"] = "1";
++    WxlModuleInfo info = {}; info.structSize = sizeof(info);
++
++    WxlApi tooNew = api; tooNew.abiVersion = 99;
++    Check(m.init(&tooNew, &info) != 0, "refuses a core with another ABI version (and subscribes to nothing)");
++    Check(g_subs.empty(), "...so no handler is left behind");
++    WxlApi tooShort = api; tooShort.structSize = offsetof(WxlApi, readBones);
++    Check(m.init(&tooShort, &info) != 0, "refuses a core whose table lacks the model-instance calls");
++
++    Check(m.init(&api, &info) == 0, "initializes against a good core");
++    Check(std::strcmp(info.name, "physics") == 0 && info.versionMajor == 1, "names itself");
++    Check(g_subs.size() == 1, "subscribed to OnBuildBonePalette once");
++
++    std::printf("2. a plume on a jumping character, found through its own .phy2\n");
++    FakeInstance inst; inst.palette.assign(size_t(inst.bones) * 16, 0.0f);
++    SetOwn(inst, -8913.2, 543.7, 122.4); ResetPalette(inst);
++    {
++        inst.readStage = WXL_READ_NOT_ANIMATED;
++        const auto before = inst.palette;
++        Fire(inst);
++        Check(inst.palette == before, "an instance that is not animated yet is left alone");
++        inst.readStage = WXL_READ_OK;
++    }
++    Run run = Play(inst, 60, 1.0, 5.0);
++    std::printf("     plume strays up to %.2f yd from hanging straight; %.3f yd at the end\n", run.maxStray, run.finalStray);
++    Check(run.changedBones > 100, "the module rewrote the dynamic bones' palette entries");
++    Check(!run.anchorTouched, "the root and the anchor bone were never touched");
++    Check(!run.nan, "no NaN in the palette");
++    Check(run.maxStray > 0.02, "the plume actually swings during the jump");
++    Check(run.finalStray < 0.3, "and hangs near straight again once the character stops");
++    Check(g_blobsAllocated > 0 && g_blobsAllocated == g_blobsFreed, "every buffer the core handed out went back through freeBuffer");
++    bool matched = false;
++    for (const auto& l : g_log) if (l.find("MATCH") != std::string::npos) matched = true;
++    Check(matched, "logged the match through the core's log");
++
++    std::printf("3. a virtual path uses the .phy2 of the base model\n");
++    {
++        FakeInstance v; v.path = "item\\objectcomponents\\head\\plume_test_12345.m2"; v.modelId = reinterpret_cast<const void*>(0x2000);
++        v.palette.assign(size_t(v.bones) * 16, 0.0f);
++        g_virtualKeys = false;
++        Run noKey = Play(v, 60, 0.6, 0.2);
++        Check(noKey.changedBones == 0, "the same name is just another model when it is not a minted key (no .phy2 of its own)");
++        // the core answers the same way for a name every time, and the module caches by name: a minted key is a new name
++        FakeInstance v2; v2.path = "item\\objectcomponents\\head\\plume_test_67890.m2"; v2.modelId = reinterpret_cast<const void*>(0x3000);
++        v2.palette.assign(size_t(v2.bones) * 16, 0.0f);
++        g_virtualKeys = true;
++        Run withKey = Play(v2, 60, 0.6, 0.2);
++        g_virtualKeys = false;
++        Check(withKey.changedBones > 20, "once the core says it is a minted key, plume_test.phy2 (the base model's) drives it");
++    }
++
++    std::printf("4. models that must be left alone\n");
++    {
++        FakeInstance other; other.path = "creature\\wolf\\wolf.m2"; other.modelId = reinterpret_cast<const void*>(0x4000);
++        other.palette.assign(size_t(other.bones) * 16, 0.0f);
++        Check(Play(other, 60, 0.5, 0.1).changedBones == 0, "a model with no .phy2 is not touched");
++    }
++
++    std::printf("5. switched off in the ini\n");
++    {
++        // a second copy of the module under another file name has its own state: init it with Enabled=0
++        std::system((std::string("cp ") + path + " ./libwxl_physics_off.so").c_str());
++        Module off = Load("./libwxl_physics_off.so");
++        Check(off.init != nullptr, "a second copy of the module loads");
++        g_subs.clear();
++        g_ini["Physics"]["Enabled"] = "0";
++        WxlModuleInfo info2 = {}; info2.structSize = sizeof(info2);
++        Check(off.init && off.init(&api, &info2) == 0, "initializes with [Physics] Enabled=0");
++        FakeInstance idle; idle.modelId = reinterpret_cast<const void*>(0x6000);
++        idle.palette.assign(size_t(idle.bones) * 16, 0.0f);
++        Check(Play(idle, 60, 0.4, 0.1).changedBones == 0, "and then changes no palette");
++        g_ini["Physics"]["Enabled"] = "1";
++    }
++
++    std::printf("6. WxlModuleShutdown\n");
++    {
++        Check(m.shutdown != nullptr, "exports WxlModuleShutdown");
++        if (m.shutdown) m.shutdown();
++        // the first copy's handler was dropped from g_subs when section 5 cleared it: fire it directly the way the engine would
++        FakeInstance late; late.modelId = reinterpret_cast<const void*>(0x5000);
++        late.palette.assign(size_t(late.bones) * 16, 0.0f);
++        g_subs.clear();
++        WxlApi api3 = MakeApi();
++        Module again = Load(path);                       // same handle: same state, already shut down
++        WxlModuleInfo info3 = {}; info3.structSize = sizeof(info3);
++        Check(again.init && again.init(&api3, &info3) == 0, "a second init on a running module is harmless");
++        Check(g_subs.empty(), "...and subscribes nothing new");
++    }
++
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/make_test_data.py b/Tools/WxlModuleTest/make_test_data.py
+new file mode 100644
+index 0000000..b1c6f13
+--- /dev/null
++++ b/Tools/WxlModuleTest/make_test_data.py
+@@ -0,0 +1,49 @@
++#!/usr/bin/env python3
++"""Writes data/item/objectcomponents/head/plume_test.phys and .phy2 for host_test: a plume of three dynamic
++segments hanging from one kinematic anchor, in the retail .phys layout; the .phy2 is made by
++Tools/m2_extract_phys.py, the same converter the client's files come from.
++
++    python make_test_data.py          (run it in the folder host_test is run from)
++"""
++import os
++import struct
++import subprocess
++import sys
++
++def chunk(tag, payload):
++    return tag[::-1] + struct.pack('<I', len(payload)) + payload   # tags are stored byte-reversed
++
++def body(typ, bone, pos, first, count, grav, inertia, lin, ang, carry, group):
++    b = struct.pack('<HH3f', typ, bone, *pos) + struct.pack('<H', first) + b'\0\0' + struct.pack('<i', count)
++    b += struct.pack('<5f', grav, inertia, lin, ang, carry) + struct.pack('<H', group) + b'\0\0'
++    assert len(b) == 0x30
++    return b
++
++def shape(st, si, friction, restitution, density):
++    return struct.pack('<hh', st, si) + b'\0' * 4 + struct.pack('<3f', friction, restitution, density) + b'\0' * 12
++
++SEGS, L = 3, 0.25
++bodies = body(0, 1, (0, 0, 0), 0, 1, 0, 1, 0, 0, 0.9, 0)          # kinematic anchor on bone 1
++shapes = shape(2, 0, 0.5, 0.0, 1.0)                                 # sphere
++sphs = struct.pack('<4f', 0, 0, 0, 0.05)
++caps = joints = shj = b''
++for i in range(SEGS):
++    bodies += body(1, 2 + i, (0, 0, -L * i), 1 + i, 1, 1.0, 1.0, 2.0, 2.0, 0.0, 0)   # dynamic segment on bone 2+i
++    shapes += shape(1, i, 0.5, 0.0, 1.0)
++    caps += struct.pack('<7f', 0, 0, 0, 0, 0, -L, 0.03)
++    frame = (1, 0, 0, 0, 1, 0, 0, 0, 1)
++    anchor = (0, 0, 0) if i == 0 else (0, 0, -L)
++    rec = struct.pack('<9f', *frame) + struct.pack('<3f', *anchor) + struct.pack('<9f', *frame) + struct.pack('<3f', 0, 0, 0)
++    rec += struct.pack('<4f', -45, 45, 45, 0) + b'\0' * 4 + struct.pack('<2f', 0, 0)
++    assert len(rec) == 0x7C
++    shj += rec
++    joints += struct.pack('<II', i, i + 1) + b'\0' * 4 + struct.pack('<hh', 1, i)
++
++blob = (chunk(b'PHYS', struct.pack('<I', 6)) + chunk(b'BDY4', bodies) + chunk(b'SHP2', shapes) + chunk(b'CAPS', caps) +
++        chunk(b'SPHS', sphs) + chunk(b'JOIN', joints) + chunk(b'SHJ2', shj))
++folder = os.path.join('data', 'item', 'objectcomponents', 'head')
++os.makedirs(folder, exist_ok=True)
++phys = os.path.join(folder, 'plume_test.phys')
++open(phys, 'wb').write(blob)
++tool = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'm2_extract_phys.py')
++sys.exit(subprocess.call([sys.executable, tool, phys, '--overwrite']))
+diff --git a/WoW/Source/Client.cpp b/WoW/Source/Client.cpp
+index 0578642..d09294c 100644
+--- a/WoW/Source/Client.cpp
++++ b/WoW/Source/Client.cpp
+@@ -113,6 +113,7 @@
+ #include "WoW/Source/WowSvcs/WowSvcsClient/FriendList.h"
+ #include "WoW/Source/WowSysMessageOutput.h"
+ #include "Engine/Source/WXL/WXL.h"
++#include "Engine/Source/WXLApi/ApiHost.h"
+ #include "Engine/Source/WXLEquip/Equip.h"
+ 
+ namespace {
+@@ -1740,6 +1741,7 @@ bool InitializeGlobal() {
+     BaseInitializeGlobal();
+     wxl::InitModules();
+     wxl::equip::Init();
++    wxl::api::LoadModules();   // WXL\Modules\*.dll, after the built-in extensions so their handlers run first
+     EventInitialize(1, 0);
+ 
+     CVar* timingTestError = CVar::Register("timingTestError", "Error reported by the timing validation system", 6, "0", nullptr, CATEGORY_DEFAULT, false, nullptr, false);

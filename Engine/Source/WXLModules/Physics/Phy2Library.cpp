@@ -1,7 +1,7 @@
 // Per-model physics files. See Phy2Library.hpp.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 
-#include "Engine/Source/WXLEquip/Physics/Phy2Library.hpp"
+#include "Phy2Library.hpp"
 
 #include <algorithm>
 #include <cstring>

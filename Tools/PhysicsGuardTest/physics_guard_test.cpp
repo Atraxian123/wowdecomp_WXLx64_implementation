@@ -1,8 +1,8 @@
 // Test program for the physics "unstick" work. Standalone: no client, no CMake target.
 //
-//   g++ -std=c++17 -O1 -I <repo root> physics_guard_test.cpp \
-//       <repo root>/Engine/Source/WXLEquip/Physics/PhysicsGuard.cpp \
-//       <repo root>/Engine/Source/WXLEquip/Physics/physics_domino.cpp -o physics_guard_test
+//   g++ -std=c++17 -O1 -I <repo root>/Engine/Source/WXLModules/Physics physics_guard_test.cpp \
+//       <repo root>/Engine/Source/WXLModules/Physics/PhysicsGuard.cpp \
+//       <repo root>/Engine/Source/WXLModules/Physics/physics_domino.cpp -o physics_guard_test
 //   ./physics_guard_test            (exit code 0 = every check passed)
 //
 // It drives the real engine (physics_domino.cpp, unchanged) with synthetic items and a character that
@@ -11,7 +11,7 @@
 //      flight of stairs; PrepareModel fixes it;
 //   2. Judge never fires on a healthy item (no false positives);
 //   3. Judge does fire on a flung chain (stuck) and on a teleport.
-#include "Engine/Source/WXLEquip/Physics/PhysicsGuard.hpp"
+#include "PhysicsGuard.hpp"
 
 #include <cmath>
 #include <cstdio>

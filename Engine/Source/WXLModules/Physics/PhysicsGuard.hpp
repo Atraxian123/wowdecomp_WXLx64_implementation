@@ -20,7 +20,7 @@
 //    physics_domino.cpp, "item bodies are made with sleeping off"), so "stuck" is never sleep.
 #pragma once
 
-#include "Engine/Source/WXLEquip/Physics/physics_domino.h"
+#include "physics_domino.h"
 
 #include <cstddef>
 #include <cstdint>
