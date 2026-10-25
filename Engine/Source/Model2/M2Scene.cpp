@@ -1852,7 +1852,17 @@ int32_t CM2Scene::Animate(const C3Vector& cameraPos) {
 
             M2Material* material = &data->m_materials[batch->m_materialIndex];
             int32_t projected = (batch->m_flags & 4) && this->m_projectTextureCallback;
-            M2Material* baseMaterial = batch->m_materialLayer ? &data->m_materials[batch->m_materialIndex - batch->m_materialLayer] : material;
+            // WXL x64: materialIndex - materialLayer can be negative when a material is shared across layers/meshes.
+            // The unsigned operator[] then indexes ~16 GB past the array on 64-bit (it silently wrapped on 32-bit).
+            M2Material* baseMaterial = material;
+
+            if (batch->m_materialLayer) {
+                int32_t baseIndex = static_cast<int32_t>(batch->m_materialIndex) - static_cast<int32_t>(batch->m_materialLayer);
+
+                if (baseIndex >= 0 && static_cast<uint32_t>(baseIndex) < data->m_materials.m_count) {
+                    baseMaterial = &data->m_materials[static_cast<uint32_t>(baseIndex)];
+                }
+            }
             int32_t transparent = baseMaterial->m_blendMode > 1 || alpha < 0.99998999f;
             CShaderEffect* effect = optimized ? model->m_optGeo->m_effects[i] : model->m_shared->m_effects[i];
 
