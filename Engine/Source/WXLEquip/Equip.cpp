@@ -4,10 +4,8 @@
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
-#include "Engine/Source/WXLEquip/CreatureExtension.hpp"
 #include "Engine/Source/WXLEquip/EquipExtension.hpp"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
-#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -91,14 +89,14 @@ namespace wxl::equip
 
     void Init()
     {
-        wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and extensions");
+        wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and the equip extension");
         wxl::storage::SetNativeReader(&ReadThroughSFile);
         wxl::scripts::equipextension::VPathRegister();
         wxl::scripts::equipextension::Create();
-        wxl::scripts::weaponextension::Create();
-        wxl::scripts::creatureextension::Create();
-        // Physics is a module now (WXL\Modules\wxl_physics.dll, loaded by wxl::api::LoadModules() right after
-        // this): modules subscribe after the extensions above, so they see the palette after the equip remap.
+        // Weapon, creature and physics are modules now (WXL\Modules\wxl_weapon.dll, wxl_creature.dll,
+        // wxl_physics.dll), loaded by wxl::api::LoadModules() right after this. They subscribe after the
+        // equip extension, as they did when they were created after it; equip reaches the weapon module
+        // through the "weapon" service (WeaponService.hpp).
         ReportSidecarsOnDisk();
 
         // One glance at which events have handlers; "fired" counts follow once the game reaches each hook.

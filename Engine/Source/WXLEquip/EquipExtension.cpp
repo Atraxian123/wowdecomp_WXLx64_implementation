@@ -15,8 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Engine/Source/WXLEquip/EquipExtension.hpp"
-#include "Engine/Source/WXLEquip/CreatureExtension.hpp"
-#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
+#include "Engine/Source/WXLEquip/WeaponService.hpp"
 #include "Engine/Source/WXLEquip/EngineAccess.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 #include "Engine/Source/WXL/Event.h"

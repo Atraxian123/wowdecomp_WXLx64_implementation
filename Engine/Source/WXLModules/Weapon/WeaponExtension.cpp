@@ -14,11 +14,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#include "Engine/Source/WXLEquip/WeaponExtension.hpp"
-#include "Engine/Source/WXLEquip/VirtualPath.hpp"
-#include "Engine/Source/WXL/Event.h"
-#include "Engine/Source/WXL/Log.h"
-#include "Engine/Source/WXL/Storage.h"
+#include "WeaponExtension.hpp"
+#include "wxl_module.hpp"
 
 #include <windows.h>
 

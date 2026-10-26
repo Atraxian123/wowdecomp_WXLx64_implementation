@@ -9,12 +9,16 @@
 
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
+#include "Engine/Source/WXL/Services.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLApi/ModelAccess.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace wxl::api
@@ -90,6 +94,60 @@ namespace wxl::api
 
         int IsVirtualKey(const char* name) { return name && eq::VPathIsVirtualKey(name) ? 1 : 0; }
 
+        const char* WorkingDirectory() { return wxl::WorkingDirectory(); }
+
+        // ---- virtual paths: the core's table, behind plain C signatures ----
+        int VPathPopulateGlobal(const WxlVPathGlobal* p)
+        {
+            if (!p || p->structSize < sizeof(WxlVPathGlobal)) return 0;
+            return eq::VPathPopulateGlobal(p->realMdxPath, p->itemDisplayId, p->texPath, p->materialPatchSpec, p->geoIds,
+                                           p->geoCount, p->evictable != 0, p->outVirtualPath, p->outVirtualPathSz,
+                                           p->evictionPool ? p->evictionPool : "Creature", p->forceBake != 0,
+                                           p->mirrorAcrossY != 0, p->keySuffix) ? 1 : 0;
+        }
+        int VPathPopulateGlobalSharedKey(const char* keySourcePath, const char* byteSourcePath, uint32_t itemDisplayId,
+                                         const char* texPath, const char* materialPatchSpec, const uint16_t* geoIds,
+                                         uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz)
+        {
+            return eq::VPathPopulateGlobalSharedKey(keySourcePath, byteSourcePath, itemDisplayId, texPath, materialPatchSpec,
+                                                    geoIds, geoCount, outVirtualPath, outVirtualPathSz) ? 1 : 0;
+        }
+        int VPathPopulate(void* cmo, const char* realMdxPath, const uint16_t* geoIds, uint32_t geoCount, const char* texPath,
+                          uint32_t variantKey, const char* materialPatchSpec)
+        {
+            return eq::VPathPopulate(cmo, realMdxPath, geoIds, geoCount, texPath, variantKey, materialPatchSpec) ? 1 : 0;
+        }
+        void VPathEvictCmo(void* cmo) { eq::VPathEvictCmo(cmo); }
+        int VPathDecodeGlobalVirtualKey(const char* name, char* outNorm, size_t outNormSz, uint32_t* outDisplayId)
+        {
+            return eq::VPathDecodeGlobalVirtualKey(name, outNorm, outNormSz, outDisplayId) ? 1 : 0;
+        }
+
+        // The core's lazy resolvers are bare function pointers with no user data, so a module's resolver
+        // (a C function returning int) is reached through one of a fixed set of trampolines.
+        constexpr size_t kMaxResolvers = 8;
+        WxlVPathLazyResolver g_resolvers[kMaxResolvers] = {};
+        template <size_t N> bool Trampoline(const char* name) { return g_resolvers[N] && g_resolvers[N](name) != 0; }
+        template <size_t... I> constexpr std::array<eq::VPathLazyResolver, sizeof...(I)> MakeTrampolines(std::index_sequence<I...>)
+        {
+            return { &Trampoline<I>... };
+        }
+        void VPathRegisterLazyResolver(WxlVPathLazyResolver resolver)
+        {
+            static std::mutex lock;
+            static size_t used = 0;
+            static const auto tramps = MakeTrampolines(std::make_index_sequence<kMaxResolvers>());
+            if (!resolver) return;
+            std::lock_guard<std::mutex> g(lock);
+            if (used >= kMaxResolvers) { wxl::LogCat("MODULE", "vpathRegisterLazyResolver: more than %zu resolvers, ignored", kMaxResolvers); return; }
+            g_resolvers[used] = resolver;
+            eq::VPathRegisterLazyResolver(tramps[used]);
+            ++used;
+        }
+
+        int RegisterService(const char* name, const void* table, size_t size) { return wxl::services::Register(name, table, size) ? 0 : 1; }
+        const void* GetService(const char* name, size_t* size) { return wxl::services::Get(name, size); }
+
         const WxlApi g_table = {
             WXL_ABI_VERSION,
             sizeof(WxlApi),
@@ -106,6 +164,15 @@ namespace wxl::api
             &wxl::api::model::ReadInstance,
             &wxl::api::model::ReadBones,
             &wxl::api::model::WritePalette,
+            &WorkingDirectory,
+            &VPathPopulateGlobal,
+            &VPathPopulateGlobalSharedKey,
+            &VPathPopulate,
+            &VPathEvictCmo,
+            &VPathRegisterLazyResolver,
+            &VPathDecodeGlobalVirtualKey,
+            &RegisterService,
+            &GetService,
         };
     }
 

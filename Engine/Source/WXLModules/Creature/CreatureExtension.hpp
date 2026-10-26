@@ -18,9 +18,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "Engine/Source/WXL/EventScript.h"
+#include "wxl_module.hpp"
 
-#include "Engine/Source/WXL/Event.h"
 
 namespace wxl::scripts::creatureextension
 {

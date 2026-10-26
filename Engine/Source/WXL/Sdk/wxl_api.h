@@ -66,11 +66,16 @@ _Static_assert(sizeof(void*) == 8, "WXL modules are 64-bit only");
  * the opaque pointer given to subscribe() and a const pointer to that event's args struct. */
 typedef void (*WxlEventHandler)(void* user, const void* args);
 
+#define WXL_EVENT_MODEL_LOAD_PRE     "OnModelLoadPre"
+#define WXL_EVENT_MODEL_LOAD         "OnModelLoad"
 #define WXL_EVENT_BUILD_BONE_PALETTE "OnBuildBonePalette"
 #define WXL_EVENT_UPDATE             "OnUpdate"
 #define WXL_EVENT_WORLD_ENTER        "OnWorldEnter"
 #define WXL_EVENT_WORLD_LEAVE        "OnWorldLeave"
 
+/* OnModelLoadPre (a model's raw bytes are read, before parse) and OnModelLoad (parsed): `model` is the
+ * engine's model object, an opaque handle. */
+typedef struct WxlModelLoadArgs { void* model; } WxlModelLoadArgs;
 /* OnBuildBonePalette: the engine has just filled the bone palette of one model instance. A subscriber may
  * overwrite it through writePalette. Handlers run in subscription order, and modules load after the
  * built-in extensions, so a module sees the palette after they have had their say. */
@@ -126,6 +131,31 @@ typedef struct WxlInstanceView
     char        path[WXL_PATH_MAX];/* the model's path as the engine keyed it (a virtual path for minted models) */
 } WxlInstanceView;
 
+/* ---- virtual paths ---------------------------------------------------------------------------- */
+
+/* The core owns the virtual-file table that makes the client open a model that does not exist on disk: a
+ * model's bytes patched in memory (geosets kept, textures and materials replaced, mirrored...) and served
+ * under a minted path. These are its public entry points. */
+typedef int (*WxlVPathLazyResolver)(const char* normalizedVirtualPathName);   /* 1 = baked it, the open can go on */
+
+typedef struct WxlVPathGlobal
+{
+    uint32_t        structSize;          /* sizeof(WxlVPathGlobal), set by the caller */
+    const char*     realMdxPath;         /* the real model the bytes come from */
+    uint32_t        itemDisplayId;
+    const char*     texPath;
+    const char*     materialPatchSpec;   /* "TextureType=Path|TextureType=Path|..." or NULL */
+    const uint16_t* geoIds;              /* geosets to keep, or NULL for all */
+    uint32_t        geoCount;
+    int             evictable;
+    char*           outVirtualPath;      /* receives the minted path, or NULL */
+    size_t          outVirtualPathSz;
+    const char*     evictionPool;        /* "Creature" when NULL */
+    int             forceBake;
+    int             mirrorAcrossY;
+    const char*     keySuffix;           /* NULL for none */
+} WxlVPathGlobal;
+
 /* ---- the table -------------------------------------------------------------------------------- */
 
 typedef struct WxlApi
@@ -162,10 +192,46 @@ typedef struct WxlApi
      * pivots: boneCount x 3 floats. Any of the three may be NULL. count must equal the instance's bone count. */
     int  (*readBones)(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots);
     int  (*writePalette)(void* instance, const float* palette, uint32_t count);
+
+    /* ---- added after the first model-instance members; check WXL_API_HAS before using ---- */
+
+    /* the client's working directory (where WXL.log and loose sidecars live) */
+    const char* (*workingDirectory)(void);
+
+    /* virtual paths (see above). vpathPopulate is the per-character variant, keyed by the character-model
+     * object `cmo`; the global ones are keyed by display id. */
+    int  (*vpathPopulateGlobal)(const WxlVPathGlobal* params);
+    int  (*vpathPopulateGlobalSharedKey)(const char* keySourcePath, const char* byteSourcePath, uint32_t itemDisplayId,
+                                         const char* texPath, const char* materialPatchSpec, const uint16_t* geoIds,
+                                         uint32_t geoCount, char* outVirtualPath, size_t outVirtualPathSz);
+    int  (*vpathPopulate)(void* cmo, const char* realMdxPath, const uint16_t* geoIds, uint32_t geoCount,
+                          const char* texPath, uint32_t variantKey, const char* materialPatchSpec);
+    void (*vpathEvictCmo)(void* cmo);
+    void (*vpathRegisterLazyResolver)(WxlVPathLazyResolver resolver);
+    int  (*vpathDecodeGlobalVirtualKey)(const char* virtualPathName, char* outNormPath, size_t outNormPathSz,
+                                        uint32_t* outDisplayId);
+
+    /* services: one module offers a table of C function pointers, another looks it up by name when it needs
+     * it (so load order does not matter and a missing provider is a NULL answer). The table must outlive
+     * the process's use of it; the core never looks inside. */
+    int         (*registerService)(const char* name, const void* table, size_t size);
+    const void* (*getService)(const char* name, size_t* size);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \
     ((api) && (api)->structSize >= offsetof(WxlApi, member) + sizeof(((WxlApi*)0)->member))
+
+/* ---- services the built-in modules offer ----------------------------------------------------- */
+
+/* "weapon": the weapon module's answers to the equip extension, which decides what to attach to a hand. */
+#define WXL_SERVICE_WEAPON "weapon"
+typedef struct WxlWeaponService
+{
+    uint32_t structSize;
+    int (*getVirtualPath)(uint32_t displayId, uint32_t column, char* out, size_t outSz);
+    int (*getOffhandVirtualPath)(uint32_t displayId, uint32_t column, char* out, size_t outSz, int* outAutoMirrored);
+    int (*mirrorIsGeometric)(void);
+} WxlWeaponService;
 
 /* ---- what a module exports -------------------------------------------------------------------- */
 

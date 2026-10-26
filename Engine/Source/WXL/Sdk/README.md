@@ -1,8 +1,9 @@
 # WXL module API (64-bit client)
 
 A **module** is a DLL in `<client folder>\WXL\Modules\` that extends the client through `wxl_api.h` and nothing
-else. The built-in extensions (equip, weapon, creature) are still compiled into the client; the physics is the
-first extension that is a module (`Engine/Source/WXLModules/Physics`).
+else. Modules today (`Engine/Source/WXLModules/`): **physics**, **creature** and **weapon**. The equip extension
+is still compiled into the client (its engine calls are the next additions to the table); it asks the weapon
+module for what to attach to a hand through the `"weapon"` service.
 
 ## Why this shape
 
@@ -67,15 +68,32 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
 | Ini | `iniGetString/Int/Bool`, `iniStamp` (WXLExtendedEquipment.ini) |
 | Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |
 | Model instances | `readInstance`, `readBones`, `writePalette` |
+| Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |
+| Services | `registerService` / `getService`: a module offers a table of C function pointers by name, another looks it up when it needs it (`"weapon"` is the first, `WxlWeaponService`). Load order does not matter; a missing provider is a NULL answer |
+| Misc | `workingDirectory` |
 
-The equip, weapon and creature extensions need more (item/creature display records, attaching models, texture
-creation); those calls are the next additions to the table, and their sources move to modules the same way the
-physics did: engine access through the table, sources that include only `wxl_api.h`.
+### Moving code that was written inside the client
+
+`wxl_module.hpp` is a header-only C++ layer over the table that keeps the names the in-tree code used
+(`wxl::LogCat`, `wxl::storage::ReadNative`, `wxl::events::EventScript::on<>`, the `equipextension::VPath*` and
+`WxlIni*` functions). The weapon and creature sources moved to modules by changing their `#include` lines to it
+and nothing else; `Module.cpp` calls `wxl::module::Bind(api)` and then the extension's own `Create()`.
+
+The equip extension still needs engine calls the table does not have yet (`CreateModel`, attach to a parent,
+texture creation, the item/race display records): those are the next additions, behind the same kind of C
+functions, and `EquipExtension.cpp` then moves the same way.
 
 ## Tests
 
-`Tools/WxlModuleTest/host_test.cpp` is a fake core: it builds a module as a shared library, loads it through
-the C ABI, fires `OnBuildBonePalette` for a plume on a jumping character and checks what the module wrote back
-(ABI refusals, buffer ownership, virtual-key lookup, the ini switch, shutdown). `make_test_data.py` builds its
-`.phy2` with the repo's own converter. The part that cannot be tested off Windows is `WXLApi/ModelAccess.cpp`
-(it reads the real `CM2Model`) and the Win32 loader.
+`Tools/WxlModuleTest` holds fake cores that load a module as a shared library through the C ABI (each file starts
+with its build line; `stub/windows.h` is just enough of the Windows header to build the modules off Windows):
+
+* `host_test.cpp` (physics): ABI refusals, buffer ownership, virtual-key lookup, the ini switch, shutdown, and a
+  plume on a jumping character whose palette the module rewrites. `make_test_data.py` builds its `.phy2`.
+* `creature_test.cpp`: the module reads the project's real `WXLCreatureModels.csv` / `WXLCreatureTextures.csv`
+  and, through its lazy resolver, asks the core to bake display 33112 with geosets 0/101/201 and its four
+  texture layers.
+* `weapon_service_test.cpp`: the weapon module registers its service in the core's real registry and the
+  in-tree `WeaponService.cpp` (the equip side) gets a baked path back through it.
+
+What cannot be tested off Windows is `WXLApi/ModelAccess.cpp` (it reads the real `CM2Model`) and the Win32 loader.
