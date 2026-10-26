@@ -25,3 +25,8 @@ target_include_directories(WXLCore
 if(WIN32)
     target_link_libraries(WXLCore PUBLIC dbghelp)
 endif()
+
+# ModuleRegistry.h includes the module API header, which refuses a 32-bit build unless told it only declares.
+if (NOT WOWDECOMP_ARCH_64)
+    target_compile_definitions(WXLCore PUBLIC WXL_ALLOW_32BIT_HEADER=1)
+endif()

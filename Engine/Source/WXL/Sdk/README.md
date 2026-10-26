@@ -70,7 +70,11 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
 | Model instances | `readInstance`, `readBones`, `writePalette` |
 | Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |
 | Services | `registerService` / `getService`: a module offers a table of C function pointers by name, another looks it up when it needs it (`"weapon"` is the first, `WxlWeaponService`). Load order does not matter; a missing provider is a NULL answer |
+| Virtual files | `registerFileProvider` (the core asks the module for every file open, before the archives; the module copies the bytes into a buffer the core allocates), `registerVirtualKeyQuery` |
+| Client files | `fileExists` (can the client open this name? opens and closes, reads nothing) |
 | Misc | `workingDirectory` |
+
+The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file id -> path service (`"wxl.listfile.v1"`, `wxl_listfile_api.h`) other modules call.
 
 ### Moving code that was written inside the client
 

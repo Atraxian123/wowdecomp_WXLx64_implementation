@@ -39,7 +39,7 @@ target_include_directories(WowClient
 target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
 
 # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
-foreach (wxl_module wxl_physics wxl_creature wxl_weapon)
+foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
     if (TARGET ${wxl_module})
         add_dependencies(WowClient ${wxl_module})
     endif ()

@@ -21,6 +21,7 @@
  *   - Exceptions must not leave a module function or a handler.
  *   - Handlers run on whatever thread the engine fires the event on (the animate threads, for
  *     OnBuildBonePalette): a module guards its own state.
+ *   - A virtual file provider copies its bytes into a buffer the core allocates (WxlServeSink).
  *   - The table only ever grows at its end. A module checks WXL_API_HAS(api, member) before it calls a
  *     member that is newer than ABI 1.0.
  *   - A model "instance" and a loaded "model" are opaque handles: a module compares them, keeps them as
@@ -92,6 +93,24 @@ typedef struct WxlBuffer
     void*  data;
     size_t size;
 } WxlBuffer;
+
+/* A module can answer a file open with bytes it holds (virtual files). The core calls the provider for every
+ * open, before it looks in the archives, so a provider must reject a name it does not own cheaply.
+ *
+ * The bytes go into a buffer the CORE allocates: call sink->reserve(sink->ctx, size) for a writable block of
+ * exactly `size` bytes, copy the file into it, return 1. Return 0 (without calling reserve) for a name that is
+ * not yours. Nothing is allocated in one DLL and freed in another. A provider may be entered again on the
+ * same thread while it is serving (its own populate reads real files through the client, which asks the
+ * providers again): guard its state accordingly. Handlers run on loader threads. */
+typedef struct WxlServeSink
+{
+    void* ctx;
+    void* (*reserve)(void* ctx, size_t size);   /* NULL when the core could not allocate */
+} WxlServeSink;
+typedef int (*WxlFileProviderFn)(void* user, const char* name, const WxlServeSink* sink);
+
+/* "Is this name a virtual path one of your providers minted?" Used by isVirtualKey for the other modules. */
+typedef int (*WxlVirtualKeyFn)(void* user, const char* name);
 
 /* ---- model instances -------------------------------------------------------------------------- */
 
@@ -216,6 +235,19 @@ typedef struct WxlApi
      * the process's use of it; the core never looks inside. */
     int         (*registerService)(const char* name, const void* table, size_t size);
     const void* (*getService)(const char* name, size_t* size);
+
+    /* ---- added after the services: check WXL_API_HAS(api, member) before using one ---- */
+
+    /* virtual files: the provider is asked for every file open, before the archives. Providers run in
+     * registration order, the first to answer wins. Register during WxlModuleInit. 0 on success. */
+    int  (*registerFileProvider)(WxlFileProviderFn fn, void* user);
+    /* virtual paths: isVirtualKey answers 1 when any registered query does. Register during init. */
+    int  (*registerVirtualKeyQuery)(WxlVirtualKeyFn fn, void* user);
+
+    /* 1 when the client can open the name (archives, then loose files under Data\, then any module's virtual
+     * files), 0 when it cannot. Opens and closes the file, reads nothing: use it to ask "is it there?" without
+     * paying for the bytes. Quiet on a miss. */
+    int  (*fileExists)(const char* name);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

@@ -53,6 +53,20 @@ namespace wxl::equip
             return false;
         }
 
+        // "Is it there?" without reading it: the same two opens as ReadThroughSFile (archives only, then archives
+        // plus loose files under Data\), closed again at once. A name a module serves virtually counts as there.
+        bool ExistsThroughSFile(const char* name)
+        {
+            for (uint32_t flags = 0; flags <= 1; ++flags)
+            {
+                SFileImpl* file = nullptr;
+                if (!SFile::OpenEx(nullptr, name, flags, &file) || !file) continue;
+                SFileCloseFile(file);
+                return true;
+            }
+            return false;
+        }
+
         // Where do the sidecars live right now? Answers "does it actually see my CSVs" before any model
         // loads. Only the working directory can be checked this early: game archives are not mounted yet.
         void ReportSidecarsOnDisk()
@@ -91,6 +105,7 @@ namespace wxl::equip
     {
         wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and the equip extension");
         wxl::storage::SetNativeReader(&ReadThroughSFile);
+        wxl::storage::SetNativeExists(&ExistsThroughSFile);
         wxl::scripts::equipextension::VPathRegister();
         wxl::scripts::equipextension::Create();
         // Weapon, creature and physics are modules now (WXL\Modules\wxl_weapon.dll, wxl_creature.dll,

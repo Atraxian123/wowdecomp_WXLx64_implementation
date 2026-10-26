@@ -42,6 +42,12 @@ namespace wxl::storage
     void SetNativeReader(NativeReadFn fn);
     bool ReadNative(const char* name, std::vector<uint8_t>& out);
 
+    /// Existence probe installed next to the native reader: opens the name the way the client does and closes it
+    /// again without reading. Providers see this open too (a virtual file "exists").
+    using NativeExistsFn = bool (*)(const char* name);
+    void SetNativeExists(NativeExistsFn fn);
+    bool ExistsNative(const char* name);
+
     /// Same read without the log lines on a miss, for callers that probe for files that are normally
     /// absent (a module looking for a per-model sidecar next to every model it sees).
     bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out);

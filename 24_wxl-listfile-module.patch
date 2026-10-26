@@ -1,0 +1,2286 @@
+diff --git a/Engine/Source/WXL/CMakeLists.txt b/Engine/Source/WXL/CMakeLists.txt
+index 065ae5f..ea0aaf1 100644
+--- a/Engine/Source/WXL/CMakeLists.txt
++++ b/Engine/Source/WXL/CMakeLists.txt
+@@ -25,3 +25,8 @@ target_include_directories(WXLCore
+ if(WIN32)
+     target_link_libraries(WXLCore PUBLIC dbghelp)
+ endif()
++
++# ModuleRegistry.h includes the module API header, which refuses a 32-bit build unless told it only declares.
++if (NOT WOWDECOMP_ARCH_64)
++    target_compile_definitions(WXLCore PUBLIC WXL_ALLOW_32BIT_HEADER=1)
++endif()
+diff --git a/Engine/Source/WXL/ModuleRegistry.cpp b/Engine/Source/WXL/ModuleRegistry.cpp
+new file mode 100644
+index 0000000..986e116
+--- /dev/null
++++ b/Engine/Source/WXL/ModuleRegistry.cpp
+@@ -0,0 +1,98 @@
++// See ModuleRegistry.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "Engine/Source/WXL/ModuleRegistry.h"
++
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/Storage.h"
++
++#include <atomic>
++#include <cstdint>
++#include <mutex>
++#include <vector>
++
++namespace wxl::registry
++{
++    namespace
++    {
++        constexpr uint32_t kMaxEntries = 16;
++
++        // A fixed array whose entries are written before the count that publishes them, so a loader thread
++        // that is already inside a file open reads it without a lock (providers run on every open).
++        template <class Fn>
++        struct Slots
++        {
++            struct Entry { Fn fn = nullptr; void* user = nullptr; };
++            Entry                 entries[kMaxEntries];
++            std::atomic<uint32_t> count{ 0 };
++            std::mutex            writeLock;
++
++            int Add(Fn fn, void* user)
++            {
++                if (!fn) return 1;
++                std::lock_guard<std::mutex> lock(writeLock);
++                const uint32_t n = count.load(std::memory_order_relaxed);
++                if (n >= kMaxEntries) return 2;
++                entries[n] = Entry{ fn, user };
++                count.store(n + 1, std::memory_order_release);
++                return 0;
++            }
++        };
++
++        Slots<WxlFileProviderFn>& Providers() { static Slots<WxlFileProviderFn> s; return s; }
++        Slots<WxlVirtualKeyFn>&   Queries()   { static Slots<WxlVirtualKeyFn> s;   return s; }
++
++        // The core's side of WxlServeSink: grow the vector the storage layer handed us.
++        void* Reserve(void* ctx, size_t size)
++        {
++            try
++            {
++                auto* out = static_cast<std::vector<uint8_t>*>(ctx);
++                out->resize(size);
++                return out->data();
++            }
++            catch (...) { return nullptr; }
++        }
++
++        // The one provider the storage layer knows about. It asks every module provider in turn.
++        bool Dispatch(const char* name, std::vector<uint8_t>& out)
++        {
++            auto& slots = Providers();
++            const uint32_t n = slots.count.load(std::memory_order_acquire);
++            const WxlServeSink sink = { &out, &Reserve };
++            for (uint32_t i = 0; i < n; ++i)
++            {
++                out.clear();
++                if (slots.entries[i].fn(slots.entries[i].user, name, &sink) && !out.empty()) return true;
++                out.clear();   // a provider that said no (or served nothing) leaves no half-filled buffer behind
++            }
++            return false;
++        }
++    }
++
++    int RegisterFileProvider(WxlFileProviderFn fn, void* user)
++    {
++        const int rc = Providers().Add(fn, user);
++        if (rc != 0) return rc;
++
++        static std::once_flag s_installed;
++        std::call_once(s_installed, [] { wxl::storage::RegisterProvider(&Dispatch); });
++        wxl::LogCat("MODULE", "file provider registered (module providers: %u)", Providers().count.load());
++        return 0;
++    }
++
++    int RegisterVirtualKeyQuery(WxlVirtualKeyFn fn, void* user)
++    {
++        return Queries().Add(fn, user);
++    }
++
++    int IsVirtualKey(const char* name)
++    {
++        if (!name || !*name) return 0;
++        auto& slots = Queries();
++        const uint32_t n = slots.count.load(std::memory_order_acquire);
++        for (uint32_t i = 0; i < n; ++i)
++            if (slots.entries[i].fn(slots.entries[i].user, name)) return 1;
++        return 0;
++    }
++}
+diff --git a/Engine/Source/WXL/ModuleRegistry.h b/Engine/Source/WXL/ModuleRegistry.h
+new file mode 100644
+index 0000000..8c28496
+--- /dev/null
++++ b/Engine/Source/WXL/ModuleRegistry.h
+@@ -0,0 +1,24 @@
++// What modules register with the core: virtual file providers and virtual-key queries. (Services live in Services.h.)
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Engine-free on purpose (it needs the storage layer's provider hook and the log, nothing else): it lives in WXLCore so
++// WXLEquip can reach it, and it can be built and tested without the client. WXLApi/ApiTable.cpp puts a C-ABI face on it.
++#pragma once
++
++#include "Engine/Source/WXL/Sdk/wxl_api.h"
++
++namespace wxl::registry
++{
++    /// Adds a module's file provider. The first one registered also installs the single core provider
++    /// (wxl::storage::RegisterProvider) that fans a file open out to every module provider, in registration
++    /// order. Meant for WxlModuleInit time: reads are lock-free, so registering while the client is already
++    /// opening files from loader threads is allowed but the new provider only becomes visible afterwards.
++    /// @return 0 on success, 1 for a null function, 2 when the table of providers is full.
++    int RegisterFileProvider(WxlFileProviderFn fn, void* user);
++
++    /// @return 0 on success, 1 for a null function, 2 when the table is full.
++    int RegisterVirtualKeyQuery(WxlVirtualKeyFn fn, void* user);
++
++    /// 1 when any registered query claims the name.
++    int IsVirtualKey(const char* name);
++}
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+index 099a0f7..37e1220 100644
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -70,8 +70,12 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
+ | Model instances | `readInstance`, `readBones`, `writePalette` |
+ | Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |
+ | Services | `registerService` / `getService`: a module offers a table of C function pointers by name, another looks it up when it needs it (`"weapon"` is the first, `WxlWeaponService`). Load order does not matter; a missing provider is a NULL answer |
++| Virtual files | `registerFileProvider` (the core asks the module for every file open, before the archives; the module copies the bytes into a buffer the core allocates), `registerVirtualKeyQuery` |
++| Client files | `fileExists` (can the client open this name? opens and closes, reads nothing) |
+ | Misc | `workingDirectory` |
+ 
++The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file id -> path service (`"wxl.listfile.v1"`, `wxl_listfile_api.h`) other modules call.
++
+ ### Moving code that was written inside the client
+ 
+ `wxl_module.hpp` is a header-only C++ layer over the table that keeps the names the in-tree code used
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 85edef7..ff7f242 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -21,6 +21,7 @@
+  *   - Exceptions must not leave a module function or a handler.
+  *   - Handlers run on whatever thread the engine fires the event on (the animate threads, for
+  *     OnBuildBonePalette): a module guards its own state.
++ *   - A virtual file provider copies its bytes into a buffer the core allocates (WxlServeSink).
+  *   - The table only ever grows at its end. A module checks WXL_API_HAS(api, member) before it calls a
+  *     member that is newer than ABI 1.0.
+  *   - A model "instance" and a loaded "model" are opaque handles: a module compares them, keeps them as
+@@ -93,6 +94,24 @@ typedef struct WxlBuffer
+     size_t size;
+ } WxlBuffer;
+ 
++/* A module can answer a file open with bytes it holds (virtual files). The core calls the provider for every
++ * open, before it looks in the archives, so a provider must reject a name it does not own cheaply.
++ *
++ * The bytes go into a buffer the CORE allocates: call sink->reserve(sink->ctx, size) for a writable block of
++ * exactly `size` bytes, copy the file into it, return 1. Return 0 (without calling reserve) for a name that is
++ * not yours. Nothing is allocated in one DLL and freed in another. A provider may be entered again on the
++ * same thread while it is serving (its own populate reads real files through the client, which asks the
++ * providers again): guard its state accordingly. Handlers run on loader threads. */
++typedef struct WxlServeSink
++{
++    void* ctx;
++    void* (*reserve)(void* ctx, size_t size);   /* NULL when the core could not allocate */
++} WxlServeSink;
++typedef int (*WxlFileProviderFn)(void* user, const char* name, const WxlServeSink* sink);
++
++/* "Is this name a virtual path one of your providers minted?" Used by isVirtualKey for the other modules. */
++typedef int (*WxlVirtualKeyFn)(void* user, const char* name);
++
+ /* ---- model instances -------------------------------------------------------------------------- */
+ 
+ /* readInstance / readBones / writePalette return 0 on success, otherwise the step that stopped them.
+@@ -216,6 +235,19 @@ typedef struct WxlApi
+      * the process's use of it; the core never looks inside. */
+     int         (*registerService)(const char* name, const void* table, size_t size);
+     const void* (*getService)(const char* name, size_t* size);
++
++    /* ---- added after the services: check WXL_API_HAS(api, member) before using one ---- */
++
++    /* virtual files: the provider is asked for every file open, before the archives. Providers run in
++     * registration order, the first to answer wins. Register during WxlModuleInit. 0 on success. */
++    int  (*registerFileProvider)(WxlFileProviderFn fn, void* user);
++    /* virtual paths: isVirtualKey answers 1 when any registered query does. Register during init. */
++    int  (*registerVirtualKeyQuery)(WxlVirtualKeyFn fn, void* user);
++
++    /* 1 when the client can open the name (archives, then loose files under Data\, then any module's virtual
++     * files), 0 when it cannot. Opens and closes the file, reads nothing: use it to ask "is it there?" without
++     * paying for the bytes. Quiet on a miss. */
++    int  (*fileExists)(const char* name);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXL/Sdk/wxl_listfile_api.h b/Engine/Source/WXL/Sdk/wxl_listfile_api.h
+new file mode 100644
+index 0000000..fb6ad37
+--- /dev/null
++++ b/Engine/Source/WXL/Sdk/wxl_listfile_api.h
+@@ -0,0 +1,93 @@
++/*
++ * WarcraftXL listfile module: the service it publishes (ABI 1, see wxl_api.h).
++ * Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++ *
++ * wxl_listfile.dll turns a file id into a file path using <client folder>\WXL\listfile.csv. Any module (or the
++ * client) can use it: fetch the table once,
++ *
++ *     const WxlListfileServices* lf = WxlListfileGet(api);      // NULL when the module is not loaded
++ *     char path[260];
++ *     lf->resolve(fileId, WXL_LISTFILE_TEXTURE, path, sizeof(path));
++ *     ... open `path`: when the file was not found it holds a name the client cannot open, so the client's own
++ *     ... missing-texture (green) / missing-model (cube) handling takes over ...
++ *
++ * A module that needs it while it initializes must load AFTER wxl_listfile.dll (modules load in file-name order,
++ * so name it like "20_mymodule.dll"), or fetch the table on first use instead of in WxlModuleInit.
++ *
++ * Paths come back in the client's own form: backslashes, and otherwise exactly as the listfile spells them.
++ * Plain C types only. Every function may be called from any thread. The table only ever grows at its end
++ * (check WXL_LISTFILE_HAS before calling a member added after the first release).
++ */
++#ifndef WXL_LISTFILE_API_H
++#define WXL_LISTFILE_API_H
++
++#include "wxl_api.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define WXL_SERVICE_LISTFILE "wxl.listfile.v1"
++
++/* What the caller expects the file to be. Only matters when the file is not found: the not-found name then gets the
++ * extension of that kind (.blp / .m2), so the client sends it down the loader that has the right fallback. */
++enum
++{
++    WXL_LISTFILE_ANY     = 0,   /* unknown or other: the not-found name has no extension */
++    WXL_LISTFILE_TEXTURE = 1,   /* a .blp */
++    WXL_LISTFILE_MODEL   = 2    /* an .m2 */
++};
++
++/* What resolve / resolvePath return. */
++enum
++{
++    WXL_LISTFILE_ERROR    = -1, /* bad arguments, or `out` too small for the path (nothing written) */
++    WXL_LISTFILE_NOTFOUND = 0,  /* not found: `out` holds the NOT-FOUND NAME ([Listfile] NotFoundName, default
++                                 * "WXL\\NotFound", plus .blp / .m2 by kind). It is not a file in the client: open it
++                                 * and the client falls back to its own default texture / model. Logged. */
++    WXL_LISTFILE_FOUND    = 1   /* `out` holds the file's own path */
++};
++
++typedef struct WxlListfileServices
++{
++    uint32_t structSize;        /* sizeof(WxlListfileServices) in the publisher */
++
++    /* The path the listfile gives a file id, as written there (backslashes). Pure table lookup: no not-found name,
++     * no check that the file exists. Returns 1 and fills out, 0 when the id is not in the listfile (logged once
++     * per id), -1 when out is too small. */
++    int  (*lookupPath)(uint32_t fileId, char* out, size_t outSize);
++
++    /* The path to open for a file id. Looks the id up; when the id is in the listfile but the client cannot open
++     * the file, or the id is not in the listfile at all, `out` gets the not-found name for `kind` and a line goes
++     * to the log. Returns WXL_LISTFILE_FOUND / _NOTFOUND / _ERROR. */
++    int  (*resolve)(uint32_t fileId, uint32_t kind, char* out, size_t outSize);
++
++    /* The same for a path the caller already has: the path itself when the client can open it, otherwise the
++     * not-found name for `kind` (WXL_LISTFILE_ANY: by the path's own extension, .blp or .m2, else none). */
++    int  (*resolvePath)(const char* path, uint32_t kind, char* out, size_t outSize);
++
++    /* Entries in the table: the eager table's size, 0 when the table is read at run time. */
++    uint32_t (*entryCount)(void);
++
++    /* 1 when the table was built at load ([Listfile] Eager=1), 0 when lookups read listfile.csv at run time. */
++    int  (*isEager)(void);
++
++    /* Throw away what was cached or built and read listfile.csv again (after it was edited). 1 on success. */
++    int  (*reload)(void);
++} WxlListfileServices;
++
++#define WXL_LISTFILE_HAS(table, member) \
++    ((table) && (table)->structSize >= offsetof(WxlListfileServices, member) + sizeof(((WxlListfileServices*)0)->member))
++
++/* The service, or NULL when the listfile module is not loaded (yet). */
++static inline const WxlListfileServices* WxlListfileGet(const WxlApi* api)
++{
++    return (api && WXL_API_HAS(api, getService))
++        ? (const WxlListfileServices*)api->getService(WXL_SERVICE_LISTFILE, NULL) : NULL;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* WXL_LISTFILE_API_H */
+diff --git a/Engine/Source/WXL/Storage.cpp b/Engine/Source/WXL/Storage.cpp
+index f04ea08..a5b9e96 100644
+--- a/Engine/Source/WXL/Storage.cpp
++++ b/Engine/Source/WXL/Storage.cpp
+@@ -14,7 +14,8 @@ namespace wxl::storage
+             return s_providers;
+         }
+ 
+-        NativeReadFn g_nativeReader = nullptr;
++        NativeReadFn   g_nativeReader = nullptr;
++        NativeExistsFn g_nativeExists = nullptr;
+     }
+ 
+     void RegisterProvider(ProviderFn fn)
+@@ -64,6 +65,16 @@ namespace wxl::storage
+         wxl::LogCat("STORAGE", "native reader %s", fn ? "installed" : "cleared");
+     }
+ 
++    void SetNativeExists(NativeExistsFn fn)
++    {
++        g_nativeExists = fn;
++    }
++
++    bool ExistsNative(const char* name)
++    {
++        return g_nativeExists && name && *name && g_nativeExists(name);
++    }
++
+     bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out)
+     {
+         return g_nativeReader && name && g_nativeReader(name, out);
+diff --git a/Engine/Source/WXL/Storage.h b/Engine/Source/WXL/Storage.h
+index df41fe6..0890f92 100644
+--- a/Engine/Source/WXL/Storage.h
++++ b/Engine/Source/WXL/Storage.h
+@@ -42,6 +42,12 @@ namespace wxl::storage
+     void SetNativeReader(NativeReadFn fn);
+     bool ReadNative(const char* name, std::vector<uint8_t>& out);
+ 
++    /// Existence probe installed next to the native reader: opens the name the way the client does and closes it
++    /// again without reading. Providers see this open too (a virtual file "exists").
++    using NativeExistsFn = bool (*)(const char* name);
++    void SetNativeExists(NativeExistsFn fn);
++    bool ExistsNative(const char* name);
++
+     /// Same read without the log lines on a miss, for callers that probe for files that are normally
+     /// absent (a module looking for a per-model sidecar next to every model it sees).
+     bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out);
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+index 239b43f..bbfcd2f 100644
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -9,6 +9,7 @@
+ 
+ #include "Engine/Source/WXL/Event.h"
+ #include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/ModuleRegistry.h"
+ #include "Engine/Source/WXL/Services.h"
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLApi/ModelAccess.h"
+@@ -92,7 +93,11 @@ namespace wxl::api
+             buffer->size = 0;
+         }
+ 
+-        int IsVirtualKey(const char* name) { return name && eq::VPathIsVirtualKey(name) ? 1 : 0; }
++        // Virtual paths are minted by the client's own VirtualPath and, as modules take that over, by modules.
++        int IsVirtualKey(const char* name)
++        {
++            return name && (eq::VPathIsVirtualKey(name) || wxl::registry::IsVirtualKey(name)) ? 1 : 0;
++        }
+ 
+         const char* WorkingDirectory() { return wxl::WorkingDirectory(); }
+ 
+@@ -148,6 +153,11 @@ namespace wxl::api
+         int RegisterService(const char* name, const void* table, size_t size) { return wxl::services::Register(name, table, size) ? 0 : 1; }
+         const void* GetService(const char* name, size_t* size) { return wxl::services::Get(name, size); }
+ 
++        int RegisterFileProvider(WxlFileProviderFn fn, void* user)   { return wxl::registry::RegisterFileProvider(fn, user); }
++        int RegisterVirtualKeyQuery(WxlVirtualKeyFn fn, void* user)  { return wxl::registry::RegisterVirtualKeyQuery(fn, user); }
++
++        int FileExists(const char* name) { return wxl::storage::ExistsNative(name) ? 1 : 0; }
++
+         const WxlApi g_table = {
+             WXL_ABI_VERSION,
+             sizeof(WxlApi),
+@@ -173,6 +183,9 @@ namespace wxl::api
+             &VPathDecodeGlobalVirtualKey,
+             &RegisterService,
+             &GetService,
++            &RegisterFileProvider,
++            &RegisterVirtualKeyQuery,
++            &FileExists,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index 4bd142e..c6afb98 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -53,6 +53,20 @@ namespace wxl::equip
+             return false;
+         }
+ 
++        // "Is it there?" without reading it: the same two opens as ReadThroughSFile (archives only, then archives
++        // plus loose files under Data\), closed again at once. A name a module serves virtually counts as there.
++        bool ExistsThroughSFile(const char* name)
++        {
++            for (uint32_t flags = 0; flags <= 1; ++flags)
++            {
++                SFileImpl* file = nullptr;
++                if (!SFile::OpenEx(nullptr, name, flags, &file) || !file) continue;
++                SFileCloseFile(file);
++                return true;
++            }
++            return false;
++        }
++
+         // Where do the sidecars live right now? Answers "does it actually see my CSVs" before any model
+         // loads. Only the working directory can be checked this early: game archives are not mounted yet.
+         void ReportSidecarsOnDisk()
+@@ -91,6 +105,7 @@ namespace wxl::equip
+     {
+         wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and the equip extension");
+         wxl::storage::SetNativeReader(&ReadThroughSFile);
++        wxl::storage::SetNativeExists(&ExistsThroughSFile);
+         wxl::scripts::equipextension::VPathRegister();
+         wxl::scripts::equipextension::Create();
+         // Weapon, creature and physics are modules now (WXL\Modules\wxl_weapon.dll, wxl_creature.dll,
+diff --git a/Engine/Source/WXLModules/Listfile/CMakeLists.txt b/Engine/Source/WXLModules/Listfile/CMakeLists.txt
+new file mode 100644
+index 0000000..8796f33
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/CMakeLists.txt
+@@ -0,0 +1,26 @@
++# WXL listfile module: wxl_listfile.dll, loaded from <client folder>\WXL\Modules\ by the 64-bit client.
++# File id -> file path from <client folder>\WXL\listfile.csv, with stand-ins for files that are not there. It is built
++# against Engine/Source/WXL/Sdk (wxl_api.h, wxl_listfile_api.h) and its own folder only: no engine header, no import
++# library of the client. Other modules use it through the service table in wxl_listfile_api.h.
++if (NOT WOWDECOMP_ARCH_64)
++    message(STATUS "WXL modules are 64-bit only: wxl_listfile is not built")
++    return()
++endif ()
++
++file(GLOB LISTFILE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
++
++add_library(wxl_listfile SHARED ${LISTFILE_SOURCES})
++
++target_include_directories(wxl_listfile
++    PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/Engine/Source/WXL/Sdk
++)
++
++set_target_properties(wxl_listfile PROPERTIES
++    PREFIX ""
++    CXX_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON
++    # "$<1:...>" keeps Visual Studio from adding a Debug/Release sub-folder: the loader looks in WXL\Modules
++    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/bin/Win/WXL/Modules>"
++)
+diff --git a/Engine/Source/WXLModules/Listfile/ListfileTable.cpp b/Engine/Source/WXLModules/Listfile/ListfileTable.cpp
+new file mode 100644
+index 0000000..7082ae5
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/ListfileTable.cpp
+@@ -0,0 +1,313 @@
++// See ListfileTable.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "ListfileTable.hpp"
++
++#include <algorithm>
++#include <chrono>
++#include <cstdarg>
++#include <cstdio>
++#include <cstring>
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX   // windows.h must not turn std::min / std::max into macros
++#endif
++#include <windows.h>
++#endif
++
++namespace wxl::listfile
++{
++    namespace
++    {
++        constexpr size_t   kChunk         = 1u << 20;      // streaming read size
++        constexpr size_t   kMaxCache      = 65536;         // runtime-mode cache entries before it is cleared
++        constexpr uint64_t kMaxBlobBytes  = 0xFFFFFFF0ull; // offsets are 32-bit
++
++        // A UTF-8 path to a FILE*: the client folder may hold characters outside the ANSI code page.
++        FILE* OpenRead(const std::string& utf8)
++        {
++#if defined(_WIN32)
++            const int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
++            if (n <= 0) return nullptr;
++            std::wstring w(static_cast<size_t>(n), L'\0');
++            MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, &w[0], n);
++            return _wfopen(w.c_str(), L"rb");
++#else
++            return std::fopen(utf8.c_str(), "rb");
++#endif
++        }
++
++        void LogF(LogFn log, const char* fmt, ...)
++        {
++            if (!log) return;
++            char line[512];
++            va_list ap;
++            va_start(ap, fmt);
++            std::vsnprintf(line, sizeof(line), fmt, ap);
++            va_end(ap);
++            log(line);
++        }
++
++        // Streams the file line by line (no line is ever longer than the carry buffer can grow: it is a std::string).
++        // fn(begin, end) returns false to stop. A UTF-8 BOM at the start is skipped. @return false when it cannot open.
++        template <class Fn>
++        bool ForEachLine(const std::string& path, Fn&& fn, uint64_t* fileSize = nullptr)
++        {
++            FILE* f = OpenRead(path);
++            if (!f) return false;
++            if (fileSize)
++            {
++                *fileSize = 0;
++                if (std::fseek(f, 0, SEEK_END) == 0)
++                {
++                    const long sz = std::ftell(f);
++                    if (sz > 0) *fileSize = static_cast<uint64_t>(sz);
++                    std::fseek(f, 0, SEEK_SET);
++                }
++            }
++
++            std::vector<char> buf(kChunk);
++            std::string carry;
++            bool first = true, stop = false;
++            size_t got;
++            while (!stop && (got = std::fread(buf.data(), 1, buf.size(), f)) > 0)
++            {
++                const char* p   = buf.data();
++                const char* end = p + got;
++                if (first)
++                {
++                    first = false;
++                    if (got >= 3 && static_cast<unsigned char>(p[0]) == 0xEF && static_cast<unsigned char>(p[1]) == 0xBB &&
++                        static_cast<unsigned char>(p[2]) == 0xBF) p += 3;
++                }
++                while (p < end)
++                {
++                    const char* nl = static_cast<const char*>(std::memchr(p, '\n', static_cast<size_t>(end - p)));
++                    if (!nl) { carry.append(p, end); break; }
++                    if (carry.empty())
++                    {
++                        if (!fn(p, nl)) { stop = true; break; }
++                    }
++                    else
++                    {
++                        carry.append(p, nl);
++                        const bool go = fn(carry.data(), carry.data() + carry.size());
++                        carry.clear();
++                        if (!go) { stop = true; break; }
++                    }
++                    p = nl + 1;
++                }
++            }
++            if (!stop && !carry.empty()) fn(carry.data(), carry.data() + carry.size());   // last line without a newline
++            std::fclose(f);
++            return true;
++        }
++    }
++
++    LineKind ParseLine(const char* b, const char* e, uint32_t& id, const char*& pb, const char*& pe)
++    {
++        while (b < e && (*b == ' ' || *b == '\t')) ++b;
++        while (e > b && (e[-1] == '\r' || e[-1] == '\n' || e[-1] == ' ' || e[-1] == '\t')) --e;
++        if (b == e) return LineKind::Blank;
++
++        uint64_t value = 0;
++        const char* p = b;
++        while (p < e && *p >= '0' && *p <= '9')
++        {
++            value = value * 10 + static_cast<uint64_t>(*p - '0');
++            if (value > 0xFFFFFFFFull) return LineKind::Bad;
++            ++p;
++        }
++        if (p == b || p >= e || (*p != ';' && *p != ',')) return LineKind::Bad;
++        ++p;
++        while (p < e && (*p == ' ' || *p == '\t')) ++p;
++        if (p == e) return LineKind::Bad;
++
++        id = static_cast<uint32_t>(value);
++        pb = p;
++        pe = e;
++        return LineKind::Data;
++    }
++
++    bool Table::Build(std::shared_ptr<State>& out)
++    {
++        const auto t0 = std::chrono::steady_clock::now();
++        auto st = std::make_shared<State>();
++        LoadStats& s = st->stats;
++
++        bool firstLine = true;
++        uint32_t prevId = 0;
++        uint64_t fileSize = 0;
++        bool truncated = false, reserved = false;
++        uint64_t badLogged = 0;
++
++        const bool opened = ForEachLine(m_path, [&](const char* b, const char* e) {
++            uint32_t id = 0;
++            const char *pb = nullptr, *pe = nullptr;
++            const LineKind kind = ParseLine(b, e, id, pb, pe);
++            if (kind == LineKind::Blank) return true;
++            if (kind == LineKind::Bad)
++            {
++                if (firstLine) { s.header = true; firstLine = false; return true; }   // "fileId;path" and the like
++                ++s.badLines;
++                if (badLogged < 3)
++                {
++                    ++badLogged;
++                    LogF(m_log, "listfile: skipped a line that is not '<id>;<path>' (line %llu)",
++                         static_cast<unsigned long long>(s.lines + s.badLines + (s.header ? 1 : 0)));
++                }
++                return true;
++            }
++            firstLine = false;
++            ++s.lines;
++
++            if (st->blob.size() + static_cast<size_t>(pe - pb) + 1 > kMaxBlobBytes) { truncated = true; return false; }
++            if (!reserved && fileSize)
++            {
++                // ~40 bytes a line is typical; the blob holds the paths, which are most of the file
++                reserved = true;
++                st->entries.reserve(static_cast<size_t>(fileSize / 40 + 16));
++                st->blob.reserve(static_cast<size_t>(std::min<uint64_t>(fileSize * 85 / 100, kMaxBlobBytes)));
++            }
++            const uint32_t offset = static_cast<uint32_t>(st->blob.size());
++            for (const char* c = pb; c < pe; ++c) st->blob.push_back(*c == '/' ? '\\' : *c);
++            st->blob.push_back('\0');
++            if (!st->entries.empty() && id < prevId) s.sorted = false;
++            prevId = id;
++            st->entries.push_back({ id, offset });
++            return true;
++        }, &fileSize);
++        if (!opened) return false;
++        if (truncated) LogF(m_log, "listfile: the paths do not fit a 4 GB table: the rest of the file was not read");
++
++        if (!s.sorted)
++            std::stable_sort(st->entries.begin(), st->entries.end(),
++                             [](const Entry& a, const Entry& b) { return a.id < b.id; });
++        // keep the first of equal ids (stable sort kept file order among them)
++        auto last = std::unique(st->entries.begin(), st->entries.end(),
++                                [](const Entry& a, const Entry& b) { return a.id == b.id; });
++        s.duplicates = static_cast<uint64_t>(st->entries.end() - last);
++        st->entries.erase(last, st->entries.end());
++        st->entries.shrink_to_fit();
++        s.entries = st->entries.size();
++        s.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
++        out = std::move(st);
++        return true;
++    }
++
++    bool Table::Configure(std::string path, bool eager)
++    {
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_path = std::move(path);
++            m_eager = eager;
++            m_state.reset();
++            m_cache.clear();
++            m_missingLogged = false;
++        }
++        return Reload();
++    }
++
++    bool Table::Reload()
++    {
++        if (!m_eager)
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_cache.clear();
++            m_missingLogged = false;
++            return true;
++        }
++        std::shared_ptr<State> st;
++        if (!Build(st))
++        {
++            LogF(m_log, "listfile: cannot open '%s': every lookup will be answered 'not found'", m_path.c_str());
++            std::lock_guard<std::mutex> lock(m_lock);
++            m_state = std::make_shared<State>();   // an empty table, so Lookup never has to special-case it
++            return false;
++        }
++        const LoadStats& s = st->stats;
++        LogF(m_log, "listfile: eager table built from '%s': %llu entries from %llu lines in %.1f ms "
++                    "(header %s, %s, %llu duplicate id(s), %llu bad line(s))",
++             m_path.c_str(), static_cast<unsigned long long>(s.entries), static_cast<unsigned long long>(s.lines), s.ms,
++             s.header ? "skipped" : "none", s.sorted ? "already sorted" : "sorted on load",
++             static_cast<unsigned long long>(s.duplicates), static_cast<unsigned long long>(s.badLines));
++        std::lock_guard<std::mutex> lock(m_lock);
++        m_state = std::move(st);
++        return true;
++    }
++
++    uint32_t Table::EntryCount() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return m_eager && m_state ? static_cast<uint32_t>(m_state->entries.size()) : 0;
++    }
++
++    LoadStats Table::Stats() const
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        return m_state ? m_state->stats : LoadStats{};
++    }
++
++    bool Table::ScanFor(uint32_t id, std::string& outPath, bool& fileOpened)
++    {
++        bool found = false;
++        fileOpened = ForEachLine(m_path, [&](const char* b, const char* e) {
++            uint32_t lineId = 0;
++            const char *pb = nullptr, *pe = nullptr;
++            const LineKind kind = ParseLine(b, e, lineId, pb, pe);
++            if (kind == LineKind::Blank) return true;
++            if (kind == LineKind::Bad) return true;                           // header or junk: never an entry
++            if (lineId != id) return true;
++            outPath.assign(pb, pe);
++            for (char& c : outPath) if (c == '/') c = '\\';
++            found = true;
++            return false;                                                     // first entry wins, like the eager table
++        });
++        return found;
++    }
++
++    bool Table::Lookup(uint32_t id, std::string& outPath)
++    {
++        if (m_eager)
++        {
++            std::shared_ptr<const State> st;
++            { std::lock_guard<std::mutex> lock(m_lock); st = m_state; }
++            if (!st) return false;
++            auto it = std::lower_bound(st->entries.begin(), st->entries.end(), id,
++                                       [](const Entry& e, uint32_t v) { return e.id < v; });
++            if (it == st->entries.end() || it->id != id) return false;
++            outPath.assign(st->blob.c_str() + it->offset);
++            return true;
++        }
++
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            auto it = m_cache.find(id);
++            if (it != m_cache.end())
++            {
++                if (it->second.found) outPath = it->second.path;
++                return it->second.found;
++            }
++        }
++        // No lock held while the file is read: lookups of other ids are not queued behind this scan.
++        std::string path;
++        bool opened = false;
++        const bool found = ScanFor(id, path, opened);
++
++        std::lock_guard<std::mutex> lock(m_lock);
++        if (!opened)
++        {
++            if (!m_missingLogged)
++            {
++                m_missingLogged = true;
++                LogF(m_log, "listfile: cannot open '%s': every lookup will be answered 'not found'", m_path.c_str());
++            }
++            return false;                                   // not cached: the file may appear later
++        }
++        if (m_cache.size() >= kMaxCache) m_cache.clear();
++        m_cache[id] = Cached{ found, path };
++        if (found) outPath = std::move(path);
++        return found;
++    }
++}
+diff --git a/Engine/Source/WXLModules/Listfile/ListfileTable.hpp b/Engine/Source/WXLModules/Listfile/ListfileTable.hpp
+new file mode 100644
+index 0000000..c724508
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/ListfileTable.hpp
+@@ -0,0 +1,83 @@
++// The listfile: file id -> file path. Engine-free (no client type, no API table), so it is unit-testable.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// File format (what the community listfiles and the snippet use): one entry per line, "<id><delimiter><path>",
++// delimiter ';' or ',', CRLF or LF, paths with spaces and forward slashes. A header row is optional: if the first
++// non-blank line does not start with a number it is taken as the header and skipped. A UTF-8 BOM is skipped.
++//
++// Two ways to read it:
++//   eager   the file is read once, at Configure(), into one string blob and a sorted array of (id, offset). A
++//           lookup is a binary search: no allocation but the copy into the caller's string, no disk.
++//   runtime nothing is read at Configure(). A lookup streams the file until it finds the id (first entry wins, as
++//           in eager mode), then caches the answer, hits and misses both, so a repeated lookup costs nothing.
++//           Reload() clears the cache.
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++namespace wxl::listfile
++{
++    /// One finished log line, no newline. May be null.
++    using LogFn = void (*)(const char* line);
++
++    enum class LineKind { Data, Blank, Bad };
++
++    /// Parses one line [b, e): "<id><;|,><path>". On Data, pb/pe delimit the path (trimmed, not NUL-terminated).
++    /// Exposed for the tests.
++    LineKind ParseLine(const char* b, const char* e, uint32_t& id, const char*& pb, const char*& pe);
++
++    struct LoadStats
++    {
++        uint64_t lines      = 0;   ///< non-blank lines read (header excluded)
++        uint64_t entries    = 0;   ///< distinct ids kept
++        uint64_t duplicates = 0;   ///< ids that appeared again (the first entry is the one kept)
++        uint64_t badLines   = 0;   ///< lines that were neither blank nor "<id><;|,><path>"
++        bool     header     = false;
++        bool     sorted     = true;///< the file was already in ascending id order (no sort needed)
++        double   ms         = 0;   ///< time the eager build took
++    };
++
++    class Table
++    {
++    public:
++        explicit Table(LogFn log = nullptr) : m_log(log) {}
++
++        /// Sets the file and the mode. Eager: reads it now. @return false when eager and the file cannot be opened
++        /// (the table stays empty and lookups answer "not found"); runtime mode always returns true.
++        bool Configure(std::string path, bool eager);
++
++        /// The path for an id, backslashes, as the file spells it otherwise. Thread-safe.
++        bool Lookup(uint32_t id, std::string& outPath);
++
++        /// Distinct ids in the eager table; 0 in runtime mode.
++        uint32_t EntryCount() const;
++        bool     Eager() const { return m_eager; }
++        const std::string& Path() const { return m_path; }
++        LoadStats Stats() const;
++
++        /// Reads the file again (eager) or drops the cache (runtime). @return false when eager and unreadable.
++        bool Reload();
++
++    private:
++        struct Entry { uint32_t id; uint32_t offset; };
++        struct State { std::vector<Entry> entries; std::string blob; LoadStats stats; };
++
++        bool Build(std::shared_ptr<State>& out);
++        bool ScanFor(uint32_t id, std::string& outPath, bool& fileOpened);
++
++        LogFn       m_log;
++        std::string m_path;
++        bool        m_eager = true;
++
++        mutable std::mutex                m_lock;
++        std::shared_ptr<const State>      m_state;          // eager table, immutable once published
++        struct Cached { bool found; std::string path; };
++        std::unordered_map<uint32_t, Cached> m_cache;       // runtime mode
++        bool                              m_missingLogged = false;
++    };
++}
+diff --git a/Engine/Source/WXLModules/Listfile/Module.cpp b/Engine/Source/WXLModules/Listfile/Module.cpp
+new file mode 100644
+index 0000000..3b80703
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/Module.cpp
+@@ -0,0 +1,127 @@
++// The listfile module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h and wxl_listfile_api.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++//   WXLExtendedEquipment.ini
++//     [Listfile]
++//     Eager=1                       1 = read listfile.csv once, at load, into a lookup table (default)
++//                                   0 = leave it on disk: each lookup reads the file (answers are cached)
++//     Path=WXL\listfile.csv         relative to the client folder, or absolute
++//     CheckExists=1                 1 = also ask the client whether the file the listfile names is really there
++//     NotFoundName=WXL\NotFound     what a lookup answers for a file that is not found (+ .blp / .m2 by kind): a name
++//                                   the client cannot open, so it falls back to its own missing texture / model
++
++#include "ModuleHost.hpp"
++#include "Resolver.hpp"
++
++#include "wxl_listfile_api.h"
++
++#include <cstdio>
++#include <cstring>
++#include <vector>
++
++WXL_DEFINE_MODULE_ABI()
++
++namespace
++{
++    namespace lf = wxl::listfile;
++    namespace host = wxl::modules::host;
++
++    lf::Table    g_table(&host::Log);
++    lf::Resolver g_resolver;
++    bool         g_eager = true;
++
++    // ---- the service: the C-ABI face of the resolver. No exception leaves the module. ----
++
++    int SvcLookupPath(uint32_t id, char* out, size_t cap)
++    {
++        try { return g_resolver.LookupPath(id, out, cap); } catch (...) { return -1; }
++    }
++    int SvcResolve(uint32_t id, uint32_t kind, char* out, size_t cap)
++    {
++        try { return g_resolver.Resolve(id, kind, out, cap); } catch (...) { return WXL_LISTFILE_ERROR; }
++    }
++    int SvcResolvePath(const char* path, uint32_t kind, char* out, size_t cap)
++    {
++        try { return g_resolver.ResolvePath(path, kind, out, cap); } catch (...) { return WXL_LISTFILE_ERROR; }
++    }
++    uint32_t SvcEntryCount() { return g_table.EntryCount(); }
++    int      SvcIsEager()    { return g_eager ? 1 : 0; }
++    int      SvcReload()
++    {
++        try { return g_table.Reload() ? 1 : 0; } catch (...) { return 0; }
++    }
++
++    // Static, valid for the life of the process (the client and other modules keep the pointer).
++    const WxlListfileServices g_services = {
++        sizeof(WxlListfileServices),
++        &SvcLookupPath,
++        &SvcResolve,
++        &SvcResolvePath,
++        &SvcEntryCount,
++        &SvcIsEager,
++        &SvcReload,
++    };
++
++    // The ini spells paths the Windows way. The client is a Windows program, where this changes nothing; elsewhere
++    // (the off-Windows module test) a backslash would be a character of the file name, so turn them into '/'.
++    std::string NativeSeparators(std::string p)
++    {
++#if !defined(_WIN32)
++        for (char& c : p) if (c == '\\') c = '/';
++#endif
++        return p;
++    }
++
++    bool IsAbsolute(const std::string& p)
++    {
++        return (p.size() >= 2 && p[1] == ':') || (!p.empty() && (p[0] == '\\' || p[0] == '/'));
++    }
++}
++
++WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
++{
++    if (info)
++    {
++        std::strncpy(info->name, "listfile", sizeof(info->name) - 1);
++        info->versionMajor = 1;
++        info->versionMinor = 0;
++    }
++
++    // fileExists is the newest member this module uses; it comes after the service ones.
++    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, fileExists) || !api->log || !api->iniGetBool || !api->iniGetString)
++        return 1;
++    host::SetApi(api);
++
++    g_eager                 = host::IniGetBool("Listfile", "Eager", true);
++    const bool checkExists  = host::IniGetBool("Listfile", "CheckExists", true);
++    std::string path        = host::IniGetString("Listfile", "Path", "WXL\\listfile.csv");
++    const std::string notFound = host::IniGetString("Listfile", "NotFoundName", "WXL\\NotFound");
++    path = NativeSeparators(path);
++    if (!IsAbsolute(path)) path = host::ClientFolder() + path;
++
++    lf::Hooks hooks;
++    hooks.exists = &host::FileExists;
++    hooks.log    = &host::Log;
++    g_resolver.Configure(&g_table, hooks, checkExists, notFound);
++
++    // A missing listfile is not a reason to refuse: the module still loads and answers "not found".
++    g_table.Configure(path, g_eager);
++
++    if (api->registerService(WXL_SERVICE_LISTFILE, &g_services, sizeof(g_services)) != 0)
++    {
++        host::Log("the service " WXL_SERVICE_LISTFILE " is already registered");
++        return 3;
++    }
++
++    char line[640];
++    std::snprintf(line, sizeof(line), "listfile module ready: %s, '%s', existence check %s",
++                  g_eager ? "eager table" : "read at run time", path.c_str(), checkExists ? "on" : "off");
++    host::Log(line);
++    return 0;
++}
++
++WXL_MODULE_API void WxlModuleShutdown(void)
++{
++    // Nothing to tear down: the table is plain memory.
++    host::Log("listfile module shutdown");
++}
+diff --git a/Engine/Source/WXLModules/Listfile/ModuleHost.cpp b/Engine/Source/WXLModules/Listfile/ModuleHost.cpp
+new file mode 100644
+index 0000000..b4e451b
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/ModuleHost.cpp
+@@ -0,0 +1,67 @@
++// See ModuleHost.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "ModuleHost.hpp"
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX   // windows.h must not turn std::min / std::max into macros
++#endif
++#include <windows.h>
++#else
++#include <unistd.h>
++#endif
++
++namespace wxl::modules::host
++{
++    namespace { const WxlApi* g_api = nullptr; }
++
++    void SetApi(const WxlApi* api) { g_api = api; }
++    const WxlApi* Api() { return g_api; }
++
++    void Log(const char* line)
++    {
++        if (g_api && g_api->log) g_api->log("LISTFILE", line ? line : "");
++    }
++
++    bool IniGetBool(const char* section, const char* key, bool defaultValue)
++    {
++        return g_api && g_api->iniGetBool ? g_api->iniGetBool(section, key, defaultValue ? 1 : 0) != 0 : defaultValue;
++    }
++
++    std::string IniGetString(const char* section, const char* key, const char* defaultValue)
++    {
++        char buf[520] = {};
++        if (g_api && g_api->iniGetString && g_api->iniGetString(section, key, buf, sizeof(buf)) && buf[0]) return buf;
++        return defaultValue ? defaultValue : "";
++    }
++
++    bool FileExists(const char* name)
++    {
++        return g_api && g_api->fileExists && g_api->fileExists(name) != 0;
++    }
++
++    std::string ClientFolder()
++    {
++#if defined(_WIN32)
++        wchar_t w[MAX_PATH * 2] = {};
++        const DWORD n = GetModuleFileNameW(nullptr, w, static_cast<DWORD>(sizeof(w) / sizeof(w[0])));
++        if (n == 0 || n >= sizeof(w) / sizeof(w[0])) return std::string();
++        std::wstring p(w, n);
++        const size_t slash = p.find_last_of(L'\\');
++        if (slash == std::wstring::npos) return std::string();
++        p.resize(slash + 1);
++        const int len = WideCharToMultiByte(CP_UTF8, 0, p.data(), static_cast<int>(p.size()), nullptr, 0, nullptr, nullptr);
++        std::string s(static_cast<size_t>(len), '\0');
++        WideCharToMultiByte(CP_UTF8, 0, p.data(), static_cast<int>(p.size()), &s[0], len, nullptr, nullptr);
++        return s;
++#else
++        char buf[4096] = {};
++        const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
++        if (n <= 0) return std::string();
++        std::string p(buf, static_cast<size_t>(n));
++        const size_t slash = p.find_last_of('/');
++        return slash == std::string::npos ? std::string() : p.substr(0, slash + 1);
++#endif
++    }
++}
+diff --git a/Engine/Source/WXLModules/Listfile/ModuleHost.hpp b/Engine/Source/WXLModules/Listfile/ModuleHost.hpp
+new file mode 100644
+index 0000000..3aeb3a4
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/ModuleHost.hpp
+@@ -0,0 +1,25 @@
++// The module's side of the boundary: the API table and the few helpers that wrap it.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++#pragma once
++
++#include "wxl_api.h"
++
++#include <string>
++
++namespace wxl::modules::host
++{
++    void SetApi(const WxlApi* api);
++    const WxlApi* Api();
++
++    /// One finished line in the client's log, category LISTFILE.
++    void Log(const char* line);
++
++    bool        IniGetBool(const char* section, const char* key, bool defaultValue);
++    std::string IniGetString(const char* section, const char* key, const char* defaultValue);
++
++    /// Can the client open this file (archives, loose files under Data\, virtual files)?
++    bool FileExists(const char* name);
++
++    /// The folder the client runs from, UTF-8, with a trailing backslash ("" when it cannot be told).
++    std::string ClientFolder();
++}
+diff --git a/Engine/Source/WXLModules/Listfile/README.md b/Engine/Source/WXLModules/Listfile/README.md
+new file mode 100644
+index 0000000..c1c0b78
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/README.md
+@@ -0,0 +1,97 @@
++> **The listfile is a WXL module**: `wxl_listfile.dll`, built from this folder, loaded from `WXL\Modules\` by the
++> 64-bit client. It sees the client only through `Engine/Source/WXL/Sdk/wxl_api.h`; its public interface for other
++> modules is `Engine/Source/WXL/Sdk/wxl_listfile_api.h`.
++> Test: `Tools/WxlModuleTest/listfile_host_test.cpp` (the module through the C ABI, `run_listfile_tests.sh` runs it all).
++
++# Listfile: file id -> file path
++
++Turns a file id into a path using `<client folder>\WXL\listfile.csv`. When the file is not found it hands back a
++**"not found" name** that the client cannot open, so the client's own handling takes over: its default green texture
++for a `.blp`, its default checkered cube for an `.m2`. Everything that is looked for and not found goes to the log.
++
++## The listfile
++
++```
++1;interface/cinematics/logo_800.avi
++53183;sound/music/citymusic/darnassus/darnassus intro.mp3
++```
++
++One entry per line: `<id>;<path>`. Read as the community listfiles write it:
++
++* the delimiter is `;` or `,`; CRLF or LF; spaces in paths are kept; `/` is turned into `\` when the path is handed out
++* a header row is optional: if the first non-blank line does not start with a number it is skipped
++* a UTF-8 BOM is skipped; ids go up to 4294967295
++* the same id twice: **the first entry wins**; a line that is not `<id>;<path>` is skipped and counted in the log
++
++## Switching it on: `WXLExtendedEquipment.ini`
++
++```ini
++[Listfile]
++Eager=1                          ; 1 = build the lookup table at load (default); 0 = read the file at run time
++Path=WXL\listfile.csv            ; relative to the client folder, or absolute
++CheckExists=1                    ; 1 = also ask the client whether the file the listfile names is really there
++NotFoundName=WXL\NotFound        ; the name handed out for a file that is not found (.blp / .m2 is added by kind)
++```
++
++| | `Eager=1` (default) | `Eager=0` |
++| --- | --- | --- |
++| At load | reads the whole file into memory | reads nothing |
++| A lookup | a binary search, ~0.5 µs | streams the file until the id is found (first lookup of an id near the end of a 185 MB file: ~0.07 s), then the answer is cached, hits and misses both |
++| Memory | about the size of the file on disk (3,000,000 lines, 185 MB: ~150 MB held, ~350 MB at the peak of the build, 1 s) | a cache of up to 65,536 answers |
++| An edit to the file | seen after `reload()` | seen after `reload()` (the cache is dropped) |
++
++Neither mode needs the file to exist at load: without it the module still loads, logs that it cannot open it, and
++answers "not found" for every id.
++
++## Not found
++
++A file counts as not found when its id is not in the listfile, or (with `CheckExists=1`) when the listfile names it but
++the client cannot open it. The answer is `WXL_LISTFILE_NOTFOUND` and `out` holds the not-found name:
++
++| The caller says it is | `out` | The client then |
++| --- | --- | --- |
++| a texture (`WXL_LISTFILE_TEXTURE`, or a path ending `.blp`) | `WXL\NotFound.blp` | cannot open it: uses its own default (green) texture |
++| a model (`WXL_LISTFILE_MODEL`, or `.m2` / `.mdx`) | `WXL\NotFound.m2` | cannot open it: uses its own default (checkered cube) model |
++| anything else (`.mp3`, `.avi`, ...) | `WXL\NotFound` | cannot open it |
++
++The kind only picks the extension, so the engine sends the name down the loader that has the right fallback. The base
++name is `[Listfile] NotFoundName`; pick one that is not a real file in any archive. Nothing is generated and the module
++serves no files of its own.
++
++Log category `LISTFILE`, one line per missing thing, once (not once per lookup):
++
++```
++file id 4000001 is not in the listfile (texture): answering 'WXL\NotFound.blp'
++file id 2 -> 'interface\cinematics\wow_intro_800.avi' is not in the client (any type): answering 'WXL\NotFound'
++'sound\music\nothing.mp3' is not in the client (any type): answering 'WXL\NotFound'
++```
++
++Note this is what the *lookup functions* answer. Nothing here intercepts the client's own file opens: a texture the client
++asks for by itself, without going through this module, behaves as it always did.
++
++## Using it from another module
++
++```cpp
++#include "wxl_listfile_api.h"
++
++const WxlListfileServices* lf = WxlListfileGet(api);          // NULL when the listfile module is not loaded
++char path[260];
++switch (lf->resolve(fileId, WXL_LISTFILE_TEXTURE, path, sizeof(path)))
++{
++    case WXL_LISTFILE_FOUND:    /* path is the file's own path */                          break;
++    case WXL_LISTFILE_NOTFOUND: /* path is the not-found name: open it anyway and the
++                                   client shows its own missing texture / model */         break;
++    default:                    /* WXL_LISTFILE_ERROR: bad arguments or buffer too small */ break;
++}
++```
++
++| Function | |
++| --- | --- |
++| `lookupPath(id, out, size)` | the listfile's path for an id, nothing else: no existence check, no not-found name |
++| `resolve(id, kind, out, size)` | the path to open for an id: its own, or the not-found name for `kind` |
++| `resolvePath(path, kind, out, size)` | the same for a path you already have (`kind` `WXL_LISTFILE_ANY` = by extension) |
++| `entryCount()`, `isEager()` | the table's size (0 at run time), and the mode |
++| `reload()` | read the listfile again |
++
++Modules load in file-name order: a module that wants the service *while it initializes* must sort after
++`wxl_listfile.dll` (name it `20_mymodule.dll`), or fetch it on first use. Every function is thread-safe.
+diff --git a/Engine/Source/WXLModules/Listfile/Resolver.cpp b/Engine/Source/WXLModules/Listfile/Resolver.cpp
+new file mode 100644
+index 0000000..8d3428f
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/Resolver.cpp
+@@ -0,0 +1,143 @@
++// See Resolver.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "Resolver.hpp"
++
++#include <cstdio>
++#include <cstring>
++
++namespace wxl::listfile
++{
++    namespace
++    {
++        constexpr size_t kMaxLoggedKeys = 20000;   // distinct missing files logged before the log stops growing
++
++        std::string Backslashes(const char* path)
++        {
++            std::string s(path);
++            for (char& c : s) if (c == '/') c = '\\';
++            return s;
++        }
++
++        bool EndsWith(const std::string& s, const char* ext)
++        {
++            const size_t n = std::strlen(ext);
++            if (s.size() < n) return false;
++            for (size_t i = 0; i < n; ++i)
++            {
++                char c = s[s.size() - n + i];
++                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
++                if (c != ext[i]) return false;
++            }
++            return true;
++        }
++
++        uint32_t KindOfExtension(const std::string& path)
++        {
++            if (EndsWith(path, ".blp")) return WXL_LISTFILE_TEXTURE;
++            if (EndsWith(path, ".m2") || EndsWith(path, ".mdx")) return WXL_LISTFILE_MODEL;
++            return WXL_LISTFILE_ANY;
++        }
++
++        const char* KindName(uint32_t kind)
++        {
++            return kind == WXL_LISTFILE_TEXTURE ? "texture" : kind == WXL_LISTFILE_MODEL ? "model" : "any type";
++        }
++    }
++
++    void Resolver::Configure(Table* table, Hooks hooks, bool checkExists, std::string notFoundName)
++    {
++        std::lock_guard<std::mutex> lock(m_lock);
++        m_table = table;
++        m_hooks = hooks;
++        m_checkExists = checkExists;
++        m_notFoundName = Backslashes(notFoundName.c_str());
++        m_logged.clear();
++        m_logFull = false;
++    }
++
++    void Resolver::LogMissing(const std::string& key, const char* what)
++    {
++        {
++            std::lock_guard<std::mutex> lock(m_lock);
++            if (m_logged.size() >= kMaxLoggedKeys)
++            {
++                if (m_logFull) return;
++                m_logFull = true;
++                if (m_hooks.log) m_hooks.log("not-found log is full: further distinct missing files are not logged");
++                return;
++            }
++            if (!m_logged.insert(key).second) return;   // this one was reported already
++        }
++        if (m_hooks.log) m_hooks.log(what);
++    }
++
++    // The name the client gets for a file that is not found. It is not a file anywhere: opening it fails, and the
++    // client's own handling for a texture (the green one) or a model (the cube) takes over. The extension is there
++    // so the engine sends it down the right loader.
++    std::string Resolver::NotFoundFor(uint32_t kind) const
++    {
++        if (kind == WXL_LISTFILE_TEXTURE) return m_notFoundName + ".blp";
++        if (kind == WXL_LISTFILE_MODEL)   return m_notFoundName + ".m2";
++        return m_notFoundName;
++    }
++
++    int Resolver::Deliver(const std::string& path, int result, char* out, size_t outSize)
++    {
++        if (!out || path.size() + 1 > outSize) return WXL_LISTFILE_ERROR;
++        std::memcpy(out, path.c_str(), path.size() + 1);
++        return result;
++    }
++
++    int Resolver::LookupPath(uint32_t fileId, char* out, size_t outSize)
++    {
++        if (!m_table || !out || outSize == 0) return -1;
++        std::string path;
++        if (!m_table->Lookup(fileId, path))
++        {
++            char msg[160];
++            std::snprintf(msg, sizeof(msg), "file id %u is not in the listfile", fileId);
++            LogMissing("id:" + std::to_string(fileId), msg);
++            return 0;
++        }
++        return Deliver(path, 1, out, outSize) == WXL_LISTFILE_ERROR ? -1 : 1;
++    }
++
++    int Resolver::ResolvePath(const char* rawPath, uint32_t kind, char* out, size_t outSize)
++    {
++        return ResolveImpl(rawPath, kind, out, outSize, nullptr);
++    }
++
++    // fileId, when the path came from a lookup, goes into the log line so one missing file is one line.
++    int Resolver::ResolveImpl(const char* rawPath, uint32_t kind, char* out, size_t outSize, const uint32_t* fileId)
++    {
++        if (!rawPath || !*rawPath || !out || outSize == 0) return WXL_LISTFILE_ERROR;
++        const std::string path = Backslashes(rawPath);
++
++        const bool there = !m_checkExists || !m_hooks.exists || m_hooks.exists(path.c_str());
++        if (there) return Deliver(path, WXL_LISTFILE_FOUND, out, outSize);
++
++        if (kind == WXL_LISTFILE_ANY) kind = KindOfExtension(path);
++        const std::string answer = NotFoundFor(kind);
++        std::string msg = fileId ? "file id " + std::to_string(*fileId) + " -> '" + path + "'" : "'" + path + "'";
++        msg += " is not in the client (" + std::string(KindName(kind)) + "): answering '" + answer + "'";
++        LogMissing("path:" + path, msg.c_str());
++        return Deliver(answer, WXL_LISTFILE_NOTFOUND, out, outSize);
++    }
++
++    int Resolver::Resolve(uint32_t fileId, uint32_t kind, char* out, size_t outSize)
++    {
++        if (!m_table || !out || outSize == 0) return WXL_LISTFILE_ERROR;
++
++        std::string path;
++        if (m_table->Lookup(fileId, path))
++            return ResolveImpl(path.c_str(), kind, out, outSize, &fileId);   // in the listfile: is it in the client?
++
++        // Not in the listfile: nothing is known about it but what the caller expects it to be.
++        const std::string answer = NotFoundFor(kind);
++        char msg[320];
++        std::snprintf(msg, sizeof(msg), "file id %u is not in the listfile (%s): answering '%s'", fileId, KindName(kind), answer.c_str());
++        LogMissing("id:" + std::to_string(fileId), msg);
++        return Deliver(answer, WXL_LISTFILE_NOTFOUND, out, outSize);
++    }
++}
+diff --git a/Engine/Source/WXLModules/Listfile/Resolver.hpp b/Engine/Source/WXLModules/Listfile/Resolver.hpp
+new file mode 100644
+index 0000000..e07aa6d
+--- /dev/null
++++ b/Engine/Source/WXLModules/Listfile/Resolver.hpp
+@@ -0,0 +1,50 @@
++// The module's public behaviour: look an id up, and hand out a not-found name when the file is not there.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Engine-free: what it needs from the client (does this file exist? write a log line) comes in as two functions,
++// so the tests drive it without one.
++#pragma once
++
++#include "ListfileTable.hpp"
++
++#include "wxl_listfile_api.h"
++
++#include <mutex>
++#include <string>
++#include <unordered_set>
++
++namespace wxl::listfile
++{
++    struct Hooks
++    {
++        bool (*exists)(const char* clientPath) = nullptr;   ///< can the client open it? null = assume yes
++        void (*log)(const char* line) = nullptr;
++    };
++
++    class Resolver
++    {
++    public:
++        /// @param notFoundName the base of the name handed out for a file that is not found, e.g. "WXL\\NotFound"
++        ///        (.blp / .m2 is appended by kind). It must not be a file the client has.
++        void Configure(Table* table, Hooks hooks, bool checkExists, std::string notFoundName);
++
++        int LookupPath(uint32_t fileId, char* out, size_t outSize);
++        int Resolve(uint32_t fileId, uint32_t kind, char* out, size_t outSize);
++        int ResolvePath(const char* path, uint32_t kind, char* out, size_t outSize);
++
++    private:
++        int ResolveImpl(const char* path, uint32_t kind, char* out, size_t outSize, const uint32_t* fileId);
++        std::string NotFoundFor(uint32_t kind) const;
++        int Deliver(const std::string& path, int result, char* out, size_t outSize);
++        void LogMissing(const std::string& key, const char* what);   // once per key
++
++        Table*      m_table = nullptr;
++        Hooks       m_hooks;
++        bool        m_checkExists = true;
++        std::string m_notFoundName;
++
++        std::mutex  m_lock;
++        std::unordered_set<std::string> m_logged;
++        bool        m_logFull = false;
++    };
++}
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index 8af209b..d39d97f 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -39,7 +39,7 @@ target_include_directories(WowClient
+ target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+ 
+ # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
+-foreach (wxl_module wxl_physics wxl_creature wxl_weapon)
++foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
+     if (TARGET ${wxl_module})
+         add_dependencies(WowClient ${wxl_module})
+     endif ()
+diff --git a/Tools/WxlModuleTest/listfile_host_test.cpp b/Tools/WxlModuleTest/listfile_host_test.cpp
+new file mode 100644
+index 0000000..e47d7be
+--- /dev/null
++++ b/Tools/WxlModuleTest/listfile_host_test.cpp
+@@ -0,0 +1,653 @@
++// End-to-end test of the listfile module (wxl_listfile) through the C ABI, without the client.
++//
++//   R=<repo root>; M=$R/Engine/Source/WXLModules/Listfile
++//   g++ -std=c++17 -O2 -fPIC -shared -fvisibility=hidden -I $R/Engine/Source/WXL/Sdk -I $M $M/*.cpp -o libwxl_listfile.so
++//   g++ -std=c++17 -O2 -pthread -I $R/Engine/Source/WXL/Sdk listfile_host_test.cpp -ldl -o listfile_host_test
++//   ./listfile_host_test ./libwxl_listfile.so <listfile snippet.csv> <scenario>
++//   or: run_listfile_tests.sh, which runs every scenario (exit code 0 = every check passed)
++//
++// The module keeps process-wide state (like it does in the client), so each scenario is its own process:
++//   eager        defaults: listfile at <exe folder>\WXL\listfile.csv, table built at load; lookups, not-found names, reload
++//   lazy         [Listfile] Eager=0: nothing read at load, each lookup reads the file, answers cached
++//   formats      header row, comma delimiter, BOM, duplicates, unsorted ids, junk lines, no final newline
++//   noexists     [Listfile] CheckExists=0
++//   customname   [Listfile] NotFoundName=...
++//   missingfile  there is no listfile at all
++//   scale        a 3,000,000-line listfile: build time, memory, random lookups, a full runtime scan
++#include "wxl_api.h"
++#include "wxl_listfile_api.h"
++
++#include <dlfcn.h>
++#include <limits.h>
++#include <sys/resource.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <map>
++#include <mutex>
++#include <random>
++#include <set>
++#include <sstream>
++#include <string>
++#include <thread>
++#include <vector>
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++
++    // ---- the fake client ------------------------------------------------------------------------
++    std::mutex                                  g_lock;
++    std::map<std::string, std::map<std::string, std::string>> g_ini;
++    std::vector<std::string>                    g_log;
++    std::set<std::string>                       g_clientFiles;   // what the "archives" hold, normalized
++    struct Provider { WxlFileProviderFn fn; void* user; };
++    std::vector<Provider>                       g_providers;
++    std::map<std::string, const void*>          g_services;
++    std::atomic<int>                            g_reserveCalls{ 0 };
++
++    std::string Norm(const char* name)
++    {
++        std::string s(name);
++        for (char& c : s) c = c == '/' ? '\\' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++        return s;
++    }
++
++    void ApiLog(const char* cat, const char* msg)
++    {
++        std::lock_guard<std::mutex> l(g_lock);
++        g_log.push_back(std::string(cat) + ": " + msg);
++    }
++    int ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
++    int ApiSubscribe(const char*, WxlEventHandler, void*) { return 2; }
++
++    int ApiIniString(const char* sec, const char* key, char* out, size_t cap)
++    {
++        auto s = g_ini.find(sec);
++        if (s == g_ini.end()) return 0;
++        auto k = s->second.find(key);
++        if (k == s->second.end()) return 0;
++        std::snprintf(out, cap, "%s", k->second.c_str());
++        return 1;
++    }
++    int ApiIniInt(const char* sec, const char* key, int def)
++    {
++        char buf[64];
++        return ApiIniString(sec, key, buf, sizeof(buf)) ? std::atoi(buf) : def;
++    }
++    int ApiIniBool(const char* sec, const char* key, int def) { return ApiIniInt(sec, key, def) != 0; }
++    uint64_t ApiIniStamp() { return 1; }
++
++    void* SinkReserve(void* ctx, size_t size)
++    {
++        ++g_reserveCalls;
++        auto* v = static_cast<std::vector<uint8_t>*>(ctx);
++        v->resize(size);
++        return v->data();
++    }
++    bool OpenThroughProviders(const char* name, std::vector<uint8_t>& out)
++    {
++        std::vector<Provider> providers;
++        { std::lock_guard<std::mutex> l(g_lock); providers = g_providers; }
++        const WxlServeSink sink = { &out, &SinkReserve };
++        for (const Provider& p : providers)
++        {
++            out.clear();
++            if (p.fn(p.user, name, &sink) && !out.empty()) return true;
++            out.clear();
++        }
++        return false;
++    }
++    int ApiReadFile(const char*, WxlBuffer* out) { if (out) { out->data = nullptr; out->size = 0; } return 0; }
++    void ApiFreeBuffer(WxlBuffer*) {}
++    int ApiIsVirtualKey(const char*) { return 0; }
++    int ApiReadInstance(void*, WxlInstanceView*) { return WXL_READ_NO_MODEL; }
++    int ApiReadBones(void*, uint32_t, float*, int16_t*, float*) { return WXL_READ_NO_MODEL; }
++    int ApiWritePalette(void*, const float*, uint32_t) { return WXL_READ_NO_MODEL; }
++
++    int ApiRegisterProvider(WxlFileProviderFn fn, void* user)
++    {
++        std::lock_guard<std::mutex> l(g_lock);
++        g_providers.push_back({ fn, user });
++        return 0;
++    }
++    int ApiRegisterQuery(WxlVirtualKeyFn, void*) { return 0; }
++    int ApiRegisterService(const char* name, const void* table, size_t)
++    {
++        std::lock_guard<std::mutex> l(g_lock);
++        return g_services.emplace(name, table).second ? 0 : 2;
++    }
++    const void* ApiGetService(const char* name, size_t* size)
++    {
++        if (size) *size = 0;
++        std::lock_guard<std::mutex> l(g_lock);
++        auto it = g_services.find(name);
++        return it == g_services.end() ? nullptr : it->second;
++    }
++    // Like the client: modules' virtual files count as there, then the archives.
++    int ApiFileExists(const char* name)
++    {
++        if (!name) return 0;
++        std::vector<uint8_t> tmp;
++        if (OpenThroughProviders(name, tmp)) return 1;
++        std::lock_guard<std::mutex> l(g_lock);
++        return g_clientFiles.count(Norm(name)) ? 1 : 0;
++    }
++
++    WxlApi MakeApi()
++    {
++        WxlApi api = {};
++        api.abiVersion = WXL_ABI_VERSION;
++        api.structSize = sizeof(WxlApi);
++        api.log = &ApiLog;
++        api.logThrottle = &ApiThrottle;
++        api.subscribe = &ApiSubscribe;
++        api.iniGetString = &ApiIniString;
++        api.iniGetInt = &ApiIniInt;
++        api.iniGetBool = &ApiIniBool;
++        api.iniStamp = &ApiIniStamp;
++        api.readFile = &ApiReadFile;
++        api.freeBuffer = &ApiFreeBuffer;
++        api.isVirtualKey = &ApiIsVirtualKey;
++        api.readInstance = &ApiReadInstance;
++        api.readBones = &ApiReadBones;
++        api.writePalette = &ApiWritePalette;
++        api.registerFileProvider = &ApiRegisterProvider;
++        api.registerVirtualKeyQuery = &ApiRegisterQuery;
++        api.registerService = &ApiRegisterService;
++        api.getService = &ApiGetService;
++        api.fileExists = &ApiFileExists;
++        return api;
++    }
++
++    size_t LogCount() { std::lock_guard<std::mutex> l(g_lock); return g_log.size(); }
++    bool LogHas(const std::string& needle)
++    {
++        std::lock_guard<std::mutex> l(g_lock);
++        for (const std::string& line : g_log) if (line.find(needle) != std::string::npos) return true;
++        return false;
++    }
++    void DumpLog()
++    {
++        std::printf("  --- log ---\n");
++        for (const std::string& line : g_log) std::printf("  | %s\n", line.c_str());
++    }
++
++    // ---- helpers ------------------------------------------------------------------------------
++    std::string ReadAll(const std::string& path)
++    {
++        std::ifstream f(path, std::ios::binary);
++        std::stringstream ss;
++        ss << f.rdbuf();
++        return ss.str();
++    }
++    void WriteAll(const std::string& path, const std::string& text)
++    {
++        std::ofstream f(path, std::ios::binary | std::ios::trunc);
++        f << text;
++    }
++    std::string ExeFolder()
++    {
++        char buf[PATH_MAX] = {};
++        const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
++        std::string p(buf, n > 0 ? static_cast<size_t>(n) : 0);
++        return p.substr(0, p.find_last_of('/') + 1);
++    }
++    double Seconds(std::chrono::steady_clock::time_point t0)
++    {
++        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
++    }
++    long CurrentRssMb()
++    {
++        FILE* f = std::fopen("/proc/self/status", "r");
++        char line[256];
++        long kb = 0;
++        while (f && std::fgets(line, sizeof(line), f)) if (std::sscanf(line, "VmRSS: %ld kB", &kb) == 1) break;
++        if (f) std::fclose(f);
++        return kb / 1024;
++    }
++    long PeakRssMb()
++    {
++        rusage ru = {};
++        getrusage(RUSAGE_SELF, &ru);
++        return ru.ru_maxrss / 1024;   // KB on Linux
++    }
++
++    struct Loaded
++    {
++        void* dll = nullptr;
++        WxlModuleInitFn init = nullptr;
++        WxlModuleShutdownFn shutdown = nullptr;
++        WxlApi api = {};
++        const WxlListfileServices* lf = nullptr;
++        int rc = -1;
++    };
++    Loaded Load(const char* dllPath)
++    {
++        Loaded m;
++        m.dll = dlopen(dllPath, RTLD_NOW | RTLD_LOCAL);
++        if (!m.dll) { std::printf("dlopen failed: %s\n", dlerror()); std::exit(2); }
++        m.init     = reinterpret_cast<WxlModuleInitFn>(dlsym(m.dll, "WxlModuleInit"));
++        m.shutdown = reinterpret_cast<WxlModuleShutdownFn>(dlsym(m.dll, "WxlModuleShutdown"));
++        return m;
++    }
++    void Init(Loaded& m)
++    {
++        m.api = MakeApi();
++        WxlModuleInfo info = {}; info.structSize = sizeof(info);
++        m.rc = m.init(&m.api, &info);
++        m.lf = WxlListfileGet(&m.api);
++    }
++
++    // The standard client contents for the scenarios.
++    void StockClient()
++    {
++        g_clientFiles.insert(Norm("Interface\\Cinematics\\logo_800.avi"));
++        g_clientFiles.insert(Norm("Sound\\Music\\CityMusic\\Darnassus\\Darnassus Intro.mp3"));
++    }
++
++    // ---- shared checks ---------------------------------------------------------------------
++    void CheckSnippetLookups(const WxlListfileServices* lf)
++    {
++        char out[260];
++        Check(lf->lookupPath(1, out, sizeof(out)) == 1 && std::strcmp(out, "interface\\cinematics\\logo_800.avi") == 0,
++              "lookupPath(1): 'interface\\cinematics\\logo_800.avi' (forward slashes became backslashes)");
++        Check(lf->lookupPath(2, out, sizeof(out)) == 1 && std::strcmp(out, "interface\\cinematics\\wow_intro_800.avi") == 0, "lookupPath(2)");
++        Check(lf->lookupPath(21, out, sizeof(out)) == 1 && std::strcmp(out, "interface\\cinematics\\logo_1024.avi") == 0, "lookupPath(21)");
++        Check(lf->lookupPath(53183, out, sizeof(out)) == 1 &&
++              std::strcmp(out, "sound\\music\\citymusic\\darnassus\\darnassus intro.mp3") == 0, "lookupPath(53183): a path with a space");
++        Check(lf->lookupPath(53187, out, sizeof(out)) == 1 &&
++              std::strcmp(out, "sound\\music\\citymusic\\darnassus\\druid grove.mp3") == 0, "lookupPath(53187): the last line (CRLF stripped)");
++        Check(lf->lookupPath(3, out, sizeof(out)) == 0, "lookupPath(3): an id that is not in the file is 'not found'");
++        Check(lf->lookupPath(0, out, sizeof(out)) == 0, "lookupPath(0): not found");
++        Check(lf->lookupPath(4294967295u, out, sizeof(out)) == 0, "lookupPath(0xFFFFFFFF): not found");
++        char tiny[8];
++        Check(lf->lookupPath(1, tiny, sizeof(tiny)) == -1, "a buffer that is too small is an error, not a cut-off path");
++        Check(lf->lookupPath(1, nullptr, 10) == -1 && lf->lookupPath(1, out, 0) == -1, "null / zero-size buffers are errors");
++    }
++
++    void CheckLoggedOnce(const WxlListfileServices* lf)
++    {
++        char out[260];
++        lf->lookupPath(777777, out, sizeof(out));
++        const size_t after1 = LogCount();
++        Check(LogHas("file id 777777 is not in the listfile"), "a missing id is logged");
++        lf->lookupPath(777777, out, sizeof(out));
++        lf->lookupPath(777777, out, sizeof(out));
++        Check(LogCount() == after1, "  ...once, not on every repeated lookup");
++    }
++
++    // A file that is not found: the answer is NOTFOUND and `out` holds a name the client cannot open, so the client
++    // falls back to its own missing texture (green) / missing model (cube).
++    void CheckNotFound(const WxlListfileServices* lf, const char* base)
++    {
++        char out[260];
++        const std::string tex = std::string(base) + ".blp", mdl = std::string(base) + ".m2";
++        std::printf(" not found\n");
++        Check(lf->resolve(1, WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_FOUND && std::strcmp(out, "interface\\cinematics\\logo_800.avi") == 0,
++              "resolve: an id whose file is in the client gives its own path");
++
++        Check(lf->resolve(4000001, WXL_LISTFILE_TEXTURE, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && tex == out,
++              "resolve: an id not in the listfile, wanted as a texture -> NOTFOUND and the name '<base>.blp'");
++        Check(ApiFileExists(out) == 0, "  ...which is not a file the client can open (so its own green texture takes over)");
++        Check(LogHas(("file id 4000001 is not in the listfile (texture): answering '" + tex + "'").c_str()), "  ...and it is logged");
++
++        Check(lf->resolve(4000002, WXL_LISTFILE_MODEL, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && mdl == out,
++              "resolve: wanted as a model -> NOTFOUND and '<base>.m2'");
++        Check(ApiFileExists(out) == 0, "  ...also not a file the client can open (its own cube takes over)");
++        Check(LogHas(("file id 4000002 is not in the listfile (model): answering '" + mdl + "'").c_str()), "  ...and it is logged");
++
++        Check(lf->resolve(4000003, WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && std::strcmp(out, base) == 0,
++              "resolve: an unknown id of unknown type -> NOTFOUND and the bare name");
++        Check(LogHas(("file id 4000003 is not in the listfile (any type): answering '" + std::string(base) + "'").c_str()), "  ...and it is logged");
++
++        // by path, the kind from the extension
++        Check(lf->resolvePath("Interface/Nothing/Here.blp", WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && tex == out,
++              "resolvePath: a missing .blp -> '<base>.blp'");
++        Check(lf->resolvePath("creature/nothing/here.m2", WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && mdl == out,
++              "resolvePath: a missing .m2 -> '<base>.m2'");
++        Check(lf->resolvePath("creature/nothing/here.mdx", WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && mdl == out,
++              "resolvePath: a missing .mdx is a model too");
++        Check(lf->resolvePath("sound/music/nothing.mp3", WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && std::strcmp(out, base) == 0,
++              "resolvePath: a missing .mp3 -> the bare name");
++        Check(LogHas("'sound\\music\\nothing.mp3' is not in the client (any type)"), "  ...and it is logged (any extension is logged)");
++        Check(lf->resolvePath("interface/cinematics/logo_800.avi", WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_FOUND && std::strcmp(out, "interface\\cinematics\\logo_800.avi") == 0,
++              "resolvePath: a path that is in the client comes back as itself, backslashes");
++        Check(lf->resolvePath(nullptr, 0, out, sizeof(out)) == WXL_LISTFILE_ERROR && lf->resolvePath("", 0, out, sizeof(out)) == WXL_LISTFILE_ERROR, "resolvePath: null / empty path is an error");
++        char tiny[6];
++        Check(lf->resolve(4000001, WXL_LISTFILE_TEXTURE, tiny, sizeof(tiny)) == WXL_LISTFILE_ERROR, "resolve: a buffer too small for the not-found name is an error");
++
++        // the id IS in the listfile but the client lacks the file (id 2 = wow_intro_800.avi)
++        Check(lf->resolve(2, WXL_LISTFILE_ANY, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && std::strcmp(out, base) == 0, "resolve: in the listfile, not in the client -> NOTFOUND");
++        Check(LogHas(("file id 2 -> 'interface\\cinematics\\wow_intro_800.avi' is not in the client (any type): answering '" + std::string(base) + "'").c_str()),
++              "  ...logged with both the id and the path, in one line");
++        Check(lf->resolve(53184, WXL_LISTFILE_TEXTURE, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && tex == out, "resolve: the caller's kind decides the extension even for a known id");
++        // the not-found log is once per file
++        const size_t n = LogCount();
++        lf->resolve(4000001, WXL_LISTFILE_TEXTURE, out, sizeof(out));
++        lf->resolve(2, WXL_LISTFILE_ANY, out, sizeof(out));
++        lf->resolvePath("sound/music/nothing.mp3", WXL_LISTFILE_ANY, out, sizeof(out));
++        Check(LogCount() == n, "a repeated not-found is not logged again");
++    }
++
++    // ---- scenarios -------------------------------------------------------------------------
++    void RunThreads(const WxlListfileServices* lf)
++    {
++        std::printf(" threads\n");
++        std::atomic<int> bad{ 0 };
++        auto worker = [&](int seed) {
++            char out[260];
++            for (int i = 0; i < 400; ++i)
++            {
++                const uint32_t ids[] = { 1, 2, 21, 22, 53183, 53187 };
++                const uint32_t id = ids[(i + seed) % 6];
++                if (lf->lookupPath(id, out, sizeof(out)) != 1) ++bad;
++                if (lf->lookupPath(900000 + static_cast<uint32_t>(i % 5), out, sizeof(out)) != 0) ++bad;
++                if (lf->resolve(900000 + static_cast<uint32_t>(i % 5), WXL_LISTFILE_TEXTURE, out, sizeof(out)) != WXL_LISTFILE_NOTFOUND || std::strcmp(out, "WXL\\NotFound.blp") != 0) ++bad;
++            }
++        };
++        std::vector<std::thread> t;
++        for (int i = 0; i < 8; ++i) t.emplace_back(worker, i);
++        for (auto& x : t) x.join();
++        Check(bad == 0, "8 threads x 400 lookups/resolves: every answer correct, no crash");
++    }
++
++    int Eager(const char* dll, const std::string& snippet)
++    {
++        // default ini: the listfile is <client folder>\WXL\listfile.csv. Here the "client folder" is this program's.
++        const std::string folder = ExeFolder() + "WXL";
++        mkdir(folder.c_str(), 0755);
++        const std::string file = folder + "/listfile.csv";
++        WriteAll(file, snippet);
++        StockClient();
++
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("eager (defaults)\n");
++        Check(m.rc == 0, "WxlModuleInit accepts the client");
++        Check(m.lf != nullptr && WXL_LISTFILE_HAS(m.lf, reload), "publishes " WXL_SERVICE_LISTFILE " with every member");
++        if (m.rc != 0 || !m.lf) { DumpLog(); return 1; }
++        Check(m.lf->isEager() == 1, "eager by default");
++        Check(m.lf->entryCount() == 9, "the table was built at load: 9 entries (the snippet has 9 lines, no header)");
++        Check(LogHas("eager table built") && LogHas("header none"), "  ...and it is logged: no header row was found");
++        Check(g_providers.empty(), "no file provider registered: the module serves no files of its own");
++        CheckSnippetLookups(m.lf);
++        CheckLoggedOnce(m.lf);
++        CheckNotFound(m.lf, "WXL\\NotFound");
++        RunThreads(m.lf);
++
++        // reload picks up an edited file
++        std::printf(" reload\n");
++        char out[260];
++        Check(m.lf->lookupPath(60000, out, sizeof(out)) == 0, "id 60000 is not in the table yet");
++        WriteAll(file, snippet + "60000;world/test/new_thing.m2\r\n");
++        Check(m.lf->lookupPath(60000, out, sizeof(out)) == 0, "  ...and an edit to the file is not seen until reload (the table is in memory)");
++        Check(m.lf->reload() == 1 && m.lf->entryCount() == 10, "reload(): rebuilt, 10 entries");
++        Check(m.lf->lookupPath(60000, out, sizeof(out)) == 1 && std::strcmp(out, "world\\test\\new_thing.m2") == 0, "  ...and the new id is found");
++
++        m.shutdown();
++        std::remove(file.c_str());
++        rmdir(folder.c_str());
++        return g_failed;
++    }
++
++    int Lazy(const char* dll, const std::string& snippet)
++    {
++        const std::string file = "/tmp/wxl_listfile_lazy.csv";
++        WriteAll(file, snippet);
++        g_ini["Listfile"]["Eager"] = "0";
++        g_ini["Listfile"]["Path"] = file;
++        StockClient();
++
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("lazy ([Listfile] Eager=0)\n");
++        Check(m.rc == 0 && m.lf, "module loads");
++        if (m.rc != 0 || !m.lf) { DumpLog(); return 1; }
++        Check(m.lf->isEager() == 0, "not eager");
++        Check(m.lf->entryCount() == 0, "nothing was read at load: no table");
++        Check(!LogHas("eager table built"), "  ...and nothing was built");
++        CheckSnippetLookups(m.lf);
++        CheckLoggedOnce(m.lf);
++        CheckNotFound(m.lf, "WXL\\NotFound");
++        RunThreads(m.lf);
++
++        std::printf(" cache and reload\n");
++        char out[260];
++        // answers (hits and misses) are cached: with the file gone they still come back
++        std::remove(file.c_str());
++        Check(m.lf->lookupPath(53183, out, sizeof(out)) == 1, "a cached hit survives the file going away");
++        Check(m.lf->lookupPath(3, out, sizeof(out)) == 0, "a cached miss too");
++        Check(m.lf->lookupPath(53186, out, sizeof(out)) == 0 && LogHas("cannot open"), "an id never asked for, file gone: not found, and the log says it cannot open the file");
++        WriteAll(file, snippet + "60000;world/test/new_thing.m2\r\n");
++        Check(m.lf->lookupPath(53186, out, sizeof(out)) == 1, "the file is back: an uncached id is read from it (a failed open is not cached)");
++        Check(m.lf->lookupPath(60000, out, sizeof(out)) == 1 && std::strcmp(out, "world\\test\\new_thing.m2") == 0, "a line added to the file is found at run time");
++        Check(m.lf->reload() == 1, "reload() clears the cache");
++        std::remove(file.c_str());
++        Check(m.lf->lookupPath(53183, out, sizeof(out)) == 0, "  ...so with the file gone nothing is answered any more");
++        m.shutdown();
++        return g_failed;
++    }
++
++    int Formats(const char* dll)
++    {
++        const std::string file = "/tmp/wxl_listfile_formats.csv";
++        // BOM, header, comma delimiter, a duplicate (first wins), unsorted ids, a junk line, blank lines, spaces after the
++        // delimiter, a 32-bit id, and no newline at the end.
++        std::string text = "\xEF\xBB\xBF" "fileDataID,filePath\r\n"
++                           "300,world/c.m2\r\n"
++                           "\r\n"
++                           "100, world/a.m2\r\n"
++                           "this line is junk\r\n"
++                           "200,world/b with space.blp\n"
++                           "100,world/DUPLICATE.m2\r\n"
++                           "4294967295,world/last.m2\r\n"
++                           "4294967296,world/too_big.m2\r\n"
++                           "7,world/seven.m2";
++        WriteAll(file, text);
++        g_ini["Listfile"]["Path"] = file;
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("formats\n");
++        Check(m.rc == 0 && m.lf, "module loads");
++        if (!m.lf) { DumpLog(); return 1; }
++        Check(m.lf->entryCount() == 5, "5 distinct ids: 7, 100, 200, 300, 4294967295");
++        Check(LogHas("header skipped") && LogHas("sorted on load") && LogHas("1 duplicate id(s), 2 bad line(s)"),
++              "the log counts the header, the sort, 1 duplicate, 2 bad lines (junk and the id over 32 bits)");
++        char out[260];
++        Check(m.lf->lookupPath(100, out, sizeof(out)) == 1 && std::strcmp(out, "world\\a.m2") == 0, "a duplicate id: the first entry wins; spaces after the comma are dropped");
++        Check(m.lf->lookupPath(200, out, sizeof(out)) == 1 && std::strcmp(out, "world\\b with space.blp") == 0, "LF-only line ending, spaces inside the path kept");
++        Check(m.lf->lookupPath(300, out, sizeof(out)) == 1 && std::strcmp(out, "world\\c.m2") == 0, "an id that came before a smaller one in the file");
++        Check(m.lf->lookupPath(7, out, sizeof(out)) == 1 && std::strcmp(out, "world\\seven.m2") == 0, "the last line has no newline and is still read");
++        Check(m.lf->lookupPath(4294967295u, out, sizeof(out)) == 1, "the largest 32-bit id");
++        Check(m.lf->lookupPath(4294967296ull & 0xFFFFFFFFu, out, sizeof(out)) == 0, "an id over 32 bits was rejected, not wrapped to 0");
++        Check(m.lf->lookupPath(1, out, sizeof(out)) == 0, "the header text is not an entry");
++        m.shutdown();
++        std::remove(file.c_str());
++        return g_failed;
++    }
++
++    int NoExists(const char* dll, const std::string& snippet)
++    {
++        const std::string file = "/tmp/wxl_listfile_noexists.csv";
++        WriteAll(file, snippet + "70000;world/not/in/client.blp\r\n");
++        g_ini["Listfile"]["Path"] = file;
++        g_ini["Listfile"]["CheckExists"] = "0";
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("existence check off ([Listfile] CheckExists=0)\n");
++        Check(m.rc == 0 && m.lf, "module loads");
++        if (!m.lf) { DumpLog(); return 1; }
++        char out[260];
++        Check(m.lf->resolve(70000, WXL_LISTFILE_TEXTURE, out, sizeof(out)) == WXL_LISTFILE_FOUND && std::strcmp(out, "world\\not\\in\\client.blp") == 0,
++              "a path the listfile names is returned as is, whether or not the client has it");
++        Check(m.lf->resolve(70001, WXL_LISTFILE_TEXTURE, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && std::strcmp(out, "WXL\\NotFound.blp") == 0, "an id that is not in the listfile still gets the not-found name");
++        m.shutdown();
++        std::remove(file.c_str());
++        return g_failed;
++    }
++
++    int CustomName(const char* dll, const std::string& snippet)
++    {
++        const std::string file = "/tmp/wxl_listfile_customname.csv";
++        WriteAll(file, snippet);
++        g_ini["Listfile"]["Path"] = file;
++        g_ini["Listfile"]["NotFoundName"] = "Nope/Missing";
++        StockClient();
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("custom not-found name ([Listfile] NotFoundName=Nope/Missing)\n");
++        Check(m.rc == 0 && m.lf, "module loads");
++        if (!m.lf) { DumpLog(); return 1; }
++        CheckNotFound(m.lf, "Nope\\Missing");   // forward slashes in the ini are turned into backslashes
++        m.shutdown();
++        std::remove(file.c_str());
++        return g_failed;
++    }
++
++    int MissingFile(const char* dll)
++    {
++        g_ini["Listfile"]["Path"] = "/tmp/wxl_listfile_does_not_exist.csv";
++        StockClient();
++        Loaded m = Load(dll);
++        Init(m);
++        std::printf("no listfile on disk\n");
++        Check(m.rc == 0 && m.lf, "the module still loads");
++        if (!m.lf) { DumpLog(); return 1; }
++        Check(LogHas("cannot open '/tmp/wxl_listfile_does_not_exist.csv'"), "the log names the file it could not open");
++        char out[260];
++        Check(m.lf->entryCount() == 0 && m.lf->lookupPath(1, out, sizeof(out)) == 0, "every lookup is 'not found'");
++        Check(m.lf->resolve(1, WXL_LISTFILE_TEXTURE, out, sizeof(out)) == WXL_LISTFILE_NOTFOUND && std::strcmp(out, "WXL\\NotFound.blp") == 0, "  ...and a texture still gets the not-found name");
++        m.shutdown();
++        return g_failed;
++    }
++
++    int Refusals(const char* dll)
++    {
++        std::printf("refusals\n");
++        Loaded m = Load(dll);
++        WxlModuleInfo info = {}; info.structSize = sizeof(info);
++        WxlApi oldCore = MakeApi();
++        oldCore.structSize = static_cast<uint32_t>(offsetof(WxlApi, fileExists));   // a core from before fileExists
++        Check(m.init(&oldCore, &info) != 0, "a core without fileExists: refused");
++        Check(g_services.empty(), "  ...and nothing was registered");
++        WxlApi otherAbi = MakeApi();
++        otherAbi.abiVersion = WXL_ABI_VERSION + 1;
++        Check(m.init(&otherAbi, &info) != 0, "another ABI version: refused");
++        Check(g_services.empty(), "  ...and nothing was registered");
++        return g_failed;
++    }
++
++    int Scale(const char* dll)
++    {
++        const std::string file = "/tmp/wxl_listfile_scale.csv";
++        const uint32_t N = 3000000;
++        std::vector<uint32_t> ids(N);
++        for (uint32_t i = 0; i < N; ++i) ids[i] = 1 + i * 3;          // gaps, like a real listfile
++        std::mt19937 rng(42);
++        std::shuffle(ids.begin(), ids.end(), rng);                    // unsorted: the worst case for the build
++        {
++            std::ofstream f(file, std::ios::binary);
++            for (uint32_t id : ids) f << id << ";world/generic/some/long/directory/name/model_" << id << ".m2\r\n";
++        }
++        struct stat st = {};
++        stat(file.c_str(), &st);
++        g_ini["Listfile"]["Path"] = file;
++        StockClient();
++        Loaded m = Load(dll);
++        const long rssBefore = PeakRssMb();
++        const auto t0 = std::chrono::steady_clock::now();
++        Init(m);
++        const double buildSec = Seconds(t0);
++        std::printf("scale: %u lines, %.0f MB, shuffled\n", N, st.st_size / 1048576.0);
++        std::printf("  build %.2f s, peak memory %ld MB, memory held after the build %ld MB (was %ld MB; the test itself holds ~30 MB of ids)\n",
++                    buildSec, PeakRssMb(), CurrentRssMb(), rssBefore);
++        Check(m.rc == 0 && m.lf && m.lf->entryCount() == N, "3,000,000 entries");
++        if (!m.lf) { DumpLog(); return 1; }
++        char out[260];
++        bool allOk = true;
++        const auto t1 = std::chrono::steady_clock::now();
++        for (int i = 0; i < 200000; ++i)
++        {
++            const uint32_t id = ids[static_cast<size_t>(rng()) % N];
++            char want[200];
++            std::snprintf(want, sizeof(want), "world\\generic\\some\\long\\directory\\name\\model_%u.m2", id);
++            if (m.lf->lookupPath(id, out, sizeof(out)) != 1 || std::strcmp(out, want) != 0) { allOk = false; break; }
++            if (m.lf->lookupPath(id + 1, out, sizeof(out)) != 0) { allOk = false; break; }   // ids have gaps
++        }
++        const double lookupSec = Seconds(t1);
++        Check(allOk, "200,000 random lookups (hit + miss each): every answer right");
++        std::printf("  %.0f ns per lookup\n", lookupSec / 400000 * 1e9);
++        m.shutdown();
++        std::remove(file.c_str());
++        return g_failed;
++    }
++
++    // the runtime-read mode on the same big file: one full scan, then cached
++    int ScaleLazy(const char* dll)
++    {
++        const std::string file = "/tmp/wxl_listfile_scale2.csv";
++        const uint32_t N = 3000000;
++        {
++            std::ofstream f(file, std::ios::binary);
++            for (uint32_t i = 0; i < N; ++i) f << (1 + i * 3) << ";world/generic/some/long/directory/name/model_" << (1 + i * 3) << ".m2\r\n";
++        }
++        g_ini["Listfile"]["Path"] = file;
++        g_ini["Listfile"]["Eager"] = "0";
++        Loaded m = Load(dll);
++        const auto t0 = std::chrono::steady_clock::now();
++        Init(m);
++        std::printf("scale, runtime read: %u lines\n", N);
++        std::printf("  load took %.4f s (it reads nothing)\n", Seconds(t0));
++        char out[260];
++        const auto t1 = std::chrono::steady_clock::now();
++        const int r = m.lf->lookupPath(1 + (N - 1) * 3, out, sizeof(out));     // the very last line: a full scan
++        const double scan = Seconds(t1);
++        std::printf("  first lookup of the LAST id (a full scan): %.3f s\n", scan);
++        Check(r == 1, "found at the end of the file");
++        const auto t2 = std::chrono::steady_clock::now();
++        for (int i = 0; i < 100000; ++i) m.lf->lookupPath(1 + (N - 1) * 3, out, sizeof(out));
++        std::printf("  the same lookup again: %.0f ns (cached)\n", Seconds(t2) / 100000 * 1e9);
++        m.shutdown();
++        std::remove(file.c_str());
++        return g_failed;
++    }
++}
++
++int main(int argc, char** argv)
++{
++    if (argc < 4) { std::printf("usage: %s <libwxl_listfile.so> <snippet.csv> <scenario>\n", argv[0]); return 2; }
++    char dll[PATH_MAX];
++    if (!realpath(argv[1], dll)) { std::perror(argv[1]); return 2; }
++    const std::string snippet = ReadAll(argv[2]);
++    const std::string scenario = argv[3];
++    if (snippet.empty()) { std::printf("cannot read %s\n", argv[2]); return 2; }
++
++    int failed;
++    if      (scenario == "eager")       failed = Eager(dll, snippet);
++    else if (scenario == "lazy")        failed = Lazy(dll, snippet);
++    else if (scenario == "formats")     failed = Formats(dll);
++    else if (scenario == "noexists")    failed = NoExists(dll, snippet);
++    else if (scenario == "customname")  failed = CustomName(dll, snippet);
++    else if (scenario == "missingfile") failed = MissingFile(dll);
++    else if (scenario == "refusals")    failed = Refusals(dll);
++    else if (scenario == "scale")       failed = Scale(dll);
++    else if (scenario == "scalelazy")   failed = ScaleLazy(dll);
++    else { std::printf("unknown scenario '%s'\n", scenario.c_str()); return 2; }
++
++    if (failed) DumpLog();
++    std::printf("%s (%d failed)\n", failed ? "FAILED" : "passed", failed);
++    return failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/registry_test.cpp b/Tools/WxlModuleTest/registry_test.cpp
+new file mode 100644
+index 0000000..ed7d0b9
+--- /dev/null
++++ b/Tools/WxlModuleTest/registry_test.cpp
+@@ -0,0 +1,152 @@
++// Test of the core's side of the module API that is not engine-bound: WXL/ModuleRegistry.cpp (file providers fanned
++// out through the REAL storage layer, virtual-key queries). Log.h is stubbed below; nothing else is.
++//
++//   R=<repo root>
++//   g++ -std=c++17 -O1 -pthread -I $R registry_test.cpp $R/Engine/Source/WXL/ModuleRegistry.cpp $R/Engine/Source/WXL/Storage.cpp -o registry_test
++//   ./registry_test            (exit code 0 = every check passed)
++#include "Engine/Source/WXL/ModuleRegistry.h"
++#include "Engine/Source/WXL/Storage.h"
++
++#include <atomic>
++#include <cstdarg>
++#include <cstdio>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <vector>
++
++// ---- the log, stubbed: what Storage.cpp and ModuleRegistry.cpp need from Log.h ----
++namespace wxl
++{
++    static std::mutex g_logLock;
++    static std::vector<std::string> g_log;
++    void LogCat(const char* category, const char* format, ...)
++    {
++        char line[512];
++        va_list ap; va_start(ap, format); std::vsnprintf(line, sizeof(line), format, ap); va_end(ap);
++        std::lock_guard<std::mutex> l(g_logLock);
++        g_log.push_back(std::string(category) + ": " + line);
++    }
++    bool LogThrottle(const char*, unsigned, unsigned) { return false; }
++}
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++
++    // providers for the test: each claims one exact name
++    struct Spec { const char* name; const char* bytes; bool reserveThenDecline; bool claimWithoutBytes; };
++    int Provide(void* user, const char* name, const WxlServeSink* sink)
++    {
++        const Spec* s = static_cast<const Spec*>(user);
++        if (std::strcmp(name, s->name) != 0) return 0;
++        if (s->claimWithoutBytes) return 1;                       // says yes, serves nothing
++        void* dst = sink->reserve(sink->ctx, std::strlen(s->bytes));
++        if (!dst) return 0;
++        std::memcpy(dst, s->bytes, std::strlen(s->bytes));
++        return s->reserveThenDecline ? 0 : 1;                     // fills the buffer, then says no
++    }
++    int IsKey(void* user, const char* name) { return std::strcmp(name, static_cast<const char*>(user)) == 0; }
++    int DeclineAll(void*, const char*, const WxlServeSink*) { return 0; }
++    std::atomic<int> g_decliner{ 0 };
++    int CountingDecline(void*, const char*, const WxlServeSink*) { ++g_decliner; return 0; }
++
++    bool Serve(const char* name, std::string& out)
++    {
++        std::vector<uint8_t> v;
++        if (!wxl::storage::TryServe(name, v)) return false;
++        out.assign(v.begin(), v.end());
++        return true;
++    }
++}
++
++int main()
++{
++    using namespace wxl::registry;
++
++    std::printf("file providers\n");
++    Check(!wxl::storage::HasProviders(), "nothing is registered at the start");
++    Check(RegisterFileProvider(nullptr, nullptr) == 1, "a null provider is refused");
++    Check(!wxl::storage::HasProviders(), "  ...and installs nothing");
++
++    static Spec a = { "dir\\a.m2", "AAAA", false, false };
++    static Spec b = { "dir\\b.m2", "BBBBBB", false, false };
++    static Spec half = { "dir\\half.m2", "partial", true, false };      // fills the buffer, then declines
++    static Spec liar = { "dir\\liar.m2", "", false, true };            // says yes without a byte
++    Check(RegisterFileProvider(&CountingDecline, nullptr) == 0, "the first provider is accepted");
++    Check(wxl::storage::HasProviders(), "  ...and the storage layer now has a provider");
++    Check(RegisterFileProvider(&Provide, &a) == 0 && RegisterFileProvider(&Provide, &b) == 0 &&
++          RegisterFileProvider(&Provide, &half) == 0 && RegisterFileProvider(&Provide, &liar) == 0, "four more are accepted");
++    {
++        int installs = 0;
++        for (const std::string& l : wxl::g_log) if (l.find("STORAGE: provider registered") != std::string::npos) ++installs;
++        Check(installs == 1, "the storage layer was given ONE provider, however many modules register");
++    }
++
++    std::string out;
++    Check(Serve("dir\\a.m2", out) && out == "AAAA", "a file the 2nd provider owns is served");
++    Check(Serve("dir\\b.m2", out) && out == "BBBBBB", "a file the 3rd owns is served, whatever the size of the first");
++    const int before = g_decliner;
++    Check(Serve("dir\\a.m2", out), "(again)");
++    Check(g_decliner > before, "providers are asked in registration order (the declining first one saw the open)");
++    Check(!Serve("dir\\nobody.m2", out), "a name nobody owns is not served");
++    {
++        std::vector<uint8_t> v = { 1, 2, 3 };
++        wxl::storage::TryServe("dir\\half.m2", v);
++        Check(v.empty(), "a provider that filled the buffer and then said no: the half-filled buffer is cleared, no hit");
++        Check(!wxl::storage::TryServe("dir\\half.m2", v), "  ...and it is a miss");
++        v = { 9 };
++        Check(!wxl::storage::TryServe("dir\\liar.m2", v) && v.empty(), "a provider that says yes with no bytes is a miss, not an empty file");
++    }
++    Check(!Serve("", out) && !Serve(nullptr, out), "empty and null names are misses");
++
++    std::printf("capacity\n");
++    int accepted = 0, refused = 0;
++    for (int i = 0; i < 20; ++i) (RegisterFileProvider(&DeclineAll, nullptr) == 0 ? accepted : refused)++;
++    Check(accepted == 16 - 5 && refused == 20 - (16 - 5), "the table takes 16 providers in all; the rest are refused (return 2)");
++    Check(Serve("dir\\a.m2", out) && out == "AAAA", "  ...and the ones already registered keep working");
++
++    std::printf("virtual keys\n");
++    Check(IsVirtualKey("x") == 0, "no query registered: not a virtual key");
++    Check(RegisterVirtualKeyQuery(nullptr, nullptr) == 1, "a null query is refused");
++    static const char* k1 = "virt\\one.m2"; static const char* k2 = "virt\\two.m2";
++    Check(RegisterVirtualKeyQuery(&IsKey, const_cast<char*>(k1)) == 0 && RegisterVirtualKeyQuery(&IsKey, const_cast<char*>(k2)) == 0, "two queries registered");
++    Check(IsVirtualKey("virt\\one.m2") == 1 && IsVirtualKey("virt\\two.m2") == 1, "either one claims its name");
++    Check(IsVirtualKey("virt\\three.m2") == 0 && IsVirtualKey("") == 0 && IsVirtualKey(nullptr) == 0, "others, empty and null do not");
++
++    std::printf("existence probe (storage)\n");
++    Check(!wxl::storage::ExistsNative("x"), "no probe installed: false");
++    wxl::storage::SetNativeExists([](const char* n) { return std::strcmp(n, "there") == 0; });
++    Check(wxl::storage::ExistsNative("there") && !wxl::storage::ExistsNative("gone") && !wxl::storage::ExistsNative("") && !wxl::storage::ExistsNative(nullptr),
++          "the installed probe answers; empty and null are false");
++
++    std::printf("threads: opens while providers register\n");
++    {
++        std::atomic<int> bad{ 0 };
++        std::atomic<bool> stop{ false };
++        std::vector<std::thread> readers;
++        for (int t = 0; t < 6; ++t)
++            readers.emplace_back([&] {
++                std::string s;
++                while (!stop)
++                {
++                    if (!Serve("dir\\b.m2", s) || s != "BBBBBB") ++bad;
++                    if (Serve("dir\\other.m2", s)) ++bad;
++                    if (IsVirtualKey("virt\\one.m2") != 1) ++bad;
++                }
++            });
++        for (int i = 0; i < 2000; ++i) { RegisterFileProvider(&DeclineAll, nullptr); RegisterVirtualKeyQuery(&IsKey, const_cast<char*>(k1)); }
++        stop = true;
++        for (auto& r : readers) r.join();
++        Check(bad == 0, "readers never see a wrong answer while registrations keep arriving (lock-free reads)");
++    }
++
++    std::printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "all passed", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/run_listfile_tests.sh b/Tools/WxlModuleTest/run_listfile_tests.sh
+new file mode 100755
+index 0000000..69fbd01
+--- /dev/null
++++ b/Tools/WxlModuleTest/run_listfile_tests.sh
+@@ -0,0 +1,17 @@
++#!/bin/sh
++# Builds the listfile module and its host test with g++ (Linux or MinGW) and runs every scenario.
++#   ./run_listfile_tests.sh <listfile snippet.csv>        (exit code 0 = everything passed)
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd)
++R=$(cd "$HERE/../.." && pwd)
++M=$R/Engine/Source/WXLModules/Listfile
++SNIPPET=${1:?usage: run_listfile_tests.sh <listfile snippet.csv>}
++OUT=${TMPDIR:-/tmp}/wxl_listfile_test
++mkdir -p "$OUT"
++g++ -std=c++17 -O2 -fPIC -shared -fvisibility=hidden -I "$R/Engine/Source/WXL/Sdk" -I "$M" "$M"/*.cpp -o "$OUT/libwxl_listfile.so"
++g++ -std=c++17 -O2 -pthread -I "$R/Engine/Source/WXL/Sdk" "$HERE/listfile_host_test.cpp" -ldl -o "$OUT/listfile_host_test"
++for scenario in refusals eager lazy formats noexists customname missingfile scale scalelazy; do
++    echo "== $scenario"
++    "$OUT/listfile_host_test" "$OUT/libwxl_listfile.so" "$SNIPPET" "$scenario"
++done
++echo "all scenarios passed"

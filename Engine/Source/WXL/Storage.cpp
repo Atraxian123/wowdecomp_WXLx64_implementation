@@ -14,7 +14,8 @@ namespace wxl::storage
             return s_providers;
         }
 
-        NativeReadFn g_nativeReader = nullptr;
+        NativeReadFn   g_nativeReader = nullptr;
+        NativeExistsFn g_nativeExists = nullptr;
     }
 
     void RegisterProvider(ProviderFn fn)
@@ -62,6 +63,16 @@ namespace wxl::storage
     {
         g_nativeReader = fn;
         wxl::LogCat("STORAGE", "native reader %s", fn ? "installed" : "cleared");
+    }
+
+    void SetNativeExists(NativeExistsFn fn)
+    {
+        g_nativeExists = fn;
+    }
+
+    bool ExistsNative(const char* name)
+    {
+        return g_nativeExists && name && *name && g_nativeExists(name);
     }
 
     bool ReadNativeQuiet(const char* name, std::vector<uint8_t>& out)

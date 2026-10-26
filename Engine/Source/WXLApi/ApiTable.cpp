@@ -9,6 +9,7 @@
 
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
+#include "Engine/Source/WXL/ModuleRegistry.h"
 #include "Engine/Source/WXL/Services.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLApi/ModelAccess.h"
@@ -92,7 +93,11 @@ namespace wxl::api
             buffer->size = 0;
         }
 
-        int IsVirtualKey(const char* name) { return name && eq::VPathIsVirtualKey(name) ? 1 : 0; }
+        // Virtual paths are minted by the client's own VirtualPath and, as modules take that over, by modules.
+        int IsVirtualKey(const char* name)
+        {
+            return name && (eq::VPathIsVirtualKey(name) || wxl::registry::IsVirtualKey(name)) ? 1 : 0;
+        }
 
         const char* WorkingDirectory() { return wxl::WorkingDirectory(); }
 
@@ -148,6 +153,11 @@ namespace wxl::api
         int RegisterService(const char* name, const void* table, size_t size) { return wxl::services::Register(name, table, size) ? 0 : 1; }
         const void* GetService(const char* name, size_t* size) { return wxl::services::Get(name, size); }
 
+        int RegisterFileProvider(WxlFileProviderFn fn, void* user)   { return wxl::registry::RegisterFileProvider(fn, user); }
+        int RegisterVirtualKeyQuery(WxlVirtualKeyFn fn, void* user)  { return wxl::registry::RegisterVirtualKeyQuery(fn, user); }
+
+        int FileExists(const char* name) { return wxl::storage::ExistsNative(name) ? 1 : 0; }
+
         const WxlApi g_table = {
             WXL_ABI_VERSION,
             sizeof(WxlApi),
@@ -173,6 +183,9 @@ namespace wxl::api
             &VPathDecodeGlobalVirtualKey,
             &RegisterService,
             &GetService,
+            &RegisterFileProvider,
+            &RegisterVirtualKeyQuery,
+            &FileExists,
         };
     }
 
