@@ -1,0 +1,185 @@
+diff --git a/Engine/Source/Gx/CGxDevice/CGxDevice.cpp b/Engine/Source/Gx/CGxDevice/CGxDevice.cpp
+index f2440cd..8c8a9cd 100644
+--- a/Engine/Source/Gx/CGxDevice/CGxDevice.cpp
++++ b/Engine/Source/Gx/CGxDevice/CGxDevice.cpp
+@@ -56,7 +56,7 @@ static const char* s_computeShaderTargetNames[4] = { "none", "cs_5_0", "cs_cuda"
+ static const char** s_shaderTargetNames[GxShTargets_Last] = { CGxDevice::s_vertexShaderTargetNames, s_hullShaderTargetNames, s_domainShaderTargetNames, s_geometryShaderTargetNames, CGxDevice::s_pixelShaderTargetNames, s_computeShaderTargetNames };
+ 
+ // STATIC: 0x00AD8B7C
+-uint32_t CGxDevice::s_alphaRef[12] = { 0, 224, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
++uint32_t CGxDevice::s_alphaRef[13] = { 0, 224, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1 };
+ 
+ // STATIC: 0x00AD8BAC
+ int32_t s_streamVertexPoolSize = 0x2C0000;
+diff --git a/Engine/Source/Gx/CGxDevice/CGxDevice.h b/Engine/Source/Gx/CGxDevice/CGxDevice.h
+index 77a7ed6..043f44a 100644
+--- a/Engine/Source/Gx/CGxDevice/CGxDevice.h
++++ b/Engine/Source/Gx/CGxDevice/CGxDevice.h
+@@ -251,7 +251,7 @@ class CGxDevice {
+     static CGxShader* s_uiPixelShader;
+     static CGxShader* s_uiVertexShader[2];
+     static ShadowConstants s_shadowConstants[2];
+-    static uint32_t s_alphaRef[12];
++    static uint32_t s_alphaRef[13];
+     static const uint32_t s_texFormatBitDepth[GxTexFormats_Last];
+     static const uint32_t s_texFormatBlockSize[GxTexFormats_Last];
+     static const uint32_t s_texFormatBytesPerBlock[GxTexFormats_Last];
+diff --git a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
+index 8275774..7851151 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
++++ b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
+@@ -43,10 +43,10 @@ const D3DDECLUSAGE CGxDeviceD3d::s_gxAttribToD3dAttribUsage[GxVAs_Last] = { D3DD
+ const uint32_t CGxDeviceD3d::s_gxAttribToD3dAttribUsageIndex[GxVAs_Last] = { 0, 0, 0, 0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7 };
+ 
+ // STATIC: 0x00A2F964
+-const D3DBLEND CGxDeviceD3d::s_srcBlend[12] = { D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_SRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_INVSRCALPHA, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_ONE, D3DBLEND_BLENDFACTOR };
++const D3DBLEND CGxDeviceD3d::s_srcBlend[13] = {{ D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_SRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_INVSRCALPHA, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_ONE, D3DBLEND_BLENDFACTOR, D3DBLEND_INVDESTCOLOR };
+ 
+ // STATIC: 0x00A2F994
+-const D3DBLEND CGxDeviceD3d::s_dstBlend[12] = { D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_INVSRCALPHA, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_SRCCOLOR, D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ONE, D3DBLEND_INVBLENDFACTOR };
++const D3DBLEND CGxDeviceD3d::s_dstBlend[13] = {{ D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_INVSRCALPHA, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_SRCCOLOR, D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ONE, D3DBLEND_INVBLENDFACTOR, D3DBLEND_ONE };
+ 
+ // STATIC: 0x00A2F9C4
+ const D3DTEXTUREADDRESS CGxDeviceD3d::s_wrapModes[2] = { D3DTADDRESS_CLAMP, D3DTADDRESS_WRAP };
+diff --git a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h
+index 4124f13..8377f71 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h
++++ b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.h
+@@ -310,8 +310,8 @@ class CGxDeviceD3d : public CGxDevice {
+     static const EGxTexFormat s_tolerableTexFmtMapping[GxTexFormats_Last];
+     static const D3DCUBEMAP_FACES s_faceTypes[6];
+     static const D3DPRIMITIVETYPE s_primitiveConversion[GxPrims_Last];
+-    static const D3DBLEND s_srcBlend[12];
+-    static const D3DBLEND s_dstBlend[12];
++    static const D3DBLEND s_srcBlend[13];
++    static const D3DBLEND s_dstBlend[13];
+     static const D3DCMPFUNC s_cmpFunc[4];
+     static const D3DCULL s_cullMode[3];
+     static D3DTEXTUREFILTERTYPE s_filterModes[GxTexFilters_Last][3];
+diff --git a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
+index 45cd8ae..8ee98dd 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
++++ b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
+@@ -41,10 +41,10 @@ const D3DDECLUSAGE CGxDeviceD3d9Ex::s_gxAttribToD3dAttribUsage[GxVAs_Last] = { D
+ const uint32_t CGxDeviceD3d9Ex::s_gxAttribToD3dAttribUsageIndex[GxVAs_Last] = { 0, 0, 0, 0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7 };
+ 
+ // STATIC: 0x00A2FB68
+-const D3DBLEND CGxDeviceD3d9Ex::s_srcBlend[12] = { D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_SRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_INVSRCALPHA, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_ONE, D3DBLEND_BLENDFACTOR };
++const D3DBLEND CGxDeviceD3d9Ex::s_srcBlend[13] = {{ D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_SRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_DESTCOLOR, D3DBLEND_INVSRCALPHA, D3DBLEND_INVSRCALPHA, D3DBLEND_SRCALPHA, D3DBLEND_ONE, D3DBLEND_BLENDFACTOR, D3DBLEND_INVDESTCOLOR };
+ 
+ // STATIC: 0x00A2FB98
+-const D3DBLEND CGxDeviceD3d9Ex::s_dstBlend[12] = { D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_INVSRCALPHA, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_SRCCOLOR, D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ONE, D3DBLEND_INVBLENDFACTOR };
++const D3DBLEND CGxDeviceD3d9Ex::s_dstBlend[13] = {{ D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_INVSRCALPHA, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_SRCCOLOR, D3DBLEND_ONE, D3DBLEND_ONE, D3DBLEND_ZERO, D3DBLEND_ZERO, D3DBLEND_ONE, D3DBLEND_INVBLENDFACTOR, D3DBLEND_ONE };
+ 
+ // STATIC: 0x00A2FBC8
+ const D3DTEXTUREADDRESS CGxDeviceD3d9Ex::s_wrapModes[2] = { D3DTADDRESS_CLAMP, D3DTADDRESS_WRAP };
+diff --git a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h
+index eb446fb..793f1e3 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h
++++ b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.h
+@@ -320,8 +320,8 @@ class CGxDeviceD3d9Ex : public CGxDevice {
+     static EGxTexFormat s_GxTexFormatToUse[GxTexFormats_Last];
+     static const D3DCUBEMAP_FACES s_faceTypes[6];
+     static const D3DPRIMITIVETYPE s_primitiveConversion[GxPrims_Last];
+-    static const D3DBLEND s_srcBlend[12];
+-    static const D3DBLEND s_dstBlend[12];
++    static const D3DBLEND s_srcBlend[13];
++    static const D3DBLEND s_dstBlend[13];
+     static const D3DCMPFUNC s_cmpFunc[4];
+     static const D3DCULL s_cullMode[3];
+     static D3DTEXTUREFILTERTYPE s_filterModes[GxTexFilters_Last][3];
+diff --git a/Engine/Source/Gx/CGxDeviceOpenGL/CGxDeviceOpenGl.cpp b/Engine/Source/Gx/CGxDeviceOpenGL/CGxDeviceOpenGl.cpp
+index 904972d..bc671b6 100644
+--- a/Engine/Source/Gx/CGxDeviceOpenGL/CGxDeviceOpenGl.cpp
++++ b/Engine/Source/Gx/CGxDeviceOpenGL/CGxDeviceOpenGl.cpp
+@@ -82,10 +82,10 @@ static const GLenum s_glAttribType[7] = { GL_UNSIGNED_BYTE, GL_UNSIGNED_BYTE, GL
+ static const GLboolean s_glAttribNormalized[7] = { GL_TRUE, GL_FALSE, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE };
+ 
+ // STATIC: 0x00AD8D90
+-static GLenum s_glBlendSrc[12] = { GL_ONE, GL_ONE, GL_SRC_ALPHA, GL_SRC_ALPHA, GL_DST_COLOR, GL_DST_COLOR, GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, GL_ONE, GL_CONSTANT_ALPHA_EXT };
++static GLenum s_glBlendSrc[13] = { GL_ONE, GL_ONE, GL_SRC_ALPHA, GL_SRC_ALPHA, GL_DST_COLOR, GL_DST_COLOR, GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, GL_ONE, GL_CONSTANT_ALPHA_EXT, GL_ONE_MINUS_DST_COLOR };
+ 
+ // STATIC: 0x00AD8DC0
+-static GLenum s_glBlendDst[12] = { GL_ZERO, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO, GL_SRC_COLOR, GL_ONE, GL_ONE, GL_ZERO, GL_ZERO, GL_ONE, GL_ONE_MINUS_CONSTANT_ALPHA_EXT };
++static GLenum s_glBlendDst[13] = { GL_ZERO, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO, GL_SRC_COLOR, GL_ONE, GL_ONE, GL_ZERO, GL_ZERO, GL_ONE, GL_ONE_MINUS_CONSTANT_ALPHA_EXT, GL_ONE };
+ 
+ // STATIC: 0x00AD8E80
+ static GLenum s_glDepthFunc[4] = { GL_LEQUAL, GL_EQUAL, GL_GEQUAL, GL_LESS };
+diff --git a/Engine/Source/Gx/Types.h b/Engine/Source/Gx/Types.h
+index f534cf6..c51d07b 100644
+--- a/Engine/Source/Gx/Types.h
++++ b/Engine/Source/Gx/Types.h
+@@ -33,7 +33,8 @@ enum EGxBlend {
+     GxBlend_SrcAlphaOpaque = 9,
+     GxBlend_NoAlphaAdd = 10,
+     GxBlend_ConstantAlpha = 11,
+-    GxBlends_Last = 12,
++    GxBlend_ScreenAdd = 12, // WXL: incoming * (1 - destination) + destination: brightens toward white, never clips
++    GxBlends_Last = 13,
+ };
+ 
+ enum EGxTexFormat {
+diff --git a/Engine/Source/Model2/M2Model.cpp b/Engine/Source/Model2/M2Model.cpp
+index 5685a5e..35f9245 100644
+--- a/Engine/Source/Model2/M2Model.cpp
++++ b/Engine/Source/Model2/M2Model.cpp
+@@ -7436,6 +7436,15 @@ int32_t CM2Model::InitializeLoaded() {
+                     material.m_blendMode = 5;
+                     material.m_flags &= ~4u;
+                     break;
++
++                // WXL: a source emitter can name a blend mode past the stock map. The stock default (opaque, alpha test
++                // left on) draws a fire sprite as a solid quad; the one usable state those sources add is a screen blend.
++                // Alpha testing belongs to the two modes that do not blend at all. The record keeps the mode it was
++                // authored with; only this emitter's material resolves to the screen state.
++                default:
++                    material.m_blendMode = kParticleBlendScreen;
++                    material.m_flags &= ~4u;
++                    break;
+             }
+ 
+             material.m_flags = (material.m_flags & ~1u) | ((flags & 1) ? 0 : 1);
+diff --git a/Engine/Source/Model2/M2Scene.cpp b/Engine/Source/Model2/M2Scene.cpp
+index 9ebdcf7..3449dd0 100644
+--- a/Engine/Source/Model2/M2Scene.cpp
++++ b/Engine/Source/Model2/M2Scene.cpp
+@@ -27,7 +27,10 @@
+ const uint32_t s_localLighting[7] = { 1, 1, 1, 1, 1, 0, 0 };
+ 
+ // STATIC: 0x00A453B0
+-const uint32_t s_blendModes[3][7] = { { 0, 1, 2, 10, 3, 4, 5 }, { 2, 2, 2, 10, 3, 4, 5 }, { 2, 2, 2, 10, 3, 4, 5 } };
++const uint32_t s_blendModes[3][8] = { { 0, 1, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 } };
++
++static_assert(sizeof(s_blendModes[0]) / sizeof(s_blendModes[0][0]) > kM2BlendScreen, "s_blendModes must reach the screen blend index");
++static_assert(GxBlend_ScreenAdd == 12 && GxBlend_ScreenAdd < GxBlends_Last, "the screen state must be inside the device tables");
+ 
+ // STATIC: 0x00AF5898
+ uint32_t CM2Scene::s_optFlags = 0xFFFFFFFF;
+@@ -90,6 +93,8 @@ uint32_t ParticleBlendToM2Blend(uint32_t blend) {
+             return 6;
+         case 10:
+             return 3;
++        case kParticleBlendScreen:
++            return kM2BlendScreen;
+         default:
+             return 0;
+     }
+diff --git a/Engine/Source/Model2/M2Scene.h b/Engine/Source/Model2/M2Scene.h
+index 9e2b7d8..50ebc83 100644
+--- a/Engine/Source/Model2/M2Scene.h
++++ b/Engine/Source/Model2/M2Scene.h
+@@ -130,7 +130,13 @@ class CM2Scene {
+     void TransformHitTestVerticesBlendSSE(const CM2Model* model, const M2SkinProfile* skinData, const M2SkinSection* section, int32_t normals, const C3Vector& dir, float d);
+ };
+ 
+-extern const uint32_t s_blendModes[3][7];
++extern const uint32_t s_blendModes[3][8];
++
++// WXL: the screen blend an emitter whose record names a blend mode past the stock map resolves to. A particle
++// material carries kParticleBlendScreen; ParticleBlendToM2Blend turns it into the M2 blend index kM2BlendScreen,
++// and s_blendModes into GxBlend_ScreenAdd.
++constexpr uint32_t kParticleBlendScreen = 11;
++constexpr uint32_t kM2BlendScreen = 7;
+ extern const uint32_t s_localLighting[7];
+ 
+ uint32_t ParticleBlendToM2Blend(uint32_t blend);

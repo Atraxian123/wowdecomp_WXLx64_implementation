@@ -16,6 +16,7 @@
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Model2/M2Cache.h"
 #include "Engine/Source/Model2/M2Model.h"
+#include "Engine/Source/Model2/ModernM2/ModernM2.h"
 #include "Engine/Source/Os/TimeManager.h"
 #include "Engine/Source/Services/AsyncFile.h"
 #include "Engine/Source/Services/Texture.h"
@@ -356,9 +357,13 @@ int32_t CM2Shared::SetIndices() {
         int32_t sharedVertices = (this->m_cache->m_flags & 8) || (this->m_data->m_bones.m_count == 1 && (this->m_cache->m_flags & 0x40));
         uint32_t indexStart = 0;
 
+        // WXL: a model with the extended index encoding keeps its full 32-bit starts beside the sections.
+        wxl::modernm2::State* wide = this->m_wxl;
+        const bool wideStarts = wide && !wide->sourceStart.empty() && wide->sourceStart.size() == this->m_skinData->m_skinSections.m_count;
+
         for (uint32_t i = 0; i < this->m_skinData->m_skinSections.m_count; i++) {
             M2SkinSection* section = &this->m_skinSections[i];
-            uint32_t start = this->m_skinData->m_skinSections[i].m_indexStart;
+            uint32_t start = wideStarts ? wide->sourceStart[i] : this->m_skinData->m_skinSections[i].m_indexStart;
             uint16_t offset = sharedVertices ? 0 : static_cast<uint16_t>(-section->m_vertexStart);
 
             for (uint32_t instance = 0; instance < this->m_instances; instance++) {
@@ -371,6 +376,11 @@ int32_t CM2Shared::SetIndices() {
             }
 
             section->m_indexStart = static_cast<uint16_t>(indexStart);
+
+            if (wideStarts) {
+                wide->sectionStart[i] = indexStart;
+            }
+
             indexStart += this->m_instances * section->m_indexCount;
         }
 
@@ -1319,6 +1329,9 @@ int32_t CM2Shared::FinishLoadingSkinProfile(uint32_t size) {
         return 0;
     }
 
+    // WXL: bone-budget split, modern contract rebuild, wide index starts (may re-seat m_skinData).
+    wxl::modernm2::FinalizeSkin(this, size);
+
     if (!this->InitializeSkinProfile()) {
         DebugLog("Failed to initialize model skin profile: %s", this->m_fileName);
         return 0;
@@ -1530,6 +1543,7 @@ CM2Shared::CM2Shared(CM2Cache* cache) {
     this->m_maxInstances = 0;
     this->m_billboardBoneCount = 0;
     this->m_lastUsedTime = 0;
+    this->m_wxl = nullptr;
     this->m_fileName[0] = '\0';
 }
 
@@ -1543,7 +1557,8 @@ int32_t M2Init(uint8_t* base, uint32_t size, M2Data& data) {
         return 0;
     }
 
-    if (data.m_version < 0x108 || data.m_version > 0x108) {
+    // WXL: the modern reader hands the walk a flat MD20 body whose inner version is in the modern window.
+    if (data.m_version != 0x108 && !wxl::modernm2::IsAcceptedVersion(data.m_version)) {
         return 0;
     }
 
@@ -1576,6 +1591,13 @@ int32_t CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequenceIndex, uint
 // VERIFY: b8d661f9 manual
 // OFFSET: 0x0083CA90
 int32_t CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequenceIndex, CAsyncObject* object) {
+    // WXL: a modern companion file wraps the flat track blob in one chunk; unwrap it once per file.
+    uint32_t unwrapped = object->m_size;
+
+    if (wxl::modernm2::UnwrapAnim(static_cast<uint8_t*>(object->m_buffer), unwrapped)) {
+        object->m_size = unwrapped;
+    }
+
     M2Sequence* sequence = &this->m_data->m_sequences[sequenceIndex];
 
     if (!this->FinishLoadingLowPrioritySequence(sequenceIndex, static_cast<uint8_t*>(object->m_buffer), object->m_size)) {
@@ -1701,7 +1723,17 @@ int32_t CM2Shared::Initialize() {
     for (uint32_t i = 0; i < this->m_data->m_textures.m_count; i++) {
         M2Texture* texture = &this->m_data->m_textures[i];
 
+        // WXL: a hardcoded texture the modern file leaves unnamed is named by its TXID file id (listfile).
+        char txidPath[260];
+        const char* texturePath = nullptr;
+
         if (texture->m_filename.m_count > 1) {
+            texturePath = texture->m_filename.Data();
+        } else if (wxl::modernm2::TextureName(this, i, *texture, txidPath, sizeof(txidPath))) {
+            texturePath = txidPath;
+        }
+
+        if (texturePath) {
             CGxTexFlags texFlags;
             texFlags.m_filter = GxTex_LinearMipLinear;
             texFlags.m_wrapU = 1;
@@ -1713,7 +1745,7 @@ int32_t CM2Shared::Initialize() {
                 flags |= 0x30;
             }
 
-            this->m_textures[i] = TextureCreate(texture->m_filename.Data(), texFlags, &GetGlobalStatusObj(), flags);
+            this->m_textures[i] = TextureCreate(texturePath, texFlags, &GetGlobalStatusObj(), flags);
         } else {
             static const uint32_t white = 0xFFFFFFFF;
             this->m_textures[i] = TextureCreateSolid(*reinterpret_cast<const CImVector*>(&white));
@@ -1739,12 +1771,25 @@ int32_t CM2Shared::FinishLoading() {
         return 1;
     }
 
+    // WXL: an MD21 container is demuxed and brought to the client's record shape first; a stock MD20 model
+    // costs one magic compare.
+    const wxl::modernm2::LoadResult modernResult = wxl::modernm2::PrepareLoad(this);
+
+    if (modernResult == wxl::modernm2::LoadResult::Failed) {
+        DebugLog("Corrupt model data: %s", this->m_fileName);
+        return 0;
+    }
+
     if (!M2Init(reinterpret_cast<uint8_t*>(this->m_data), this->m_fileSize, *this->m_data)) {
         DebugLog("Corrupt model data: %s", this->m_fileName);
         return 0;
     }
 
     this->m_data->m_flags &= ~0x60u;
+
+    if (modernResult == wxl::modernm2::LoadResult::Modern) {
+        wxl::modernm2::FinishWalk(this);
+    }
 
     if (!this->Initialize()) {
         DebugLog("Failed to initialize model: %s", this->m_fileName);
@@ -1934,6 +1979,8 @@ CM2Shared::~CM2Shared() {
         }
     }
 #endif
+
+    wxl::modernm2::Destroy(this);
 
     if (!pending) {
         SIMD::FreeA16(this->m_data);

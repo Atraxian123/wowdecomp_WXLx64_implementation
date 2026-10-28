@@ -56,7 +56,7 @@ static const char* s_computeShaderTargetNames[4] = { "none", "cs_5_0", "cs_cuda"
 static const char** s_shaderTargetNames[GxShTargets_Last] = { CGxDevice::s_vertexShaderTargetNames, s_hullShaderTargetNames, s_domainShaderTargetNames, s_geometryShaderTargetNames, CGxDevice::s_pixelShaderTargetNames, s_computeShaderTargetNames };
 
 // STATIC: 0x00AD8B7C
-uint32_t CGxDevice::s_alphaRef[12] = { 0, 224, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0 };
+uint32_t CGxDevice::s_alphaRef[13] = { 0, 224, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1 };
 
 // STATIC: 0x00AD8BAC
 int32_t s_streamVertexPoolSize = 0x2C0000;

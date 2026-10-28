@@ -1,0 +1,2387 @@
+diff --git a/Engine/Source/Model2/CM2SceneRender.cpp b/Engine/Source/Model2/CM2SceneRender.cpp
+index d3237b1..f23c761 100644
+--- a/Engine/Source/Model2/CM2SceneRender.cpp
++++ b/Engine/Source/Model2/CM2SceneRender.cpp
+@@ -1,5 +1,6 @@
+ #include <cmath>
+ #include <cstdint>
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+ #include "Engine/Source/Model2/CM2SceneRender.h"
+ #include "Engine/Source/Gx/CGxBuf.h"
+ #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+@@ -472,7 +473,7 @@ void CM2SceneRender::DrawBatch() {
+ 
+     CGxBatch batch;
+     batch.m_primType = GxPrim_Triangles;
+-    batch.m_start = this->m_curSkinSection->m_indexStart;
++    batch.m_start = wxl::modernm2::SectionIndexStart(this->m_curShared, this->m_curSkinSection);
+     batch.m_count = this->m_curSkinSection->m_indexCount;
+ 
+     if (CShaderEffect::s_enableShaders) {
+@@ -614,11 +615,18 @@ void CM2SceneRender::DrawBatchDoodad(M2Element* elements, uint32_t* indices) {
+         instances = total;
+     }
+ 
++    // WXL: the vertex shader's bone palette holds 75 bones per draw; chunk the instances to fit it.
++    const uint32_t boneInstanceCap = wxl::modernm2::DoodadInstanceCap(this->m_curSkinSection->m_boneCount);
++
++    if (instances > boneInstanceCap) {
++        instances = boneInstanceCap;
++    }
++
+     this->m_curShared->SetIndices();
+ 
+     CGxBatch batch;
+     batch.m_primType = GxPrim_Triangles;
+-    batch.m_start = this->m_curSkinSection->m_indexStart;
++    batch.m_start = wxl::modernm2::SectionIndexStart(this->m_curShared, this->m_curSkinSection);
+     batch.m_count = 0;
+     batch.m_minIndex = 0;
+     batch.m_maxIndex = 0;
+diff --git a/Engine/Source/Model2/M2Model.cpp b/Engine/Source/Model2/M2Model.cpp
+index 3fb45a9..5685a5e 100644
+--- a/Engine/Source/Model2/M2Model.cpp
++++ b/Engine/Source/Model2/M2Model.cpp
+@@ -11,6 +11,7 @@
+ #else
+ #include <alloca.h>
+ #endif
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+ #include "Engine/Source/Model2/M2Model.h"
+ #include "Engine/Source/Base/Handle.h"
+ #include "Engine/Source/Base/ObjectAlloc.h"
+@@ -2673,10 +2674,12 @@ int32_t CM2Model::SetIndices() {
+                 M2SkinSection* section = &skin->m_skinSections[sectionIndex];
+ 
+                 if (copyIndices || singleBone) {
+-                    memcpy(indices, &skin->m_indices[section->m_indexStart], section->m_indexCount * sizeof(uint16_t));
++                    memcpy(indices, &skin->m_indices[wxl::modernm2::SkinIndexStart(shared, sectionIndex, section)], section->m_indexCount * sizeof(uint16_t));
+                 } else {
++                    const uint32_t sourceStart = wxl::modernm2::SkinIndexStart(shared, sectionIndex, section);
++
+                     for (uint32_t j = 0; j < section->m_indexCount; j++) {
+-                        indices[j] = vertexBase + skin->m_indices[j + section->m_indexStart] - section->m_vertexStart;
++                        indices[j] = vertexBase + skin->m_indices[j + sourceStart] - section->m_vertexStart;
+                     }
+                 }
+ 
+@@ -2892,7 +2895,7 @@ void CM2Model::RenderModelBatchesForProjectedTexture() {
+ 
+             CGxBatch gxBatch;
+             gxBatch.m_primType = GxPrim_Triangles;
+-            gxBatch.m_start = section->m_indexStart;
++            gxBatch.m_start = wxl::modernm2::SectionIndexStart(this->m_shared, section);
+             gxBatch.m_count = section->m_indexCount;
+             gxBatch.m_minIndex = 0;
+             gxBatch.m_maxIndex = this->m_shared->m_skinData->m_vertices.m_count - 1;
+@@ -2941,7 +2944,7 @@ void CM2Model::RenderBatchShadowMap(int32_t untextured, M2Batch* batch, const CM
+ 
+     CGxBatch gxBatch;
+     gxBatch.m_primType = GxPrim_Triangles;
+-    gxBatch.m_start = section->m_indexStart;
++    gxBatch.m_start = wxl::modernm2::SectionIndexStart(this->m_shared, section);
+     gxBatch.m_count = 0;
+     gxBatch.m_minIndex = 0;
+     gxBatch.m_maxIndex = 0;
+diff --git a/Engine/Source/Model2/M2Scene.cpp b/Engine/Source/Model2/M2Scene.cpp
+index a6229c1..9ebdcf7 100644
+--- a/Engine/Source/Model2/M2Scene.cpp
++++ b/Engine/Source/Model2/M2Scene.cpp
+@@ -4,6 +4,7 @@
+ #include <cstring>
+ #include <new>
+ #include <xmmintrin.h>
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+ #include "Engine/Source/Model2/M2Scene.h"
+ #include "Engine/Source/Base/ObjectAlloc.h"
+ #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+@@ -666,7 +667,7 @@ M2HitRec* CM2Scene::HitTestGeometry(const CM2Model* model, uint32_t pass, const
+             this->TransformHitTestVerticesBlend(model, skinData, section, pass, dir, d);
+         }
+ 
+-        const uint16_t* indices = &skinData->m_indices[section->m_indexStart];
++        const uint16_t* indices = &skinData->m_indices[wxl::modernm2::SkinIndexStart(model->m_shared, batch->m_skinSectionIndex, section)];
+         best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, section->m_vertexCount, start, pass, rec, t, best);
+     }
+ 
+diff --git a/Engine/Source/Model2/M2Shared.cpp b/Engine/Source/Model2/M2Shared.cpp
+index 4e810f4..66dda98 100644
+--- a/Engine/Source/Model2/M2Shared.cpp
++++ b/Engine/Source/Model2/M2Shared.cpp
+@@ -16,6 +16,7 @@
+ #include "Engine/Source/Gx/Gx.h"
+ #include "Engine/Source/Model2/M2Cache.h"
+ #include "Engine/Source/Model2/M2Model.h"
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+ #include "Engine/Source/Os/TimeManager.h"
+ #include "Engine/Source/Services/AsyncFile.h"
+ #include "Engine/Source/Services/Texture.h"
+@@ -356,9 +357,13 @@ int32_t CM2Shared::SetIndices() {
+         int32_t sharedVertices = (this->m_cache->m_flags & 8) || (this->m_data->m_bones.m_count == 1 && (this->m_cache->m_flags & 0x40));
+         uint32_t indexStart = 0;
+ 
++        // WXL: a model with the extended index encoding keeps its full 32-bit starts beside the sections.
++        wxl::modernm2::State* wide = this->m_wxl;
++        const bool wideStarts = wide && !wide->sourceStart.empty() && wide->sourceStart.size() == this->m_skinData->m_skinSections.m_count;
++
+         for (uint32_t i = 0; i < this->m_skinData->m_skinSections.m_count; i++) {
+             M2SkinSection* section = &this->m_skinSections[i];
+-            uint32_t start = this->m_skinData->m_skinSections[i].m_indexStart;
++            uint32_t start = wideStarts ? wide->sourceStart[i] : this->m_skinData->m_skinSections[i].m_indexStart;
+             uint16_t offset = sharedVertices ? 0 : static_cast<uint16_t>(-section->m_vertexStart);
+ 
+             for (uint32_t instance = 0; instance < this->m_instances; instance++) {
+@@ -371,6 +376,11 @@ int32_t CM2Shared::SetIndices() {
+             }
+ 
+             section->m_indexStart = static_cast<uint16_t>(indexStart);
++
++            if (wideStarts) {
++                wide->sectionStart[i] = indexStart;
++            }
++
+             indexStart += this->m_instances * section->m_indexCount;
+         }
+ 
+@@ -1319,6 +1329,9 @@ int32_t CM2Shared::FinishLoadingSkinProfile(uint32_t size) {
+         return 0;
+     }
+ 
++    // WXL: bone-budget split, modern contract rebuild, wide index starts (may re-seat m_skinData).
++    wxl::modernm2::FinalizeSkin(this, size);
++
+     if (!this->InitializeSkinProfile()) {
+         DebugLog("Failed to initialize model skin profile: %s", this->m_fileName);
+         return 0;
+@@ -1530,6 +1543,7 @@ CM2Shared::CM2Shared(CM2Cache* cache) {
+     this->m_maxInstances = 0;
+     this->m_billboardBoneCount = 0;
+     this->m_lastUsedTime = 0;
++    this->m_wxl = nullptr;
+     this->m_fileName[0] = '\0';
+ }
+ 
+@@ -1543,7 +1557,8 @@ int32_t M2Init(uint8_t* base, uint32_t size, M2Data& data) {
+         return 0;
+     }
+ 
+-    if (data.m_version < 0x108 || data.m_version > 0x108) {
++    // WXL: the modern reader hands the walk a flat MD20 body whose inner version is in the modern window.
++    if (data.m_version != 0x108 && !wxl::modernm2::IsAcceptedVersion(data.m_version)) {
+         return 0;
+     }
+ 
+@@ -1576,6 +1591,13 @@ int32_t CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequenceIndex, uint
+ // VERIFY: b8d661f9 manual
+ // OFFSET: 0x0083CA90
+ int32_t CM2Shared::FinishLoadingLowPrioritySequence(uint32_t sequenceIndex, CAsyncObject* object) {
++    // WXL: a modern companion file wraps the flat track blob in one chunk; unwrap it once per file.
++    uint32_t unwrapped = object->m_size;
++
++    if (wxl::modernm2::UnwrapAnim(static_cast<uint8_t*>(object->m_buffer), unwrapped)) {
++        object->m_size = unwrapped;
++    }
++
+     M2Sequence* sequence = &this->m_data->m_sequences[sequenceIndex];
+ 
+     if (!this->FinishLoadingLowPrioritySequence(sequenceIndex, static_cast<uint8_t*>(object->m_buffer), object->m_size)) {
+@@ -1701,7 +1723,17 @@ int32_t CM2Shared::Initialize() {
+     for (uint32_t i = 0; i < this->m_data->m_textures.m_count; i++) {
+         M2Texture* texture = &this->m_data->m_textures[i];
+ 
++        // WXL: a hardcoded texture the modern file leaves unnamed is named by its TXID file id (listfile).
++        char txidPath[260];
++        const char* texturePath = nullptr;
++
+         if (texture->m_filename.m_count > 1) {
++            texturePath = texture->m_filename.Data();
++        } else if (wxl::modernm2::TextureName(this, i, *texture, txidPath, sizeof(txidPath))) {
++            texturePath = txidPath;
++        }
++
++        if (texturePath) {
+             CGxTexFlags texFlags;
+             texFlags.m_filter = GxTex_LinearMipLinear;
+             texFlags.m_wrapU = 1;
+@@ -1713,7 +1745,7 @@ int32_t CM2Shared::Initialize() {
+                 flags |= 0x30;
+             }
+ 
+-            this->m_textures[i] = TextureCreate(texture->m_filename.Data(), texFlags, &GetGlobalStatusObj(), flags);
++            this->m_textures[i] = TextureCreate(texturePath, texFlags, &GetGlobalStatusObj(), flags);
+         } else {
+             static const uint32_t white = 0xFFFFFFFF;
+             this->m_textures[i] = TextureCreateSolid(*reinterpret_cast<const CImVector*>(&white));
+@@ -1739,6 +1771,15 @@ int32_t CM2Shared::FinishLoading() {
+         return 1;
+     }
+ 
++    // WXL: an MD21 container is demuxed and brought to the client's record shape first; a stock MD20 model
++    // costs one magic compare.
++    const wxl::modernm2::LoadResult modernResult = wxl::modernm2::PrepareLoad(this);
++
++    if (modernResult == wxl::modernm2::LoadResult::Failed) {
++        DebugLog("Corrupt model data: %s", this->m_fileName);
++        return 0;
++    }
++
+     if (!M2Init(reinterpret_cast<uint8_t*>(this->m_data), this->m_fileSize, *this->m_data)) {
+         DebugLog("Corrupt model data: %s", this->m_fileName);
+         return 0;
+@@ -1746,6 +1787,10 @@ int32_t CM2Shared::FinishLoading() {
+ 
+     this->m_data->m_flags &= ~0x60u;
+ 
++    if (modernResult == wxl::modernm2::LoadResult::Modern) {
++        wxl::modernm2::FinishWalk(this);
++    }
++
+     if (!this->Initialize()) {
+         DebugLog("Failed to initialize model: %s", this->m_fileName);
+         return 0;
+@@ -1935,6 +1980,8 @@ CM2Shared::~CM2Shared() {
+     }
+ #endif
+ 
++    wxl::modernm2::Destroy(this);
++
+     if (!pending) {
+         SIMD::FreeA16(this->m_data);
+     }
+diff --git a/Engine/Source/Model2/M2Shared.h b/Engine/Source/Model2/M2Shared.h
+index d465fd5..95bb7b2 100644
+--- a/Engine/Source/Model2/M2Shared.h
++++ b/Engine/Source/Model2/M2Shared.h
+@@ -18,6 +18,8 @@ class CShaderEffect;
+ class CTexture;
+ class SFileImpl;
+ 
++namespace wxl::modernm2 { struct State; }
++
+ class TextureComboList {
+     public:
+     /* 0000 */ uint32_t m_count;
+@@ -72,6 +74,7 @@ class CM2Shared {
+     /* 0198 */ uint16_t m_billboardBoneCount;
+     /* 019C */ uint32_t m_lastUsedTime;
+     /* 01A0 */ TSLink<CM2Shared> m_updateLink;
++    /* WXL */ wxl::modernm2::State* m_wxl; // modern-M2 per-model state (null for stock models)
+ 
+     static void LoadFailedCallback(void* param);
+     static void LoadSucceededCallback(void* param);
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2.h b/Engine/Source/Model2/ModernM2/ModernM2.h
+new file mode 100644
+index 0000000..682a983
+--- /dev/null
++++ b/Engine/Source/Model2/ModernM2/ModernM2.h
+@@ -0,0 +1,115 @@
++// Modern (MD21 container, inner version 272-274) M2 reader, compiled into the client.
++// Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
++//
++// The extension reached the client from outside: detours on the stock loader, raw offsets turned into raw
++// pointers. Here the same work sits at the decompiled load steps themselves and speaks the client's own
++// record layout, in which every M2Array is a count plus a 32-bit offset RELATIVE TO THE ARRAY (so the
++// stock M2Init walk is reused unchanged once the body has been reshaped).
++//
++// Load path (CM2Shared::FinishLoading):
++//   PrepareLoad   MD21 container -> flat MD20 body in a freshly seated, slightly oversized block; in-place
++//                 field deltas; particle / camera records brought to the client's record shape.
++//   M2Init        the stock walk, which now accepts the modern version window.
++//   FinishWalk    reference clamps on the walked header.
++// Texture creation (CM2Shared::Initialize) asks TextureName for every hardcoded texture the file leaves
++// unnamed: the TXID chunk's file id goes to the listfile module's service (wxl.listfile.v1).
++// Skin load (CM2Shared::FinishLoadingSkinProfile) calls FinalizeSkin before the batch blocks are sized.
++// External animation files go through UnwrapAnim.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++#include "Engine/Source/Model2/M2Shared.h"
++
++namespace wxl::modernm2
++{
++    constexpr uint32_t kVersionMin = 272; // inner M2 version window the reader accepts
++    constexpr uint32_t kVersionMax = 274;
++
++    inline bool IsAcceptedVersion(uint32_t version) { return version >= kVersionMin && version <= kVersionMax; }
++
++    constexpr uint32_t kMaxTxid = 128; // hard cap on the TXID entries kept per model
++
++    /// The client's vertex shader holds the bone palette from register 31, 3 registers per matrix:
++    /// (256 - 31) / 3 = 75 bones per draw.
++    constexpr uint32_t kMaxBonesPerDraw = 75;
++
++    /// Per-model state, owned by CM2Shared::m_wxl. Created only for models that need it.
++    struct State
++    {
++        bool     modern = false;          // read through the MD21 path
++        bool     extendedIndexStart = false; // skin sections carry (level << 16) | indexStart
++        uint32_t txidCount = 0;
++        uint32_t txid[kMaxTxid] = {};
++        uint32_t texResolved = 0;
++        uint32_t texUnresolved = 0;
++
++        // Spare room at the end of the model block, where arrays the skin finalize rebuilds are placed
++        // (an M2Array reaches its data by a signed 32-bit offset from itself, so it has to live close).
++        uint32_t reserveBase = 0;
++        uint32_t reserveCap = 0;
++        uint32_t reserveUsed = 0;
++        std::vector<void*> farBlocks;     // fallback allocations, released with the model
++
++        // Full 32-bit index starts, kept when the model uses the extended encoding (the section record itself
++        // only has 16 bits for it). sourceStart: where each section's indices sit in the skin file's index
++        // array. sectionStart: where they sit in the shared's rebuilt index buffer (what a draw reads).
++        std::vector<uint32_t> sourceStart;
++        std::vector<uint32_t> sectionStart;
++    };
++
++    enum class LoadResult { NotModern, Modern, Failed };
++
++    /// Demuxes and reshapes an MD21 container in shared->m_data. NotModern: bytes untouched.
++    LoadResult PrepareLoad(CM2Shared* shared);
++
++    /// After the stock walk succeeded on a modern model: reference clamps on the walked header.
++    void FinishWalk(CM2Shared* shared);
++
++    /// The path to create the texture from, for a texture record the file left unnamed. Returns false when
++    /// the model has no TXID answer for it (the caller keeps the stock solid-white placeholder).
++    bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap);
++
++    /// Skin finalize: bone-budget split, contract rebuild for modern models, boneInfluences / shadow gate
++    /// fixes. `skinBytes` is the byte size of the skin block as read. Runs before the batch blocks are sized.
++    void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes);
++
++    /// A modern external animation file wraps the flat track blob in one chunk; slides the payload onto the
++    /// buffer base. Returns true when it unwrapped (size is shortened to the payload).
++    bool UnwrapAnim(uint8_t* buffer, uint32_t& size);
++
++    /// Releases everything the model's state owns.
++    void Destroy(CM2Shared* shared);
++
++    /// Instances of one batched doodad draw the bone palette can hold: 75 / bones per instance, at least 1.
++    inline uint32_t DoodadInstanceCap(uint32_t boneCount)
++    {
++        return boneCount ? (kMaxBonesPerDraw / boneCount ? kMaxBonesPerDraw / boneCount : 1u) : 0xFFFFFFFFu;
++    }
++
++    /// The index start to draw a skin section of the shared's section copy from. Models using the extended
++    /// encoding keep it wider than the section record's 16 bits.
++    inline uint32_t SectionIndexStart(const CM2Shared* shared, const M2SkinSection* section)
++    {
++        const State* state = shared ? shared->m_wxl : nullptr;
++        if (state && !state->sectionStart.empty() && shared->m_skinSections && section >= shared->m_skinSections)
++        {
++            const size_t index = static_cast<size_t>(section - shared->m_skinSections);
++            if (index < state->sectionStart.size())
++                return state->sectionStart[index];
++        }
++        return section->m_indexStart;
++    }
++
++    /// The index start of a section of the skin's own (file-order) section array: the same, for a model whose
++    /// sections carry the extended encoding, taken from the full starts kept beside them.
++    inline uint32_t SkinIndexStart(const CM2Shared* shared, uint32_t sectionIndex, const M2SkinSection* section)
++    {
++        const State* state = shared ? shared->m_wxl : nullptr;
++        if (state && sectionIndex < state->sourceStart.size())
++            return state->sourceStart[sectionIndex];
++        return section->m_indexStart;
++    }
++}
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2Load.cpp b/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
+new file mode 100644
+index 0000000..7077439
+--- /dev/null
++++ b/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
+@@ -0,0 +1,633 @@
++// Modern M2 reader, load half: container demux, in-place field deltas, record normalization, TXID names.
++// Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
++//
++// Everything here runs on the raw body BEFORE the stock M2Init walk, while array offsets are still
++// body-relative: a record can still be moved, and a nested array is still addressed by body offset. After
++// PrepareLoad the buffer is a flat MD20 body in the shape the client's own walk expects, and the walk is the
++// stock one.
++
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
++
++#include <atomic>
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <new>
++
++#include "Engine/Source/Base/SIMD.h"
++#include "Engine/Source/Os/OsMemory.h"
++#include "Engine/Source/Storm/H/storm.h"
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/Services.h"
++
++#ifndef WXL_ALLOW_32BIT_HEADER
++#define WXL_ALLOW_32BIT_HEADER 1   // consumer side: only the table declaration is needed
++#endif
++#include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
++
++namespace wxl::modernm2
++{
++    namespace
++    {
++        // ------------------------------------------------------------------------------ byte helpers
++        inline uint32_t Rd32(const void* p) { uint32_t v; std::memcpy(&v, p, 4); return v; }
++        inline uint16_t Rd16(const void* p) { uint16_t v; std::memcpy(&v, p, 2); return v; }
++        inline void     Wr32(void* p, uint32_t v) { std::memcpy(p, &v, 4); }
++        inline void     Wr16(void* p, uint16_t v) { std::memcpy(p, &v, 2); }
++
++        /// MD21-style chunk tags are read as the little-endian dword of the on-disk bytes ('MD21' reads back
++        /// 0x3132444D); they are NOT byte-reversed.
++        constexpr uint32_t Tag(const char (&s)[5])
++        {
++            return uint32_t(uint8_t(s[0])) | (uint32_t(uint8_t(s[1])) << 8) |
++                   (uint32_t(uint8_t(s[2])) << 16) | (uint32_t(uint8_t(s[3])) << 24);
++        }
++
++        constexpr uint32_t kTagMD21 = Tag("MD21");
++        constexpr uint32_t kTagMD20 = Tag("MD20");
++        constexpr uint32_t kTagTXID = Tag("TXID");
++        constexpr uint32_t kTagSFID = Tag("SFID");
++        constexpr uint32_t kTagTXAC = Tag("TXAC");
++        constexpr uint32_t kTagLDV1 = Tag("LDV1");
++        constexpr uint32_t kTagAFID = Tag("AFID");
++        constexpr uint32_t kTagSKID = Tag("SKID");
++        constexpr uint32_t kTagPFID = Tag("PFID");
++        constexpr uint32_t kTagBFID = Tag("BFID");
++        constexpr uint32_t kTagAFM2 = Tag("AFM2");
++
++        /// True when count records of stride bytes starting at offset all lie inside a body of size bytes
++        /// (64-bit product, so a hostile count cannot wrap past the bound).
++        inline bool FitsInBody(uint32_t size, uint32_t offset, uint32_t count, uint32_t stride)
++        {
++            return offset <= size && static_cast<uint64_t>(count) * stride <= static_cast<uint64_t>(size) - offset;
++        }
++
++        // skipMask bits, reported in the load log.
++        enum : uint32_t
++        {
++            kSkipTxac = 0x01, kSkipLdv1 = 0x02, kSkipAfid = 0x04, kSkipSkid = 0x08, kSkipPhysBone = 0x10,
++            kSkipOther = 0x80,
++        };
++
++        struct Scan
++        {
++            uint32_t bodyOff;
++            uint32_t bodySize;
++            uint32_t txid[kMaxTxid];
++            uint32_t txidCount;
++            uint32_t sfidFirst;
++            uint32_t sfidCount;
++            uint32_t skipMask;
++        };
++
++        /// One chunk walk: harvests the MD20 body location and the auxiliary chunks.
++        bool ScanContainer(const uint8_t* buf, uint32_t size, Scan& s)
++        {
++            std::memset(&s, 0, sizeof s);
++            uint32_t at = 0;
++            while (at + 8 <= size)
++            {
++                const uint32_t tag = Rd32(buf + at);
++                const uint32_t sz = Rd32(buf + at + 4);
++                if (sz > size || at + 8 + sz > size) break; // malformed tail; keep what we have
++                const uint8_t* payload = buf + at + 8;
++
++                switch (tag)
++                {
++                case kTagMD21: s.bodyOff = at + 8; s.bodySize = sz; break;
++                case kTagTXID:
++                {
++                    uint32_t n = sz / 4;
++                    if (n > kMaxTxid) n = kMaxTxid;
++                    for (uint32_t i = 0; i < n; ++i) s.txid[i] = Rd32(payload + i * 4);
++                    s.txidCount = n;
++                    break;
++                }
++                case kTagSFID: s.sfidCount = sz / 4; if (s.sfidCount) s.sfidFirst = Rd32(payload); break;
++                case kTagTXAC: s.skipMask |= kSkipTxac; break;
++                case kTagLDV1: s.skipMask |= kSkipLdv1; break;
++                case kTagAFID: s.skipMask |= kSkipAfid; break;
++                case kTagSKID: s.skipMask |= kSkipSkid; break;
++                case kTagPFID:
++                case kTagBFID: s.skipMask |= kSkipPhysBone; break;
++                default:       s.skipMask |= kSkipOther; break;
++                }
++                at += 8 + sz;
++            }
++            return s.bodyOff != 0 && s.bodySize >= sizeof(M2Data) && s.bodyOff + s.bodySize <= size;
++        }
++
++        // --------------------------------------------------------------------- in-place field deltas
++        /// Sequence deltas: masks the split u16 in|out blendTime to the client's single value (read whole it
++        /// would be a huge blend, so transitions never complete) and remaps the curated set of source ids
++        /// above the client's id table onto client ids, patching the lookup. Counts the sequences whose data
++        /// streams from a .anim file (flags bit 0x20 clear).
++        uint32_t FixSequences(uint8_t* base, uint32_t size, M2Data* h)
++        {
++            constexpr uint16_t kClientMaxAnimId = 505;
++            uint32_t external = 0;
++            if (!h->m_sequences.m_count || !h->m_sequences.m_offset) return 0;
++            if (!FitsInBody(size, h->m_sequences.m_offset, h->m_sequences.m_count, sizeof(M2Sequence))) return 0;
++            auto* seqs = reinterpret_cast<M2Sequence*>(base + h->m_sequences.m_offset);
++
++            int16_t* lookup = nullptr;
++            uint32_t lookupCount = 0;
++            if (h->m_sequenceIdxHashById.m_count && h->m_sequenceIdxHashById.m_offset &&
++                FitsInBody(size, h->m_sequenceIdxHashById.m_offset, h->m_sequenceIdxHashById.m_count, 2))
++            {
++                lookup = reinterpret_cast<int16_t*>(base + h->m_sequenceIdxHashById.m_offset);
++                lookupCount = h->m_sequenceIdxHashById.m_count;
++            }
++
++            auto indexById = [&](uint16_t anim) -> int16_t
++            {
++                for (uint32_t i = 0; i < h->m_sequences.m_count; ++i)
++                    if (seqs[i].m_id == anim) return static_cast<int16_t>(i);
++                return -1;
++            };
++            auto patchLookup = [&](int16_t oldPos, uint16_t newId, int16_t newPos)
++            {
++                if (!lookup) return;
++                if (newId < lookupCount && lookup[newId] == oldPos) { lookup[newId] = newPos; return; }
++                for (uint32_t i = 0; i < lookupCount; ++i)
++                    if (lookup[i] == oldPos) { lookup[i] = newPos; break; }
++            };
++
++            for (uint32_t i = 0; i < h->m_sequences.m_count; ++i)
++            {
++                const uint16_t id = seqs[i].m_id;
++                if (id > kClientMaxAnimId)
++                {
++                    uint16_t anim = id;
++                    switch (id)
++                    {
++                    case 564: anim = 37;  break;
++                    case 548: anim = 41;  break;
++                    case 556: anim = 42;  break;
++                    case 552: anim = 43;  break;
++                    case 554: anim = 44;  break;
++                    case 562: anim = 45;  break;
++                    case 572: anim = 39;  break;
++                    case 574: anim = 187; break;
++                    }
++                    if (anim != id)
++                    {
++                        patchLookup(indexById(anim), anim, static_cast<int16_t>(i));
++                        seqs[i].m_id = anim;
++                    }
++                }
++                seqs[i].m_blendTime &= 0xFFFFu;
++                if (!(seqs[i].m_flags & 0x20u)) ++external;
++            }
++            return external;
++        }
++
++        /// Material deltas: a blend mode above the client's 7-entry table is clamped to Add (4, flags |0x5),
++        /// and the flags are masked to the bits this client understands (the skin finalize re-applies the
++        /// same contract idempotently).
++        void FixMaterials(uint8_t* base, uint32_t size, M2Data* h)
++        {
++            if (!h->m_materials.m_count || !h->m_materials.m_offset) return;
++            if (!FitsInBody(size, h->m_materials.m_offset, h->m_materials.m_count, sizeof(M2Material))) return;
++            auto* mats = reinterpret_cast<M2Material*>(base + h->m_materials.m_offset);
++            for (uint32_t i = 0; i < h->m_materials.m_count; ++i)
++            {
++                if (mats[i].m_blendMode > 6) { mats[i].m_blendMode = 4; mats[i].m_flags |= 0x5; }
++                mats[i].m_flags &= 0x1F;
++            }
++        }
++
++        // ------------------------------------------------------------------------ record normalization
++        // Record widths and record SHAPES are the only things that move between source eras. Every widened
++        // record shrinks, which is what makes the rewrite in place and allocation-free: the buffer keeps its
++        // identity and its size, only the used span of each array gets shorter, and the header count is
++        // unchanged. After the pass the body carries one record shape whatever era the model came from.
++
++        // Client record widths (the shapes the engine steps).
++        constexpr uint32_t kParticleStrideClient = 0x1DC;
++        constexpr uint32_t kCameraStrideClient   = 0x64;
++        static_assert(sizeof(M2Particle) == kParticleStrideClient, "client particle record");
++        static_assert(sizeof(M2Camera) == kCameraStrideClient, "client camera record");
++
++        // Source-era record widths. The particle record is the client one with the multi-texture scroll
++        // parameters (two C2Vector pairs) appended; the camera record trades its leading fov float for a
++        // trailing fov track (0x60 body end + one 0x14 track).
++        // VERIFY: these three constants came from the format documentation, not from the extension (its
++        // offsets/game/M2.hpp is not part of the package); check them against that header.
++        constexpr uint32_t kParticleStrideModern = kParticleStrideClient + 0x20;
++        constexpr uint32_t kCameraStrideModern   = 0x60 + 0x14;
++        constexpr uint32_t kParticleModernMinVer = 272;
++        constexpr uint32_t kCameraModernMinVer   = 272;
++
++        // M2Particle.flags bit: the emitter packs three layer ids into its texture slot.
++        constexpr uint32_t kParticleFlagMultiTex = 0x10000000;
++
++        struct NormalizeCtx
++        {
++            uint8_t* body;
++            uint32_t size;
++            M2Data*  header;
++        };
++
++        // An animation track heads its two count+offset pairs with the interpolation fields; the value pair
++        // is the second one, and it is a slot list (one entry per sequence, or the global loop's own) of
++        // key lists.
++        constexpr uint32_t kTrackGlobalLoop = 0x02;
++        constexpr uint32_t kTrackValues     = 0x0C;
++        constexpr int16_t  kNoGlobalLoop    = -1;
++        // A sequence keeps its keys in this model only when this bit is set; otherwise they arrive with a
++        // companion file and the offsets in the record do not address this body at all.
++        constexpr uint32_t kSeqKeysInline   = 0x20;
++
++        // Particle: fields of one emitter record.
++        constexpr uint32_t kPOffFlags        = 0x004;
++        constexpr uint32_t kPOffTextureId    = 0x016;
++        constexpr uint32_t kPOffGravityTrack = 0x084;
++        static_assert(offsetof(M2Particle, m_flags) == kPOffFlags, "particle flags");
++        static_assert(offsetof(M2Particle, m_textureIndex) == kPOffTextureId, "particle texture");
++        static_assert(offsetof(M2Particle, m_gravityTrack) == kPOffGravityTrack, "particle gravity track");
++        constexpr uint16_t kPackedTextureIdMask = 0x1F;
++        constexpr uint32_t kFlagCompressedGravity = 0x800000;
++        constexpr float    kGravityMagnitudeUnit  = 0.04238648f;
++        constexpr float    kPackedDirectionUnit   = 1.0f / 128.0f;
++
++        /// Expands packed gravity keys ({int8 x, int8 y, int16 magnitude}) into the plain downward scalar
++        /// the client reads, and clears the flag that said they were packed.
++        bool ExpandGravityKeys(const NormalizeCtx& ctx, uint8_t* rec, uint32_t flags)
++        {
++            int16_t globalLoop;
++            std::memcpy(&globalLoop, rec + kPOffGravityTrack + kTrackGlobalLoop, 2);
++
++            const uint32_t slots  = Rd32(rec + kPOffGravityTrack + kTrackValues);
++            const uint32_t offset = Rd32(rec + kPOffGravityTrack + kTrackValues + 4);
++            if (slots && offset)
++            {
++                if (!FitsInBody(ctx.size, offset, slots, sizeof(M2Array<uint8_t>))) return false;
++                const M2Sequence* seqs = nullptr;
++                if (globalLoop == kNoGlobalLoop && ctx.header->m_sequences.m_count && ctx.header->m_sequences.m_offset)
++                    seqs = reinterpret_cast<const M2Sequence*>(ctx.body + ctx.header->m_sequences.m_offset);
++
++                for (uint32_t s = 0; s < slots; ++s)
++                {
++                    // Keys that stream in with a companion file are not addressed against this body; leaving
++                    // them packed is correct, that file's arrival brings its own.
++                    if (seqs && s < ctx.header->m_sequences.m_count && !(seqs[s].m_flags & kSeqKeysInline)) continue;
++
++                    const uint8_t* slot = ctx.body + offset + s * sizeof(M2Array<uint8_t>);
++                    const uint32_t keyCount = Rd32(slot);
++                    const uint32_t keyOffset = Rd32(slot + 4);
++                    if (!keyCount || !keyOffset) continue;
++                    if (!FitsInBody(ctx.size, keyOffset, keyCount, 4)) return false;
++
++                    uint8_t* keys = ctx.body + keyOffset;
++                    for (uint32_t k = 0; k < keyCount; ++k)
++                    {
++                        uint8_t* key = keys + k * 4;
++                        const float dx = static_cast<int8_t>(key[0]) * kPackedDirectionUnit;
++                        const float dy = static_cast<int8_t>(key[1]) * kPackedDirectionUnit;
++                        int16_t packedMag; std::memcpy(&packedMag, key + 2, 2);
++
++                        const float planar = dx * dx + dy * dy;
++                        float z = std::sqrt(planar < 1.0f ? 1.0f - planar : 0.0f);
++                        float mag = packedMag * kGravityMagnitudeUnit;
++                        if (mag < 0.0f) { z = -z; mag = -mag; }
++                        const float scalar = -(z * mag);
++                        std::memcpy(key, &scalar, 4);
++                    }
++                }
++            }
++            Wr32(rec + kPOffFlags, flags & ~kFlagCompressedGravity);
++            return true;
++        }
++
++        bool NormalizeParticleRecord(const NormalizeCtx& ctx, const uint8_t* src, uint8_t* dst)
++        {
++            // The trailing multi-texture scroll parameters stop here: nothing downstream reads them.
++            std::memmove(dst, src, kParticleStrideClient);
++
++            const uint32_t flags = Rd32(dst + kPOffFlags);
++
++            // A multi-layer emitter packs three layer ids into the texture slot; only the first has a home
++            // in a single-texture emitter, and an id past the model's table would select nothing.
++            uint16_t texId = Rd16(dst + kPOffTextureId);
++            if (flags & kParticleFlagMultiTex) texId &= kPackedTextureIdMask;
++            if (ctx.header->m_textures.m_count && texId >= ctx.header->m_textures.m_count) texId = 0;
++            Wr16(dst + kPOffTextureId, texId);
++
++            if ((flags & kFlagCompressedGravity) && !ExpandGravityKeys(ctx, dst, flags)) return false;
++            return true;
++        }
++
++        // Camera: target record is type, fov, clip planes, then the track body; the source record has no fov
++        // float (everything sits one float earlier) and carries the fov as a trailing track instead.
++        constexpr uint32_t kCOffType = 0x00, kCOffFov = 0x04, kCOffFarClip = 0x08, kCOffNearClip = 0x0C,
++                           kCOffBody = 0x10;
++        constexpr uint32_t kCSrcFarClip = 0x04, kCSrcNearClip = 0x08, kCSrcBody = 0x0C, kCSrcFovTrack = 0x60;
++        constexpr uint32_t kCBodyBytes = 0x54;
++        constexpr uint32_t kSplineKeyBytes = 0x0C; // value + two tangents, value first
++        constexpr float    kDefaultFov = 0.7853982f; // 45 degrees, for a source track we cannot address
++        static_assert(offsetof(M2Camera, m_fieldOfView) == kCOffFov, "camera fov");
++        static_assert(offsetof(M2Camera, m_positions) == kCOffBody, "camera track body");
++        static_assert(kCOffBody + kCBodyBytes == kCameraStrideClient, "camera target width");
++        static_assert(kCSrcBody + kCBodyBytes == kCSrcFovTrack, "camera source body");
++        static_assert(kCSrcFovTrack + 0x14 == kCameraStrideModern, "camera source width");
++
++        float FirstFovKey(const NormalizeCtx& ctx, const uint8_t* track)
++        {
++            int16_t globalLoop; std::memcpy(&globalLoop, track + kTrackGlobalLoop, 2);
++
++            const uint32_t slots  = Rd32(track + kTrackValues);
++            const uint32_t offset = Rd32(track + kTrackValues + 4);
++            if (!slots || !offset) return kDefaultFov;
++            if (!FitsInBody(ctx.size, offset, slots, sizeof(M2Array<uint8_t>))) return kDefaultFov;
++
++            // Keyed per sequence, the first slot belongs to the first sequence, and only reaches into this
++            // body when that sequence keeps its keys here rather than in a companion file.
++            if (globalLoop == kNoGlobalLoop)
++            {
++                if (!ctx.header->m_sequences.m_count || !ctx.header->m_sequences.m_offset) return kDefaultFov;
++                const auto* seqs = reinterpret_cast<const M2Sequence*>(ctx.body + ctx.header->m_sequences.m_offset);
++                if (!(seqs[0].m_flags & kSeqKeysInline)) return kDefaultFov;
++            }
++
++            const uint8_t* slot = ctx.body + offset;
++            const uint32_t keyCount = Rd32(slot);
++            const uint32_t keyOffset = Rd32(slot + 4);
++            if (!keyCount || !keyOffset) return kDefaultFov;
++            if (!FitsInBody(ctx.size, keyOffset, keyCount, kSplineKeyBytes)) return kDefaultFov;
++
++            float fov; std::memcpy(&fov, ctx.body + keyOffset, 4);
++            return fov;
++        }
++
++        bool NormalizeCameraRecord(const NormalizeCtx& ctx, const uint8_t* src, uint8_t* dst)
++        {
++            // Read every scalar out before anything moves: at the first record dst and src are the same
++            // address, so the body slide overwrites the near clip plane where it lay in the source form.
++            const uint32_t type = Rd32(src + kCOffType);
++            const uint32_t farClip = Rd32(src + kCSrcFarClip);
++            const uint32_t nearClip = Rd32(src + kCSrcNearClip);
++            const float fov = FirstFovKey(ctx, src + kCSrcFovTrack);
++
++            std::memmove(dst + kCOffBody, src + kCSrcBody, kCBodyBytes);
++            Wr32(dst + kCOffType, type);
++            std::memcpy(dst + kCOffFov, &fov, 4);
++            Wr32(dst + kCOffFarClip, farClip);
++            Wr32(dst + kCOffNearClip, nearClip);
++            return true;
++        }
++
++        using NormalizeRecordFn = bool (*)(const NormalizeCtx&, const uint8_t*, uint8_t*);
++
++        struct RecordNormalizer
++        {
++            uint32_t          at;               // byte offset of the count+offset pair inside the header
++            uint32_t          sourceStride;
++            uint32_t          targetStride;
++            uint32_t          sourceMinVersion; // below it the record already has the target shape
++            NormalizeRecordFn rewrite;
++            const char*       label;
++        };
++
++        const RecordNormalizer kNormalizers[] = {
++            { offsetof(M2Data, m_particles), kParticleStrideModern, kParticleStrideClient, kParticleModernMinVer,
++              &NormalizeParticleRecord, "particles" },
++            { offsetof(M2Data, m_cameras), kCameraStrideModern, kCameraStrideClient, kCameraModernMinVer,
++              &NormalizeCameraRecord, "cameras" },
++        };
++        constexpr uint32_t kNormalizerCount = sizeof(kNormalizers) / sizeof(kNormalizers[0]);
++
++        /// Rewrites every source-era-wide record listed in the table to the client shape, in place.
++        /// Returns false when a record (or an array nested in one) does not fit the body.
++        bool NormalizeRecords(uint8_t* base, uint32_t size, M2Data* h, uint32_t (&counts)[kNormalizerCount])
++        {
++            const NormalizeCtx ctx{ base, size, h };
++            for (uint32_t e = 0; e < kNormalizerCount; ++e)
++            {
++                const RecordNormalizer& entry = kNormalizers[e];
++                counts[e] = 0;
++                if (h->m_version < entry.sourceMinVersion) continue;
++                if (entry.targetStride > entry.sourceStride) return false; // normalization only ever shrinks
++
++                auto& array = *reinterpret_cast<M2Array<uint8_t>*>(reinterpret_cast<uint8_t*>(h) + entry.at);
++                if (!array.m_count || !array.m_offset) continue;
++                if (!FitsInBody(size, array.m_offset, array.m_count, entry.sourceStride)) return false;
++
++                const uint8_t* src = base + array.m_offset;
++                uint8_t*       dst = base + array.m_offset;
++                for (uint32_t i = 0; i < array.m_count; ++i)
++                {
++                    if (!entry.rewrite(ctx, src, dst)) return false;
++                    src += entry.sourceStride;
++                    dst += entry.targetStride;
++                }
++                counts[e] = array.m_count;
++            }
++            return true;
++        }
++
++        // ---------------------------------------------------------------------------------- listfile
++        const WxlListfileServices* ListfileService()
++        {
++            static std::atomic<const WxlListfileServices*> s_cached{ nullptr };
++            const WxlListfileServices* s = s_cached.load(std::memory_order_acquire);
++            if (s) return s;
++            size_t size = 0;
++            s = static_cast<const WxlListfileServices*>(wxl::services::Get(WXL_SERVICE_LISTFILE, &size));
++            if (s && size >= sizeof(s->structSize) && s->structSize >= offsetof(WxlListfileServices, resolve) + sizeof(s->resolve))
++                s_cached.store(s, std::memory_order_release);
++            else
++                s = nullptr;
++            return s;
++        }
++
++        /// Spare bytes seated after the body for arrays the skin finalize rebuilds.
++        constexpr uint32_t kModelReserve = 4096;
++    }
++
++    // ------------------------------------------------------------------------------------ PrepareLoad
++    LoadResult PrepareLoad(CM2Shared* shared)
++    {
++        uint8_t* buf = reinterpret_cast<uint8_t*>(shared->m_data);
++        const uint32_t size = shared->m_fileSize;
++        if (!buf || size < 8 || Rd32(buf) != kTagMD21) return LoadResult::NotModern;
++
++        const char* fail = nullptr;
++        Scan s;
++        uint32_t version = 0;
++
++        if (!ScanContainer(buf, size, s)) fail = "no MD20 body in container";
++
++        if (!fail)
++        {
++            version = Rd32(buf + s.bodyOff + offsetof(M2Data, m_version));
++            if (Rd32(buf + s.bodyOff) != kTagMD20) fail = "body magic";
++            else if (!IsAcceptedVersion(version)) fail = "inner version outside the supported source window";
++        }
++
++        if (!fail)
++        {
++            // A split-skeleton model (SKID, or empty bone and sequence arrays) has no home here: without the
++            // .skel splice it would stand unboned. Refuse it like an absent file.
++            const auto* raw = reinterpret_cast<const M2Data*>(buf + s.bodyOff);
++            if ((s.skipMask & kSkipSkid) || (!raw->m_bones.m_count && !raw->m_sequences.m_count))
++                fail = "split skeleton (.skel) model";
++        }
++
++        if (fail)
++        {
++            wxl::LogCat("M2", "'%s' modern load FAILED: %s (v=%u skips=0x%X)", shared->m_fileName, fail, version, s.skipMask);
++            return LoadResult::Failed;
++        }
++
++        // Seat the flat body in a fresh block with spare room after it. The model's block is only ever freed
++        // through SIMD::FreeA16 on m_data, so swapping it here is invisible to the rest of the client; every
++        // offset in the body is body-relative, so the copy needs no fixing up.
++        const uint32_t reserveBase = (s.bodySize + 15u) & ~15u;
++        const uint32_t total = reserveBase + kModelReserve;
++        uint8_t* seated = static_cast<uint8_t*>(SIMD::AllocA16(total, __FILE__, __LINE__));
++        if (!seated)
++        {
++            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (%u bytes)", shared->m_fileName, total);
++            return LoadResult::Failed;
++        }
++        std::memcpy(seated, buf + s.bodyOff, s.bodySize);
++        std::memset(seated + s.bodySize, 0, total - s.bodySize);
++        SIMD::FreeA16(buf);
++        shared->m_data = reinterpret_cast<M2Data*>(seated);
++        shared->m_fileSize = s.bodySize;
++
++        auto* h = reinterpret_cast<M2Data*>(seated);
++        const uint32_t bodySize = s.bodySize;
++
++        // The stock skin chooser walks a 4-entry threshold table indexed 4 - numSkinProfiles; more profiles
++        // than the client ever shipped (LDV1-era LOD counts) would underflow it.
++        if (h->m_numSkinProfiles > 4)
++        {
++            s.skipMask |= kSkipLdv1;
++            h->m_numSkinProfiles = 1; // profile 0 = full detail
++        }
++
++        const uint32_t external = FixSequences(seated, bodySize, h);
++        FixMaterials(seated, bodySize, h);
++
++        uint32_t normalized[kNormalizerCount] = {};
++        if (!NormalizeRecords(seated, bodySize, h, normalized))
++        {
++            wxl::LogCat("M2", "'%s' modern load FAILED: record normalization rejected a record", shared->m_fileName);
++            return LoadResult::Failed;
++        }
++
++        State* state = new (std::nothrow) State();
++        if (!state)
++        {
++            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (state)", shared->m_fileName);
++            return LoadResult::Failed;
++        }
++        state->modern = true;
++        state->txidCount = s.txidCount;
++        std::memcpy(state->txid, s.txid, sizeof(uint32_t) * s.txidCount);
++        state->reserveBase = reserveBase;
++        state->reserveCap = kModelReserve;
++        shared->m_wxl = state;
++
++        char norm[96] = {};
++        size_t at = 0;
++        for (uint32_t i = 0; i < kNormalizerCount && at + 1 < sizeof norm; ++i)
++        {
++            if (!normalized[i]) continue;
++            const int wrote = std::snprintf(norm + at, sizeof norm - at, " %s=%u", kNormalizers[i].label, normalized[i]);
++            if (wrote <= 0) break;
++            at += static_cast<size_t>(wrote);
++        }
++        wxl::LogCat("M2", "'%s' read natively (v=%u txid=%u skips=0x%X extseq=%u normalized:%s)", shared->m_fileName,
++                    version, s.txidCount, s.skipMask, external, norm[0] ? norm : " none");
++        return LoadResult::Modern;
++    }
++
++    // -------------------------------------------------------------------------------------- FinishWalk
++    void FinishWalk(CM2Shared* shared)
++    {
++        M2Data* h = shared->m_data;
++
++        // Ribbons: the source exporter can emit texture / material indices past what the model declares.
++        for (uint32_t i = 0; i < h->m_ribbons.m_count; ++i)
++        {
++            M2Ribbon& ribbon = h->m_ribbons[i];
++            auto clamp = [](M2Array<uint16_t>& a, uint32_t limit)
++            {
++                if (!a.m_count || !limit) return;
++                uint16_t* v = a.Data();
++                for (uint32_t n = 0; n < a.m_count; ++n)
++                    if (v[n] >= limit) v[n] = static_cast<uint16_t>(limit - 1);
++            };
++            clamp(ribbon.m_textureIndices, h->m_textures.m_count);
++            clamp(ribbon.m_materialIndices, h->m_materials.m_count);
++        }
++
++        // Cameras: a lookup entry past the camera array is the exporter's "no camera" sentinel.
++        if (h->m_cameraIndicesById.m_count)
++        {
++            int16_t* lookup = reinterpret_cast<int16_t*>(h->m_cameraIndicesById.Data());
++            const int32_t limit = static_cast<int32_t>(h->m_cameras.m_count);
++            for (uint32_t i = 0; i < h->m_cameraIndicesById.m_count; ++i)
++                if (lookup[i] >= limit) lookup[i] = -1;
++        }
++    }
++
++    // ------------------------------------------------------------------------------------ TextureName
++    bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap)
++    {
++        State* state = shared->m_wxl;
++        if (!state || !state->modern) return false;
++        if (texture.m_type != 0) return false;                  // dynamic slots stay empty
++        if (index >= state->txidCount || !state->txid[index]) return false;
++
++        const uint32_t fileId = state->txid[index];
++        const WxlListfileServices* listfile = ListfileService();
++        if (!listfile)
++        {
++            if (wxl::LogThrottle("m2-txid-nolistfile", 1, 100000))
++                wxl::LogCat("M2", "TXID %u: the listfile service (%s) is not available, solid white fallback", fileId, WXL_SERVICE_LISTFILE);
++            ++state->texUnresolved;
++            return false;
++        }
++
++        // resolve() returns the file's own path, or, when the listfile does not know the id or the client
++        // cannot open the file, the not-found name for a texture; opening that name makes the client fall
++        // back to its own missing-texture handling, which is the listfile module's contract.
++        const int result = listfile->resolve(fileId, WXL_LISTFILE_TEXTURE, out, cap);
++        if (result == WXL_LISTFILE_ERROR) { ++state->texUnresolved; return false; }
++        if (result == WXL_LISTFILE_FOUND) ++state->texResolved; else ++state->texUnresolved;
++        return true;
++    }
++
++    // -------------------------------------------------------------------------------------- UnwrapAnim
++    bool UnwrapAnim(uint8_t* buffer, uint32_t& size)
++    {
++        constexpr uint32_t kChunkHeaderBytes = 8;
++        if (!buffer || size < kChunkHeaderBytes || Rd32(buffer) != kTagAFM2) return false;
++        const uint32_t payload = Rd32(buffer + 4);
++        if (static_cast<uint64_t>(kChunkHeaderBytes) + payload > size) return false;
++        std::memmove(buffer, buffer + kChunkHeaderBytes, payload);
++        size = payload;
++        return true;
++    }
++
++    // ----------------------------------------------------------------------------------------- Destroy
++    void Destroy(CM2Shared* shared)
++    {
++        State* state = shared->m_wxl;
++        if (!state) return;
++        shared->m_wxl = nullptr;
++        for (void* block : state->farBlocks)
++        {
++#if defined(WOWDECOMP_ARCH_64)
++            OsFreeNear(block);
++#else
++            SMemFree(block, __FILE__, __LINE__, 0);
++#endif
++        }
++        delete state;
++    }
++}
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2Skin.cpp b/Engine/Source/Model2/ModernM2/ModernM2Skin.cpp
+new file mode 100644
+index 0000000..1972c2a
+--- /dev/null
++++ b/Engine/Source/Model2/ModernM2/ModernM2Skin.cpp
+@@ -0,0 +1,885 @@
++// Modern M2 reader, skin half: bone-budget split, material / texture-unit contract rebuild, wide index starts.
++// Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
++//
++// Runs from CM2Shared::FinishLoadingSkinProfile, after the skin's own arrays were walked and before
++// InitializeSkinProfile sizes its parallel batch blocks from the skin.
++//
++// Where the arrays go. An M2Array reaches its data by a signed 32-bit offset from ITSELF, so a rebuilt array
++// has to live near its owner. Skin arrays are rebuilt by re-seating the skin block (old contents, then the new
++// arrays) and model-header arrays are placed in the spare room the load seated after the model body, falling
++// back to an allocation near the model. No pointer is ever stored where an offset belongs.
++
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
++
++#include <algorithm>
++#include <cstring>
++#include <unordered_map>
++
++#include "Engine/Source/Base/SIMD.h"
++#include "Engine/Source/Os/OsMemory.h"
++#include "Engine/Source/Storm/H/storm.h"
++#include "Engine/Source/WXL/Log.h"
++
++namespace wxl::modernm2
++{
++    namespace
++    {
++        constexpr uint32_t kSkinU16Max         = 0xFFFF;  // u16 ceiling of the skin arrays
++        constexpr uint32_t kSplitMaxBoneCombos = 0x10000; // boneCombos upper bound, rejected before the bulk copy
++        constexpr uint32_t kMaxBatches         = 0x4000;  // a batch / submesh count past this is malformed
++        // A texunit shaderId >= this is a source shader-effect index (named modern effect), not a packed
++        // blend-bit pair.
++        constexpr uint16_t kSourceShaderMin = 0x8000;
++
++        static_assert(sizeof(M2Batch) == 0x18, "batch record");
++        static_assert(sizeof(M2SkinSection) == 0x30, "skin section record");
++
++        // The decomp keeps a section's id and its level together in one uint32: id in the low 16 bits.
++        inline uint16_t Level(const M2SkinSection& s) { return static_cast<uint16_t>(s.m_skinSectionId >> 16); }
++        inline void SetLevel(M2SkinSection& s, uint16_t level)
++        {
++            s.m_skinSectionId = (s.m_skinSectionId & 0xFFFFu) | (static_cast<uint32_t>(level) << 16);
++        }
++
++        bool StartsWithCI(const char* s, const char* prefix)
++        {
++            for (; *prefix; ++s, ++prefix)
++            {
++                char a = *s, b = *prefix;
++                if (a == '/') a = '\\';
++                if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
++                if (a != b) return false;
++            }
++            return true;
++        }
++
++        /// Character and item-component skins can carry more than 65535 indices, so their section level is
++        /// repurposed as the high 16 bits of a 32-bit index start; every other source keeps level as the
++        /// legacy LOD / sub-batch marker.
++        bool UsesExtendedIndexStart(const char* name)
++        {
++            return name && (StartsWithCI(name, "character\\") || StartsWithCI(name, "item\\objectcomponents\\"));
++        }
++
++        inline uint32_t FullIndexStart(const M2SkinSection& s, bool extended)
++        {
++            return extended ? ((static_cast<uint32_t>(Level(s)) << 16) | s.m_indexStart) : s.m_indexStart;
++        }
++
++        struct SplitRun { uint16_t first; uint16_t count; };
++        struct SplitSection { M2SkinSection section; uint16_t origSubmesh; };
++
++        /// Working copy of everything the finalize may rewrite, so a failed step leaves the live data alone.
++        struct Work
++        {
++            std::vector<uint16_t>      vtx;        // skin vertex lookup
++            std::vector<uint8_t>       bones;      // 4 bone slots per skin vertex
++            std::vector<uint16_t>      idx;
++            std::vector<M2SkinSection> sections;
++            std::vector<M2Batch>       batches;
++            bool geometryChanged = false;          // vtx / bones / idx / section count changed
++
++            std::vector<uint16_t> boneCombos;      // model arrays
++            uint32_t boneComboCount = 0;
++            bool boneCombosChanged = false;
++            std::vector<uint16_t> texCoord;        // header's textureCoordCombos
++            bool texCoordChanged = false;
++            std::vector<uint16_t> combiner;        // header's textureCombinerCombos
++            bool combinerChanged = false;
++            std::vector<uint16_t> transformCombos; // header's textureTransformCombos
++            bool transformChanged = false;
++        };
++
++        // ------------------------------------------------------------------------------------ bone split
++        bool NeedsSplit(const M2SkinProfile* skin, bool extended)
++        {
++            const M2SkinSection* sections = skin->m_skinSections.Data();
++            for (uint32_t i = 0; i < skin->m_skinSections.m_count; ++i)
++                if ((extended || Level(sections[i]) == 0) && sections[i].m_boneCount > kMaxBonesPerDraw) return true;
++            return false;
++        }
++
++        /// Partitions every drawn submesh whose per-draw bone palette exceeds the client ceiling into
++        /// sub-sections within it: a greedy triangle bin-packer, each sub-section with its own compact
++        /// boneCombos slice, deduplicated vertex block (bones remapped to the slice) and global-indexed
++        /// triangle block. Rebuilds the working skin arrays and boneCombos; false (nothing changed) on any
++        /// overflow or missing array, leaving the caller on the clamp path.
++        bool SplitSubmeshes(const M2Data* md, Work& w, bool extended, const char* name,
++                            std::vector<SplitRun>& splitMap, uint32_t& splitCount)
++        {
++            const uint32_t boneComboCount = md->m_boneCombos.m_count;
++            if (!boneComboCount) return false;
++            if (w.vtx.empty() || w.idx.empty() || w.bones.empty()) return false;
++            if (boneComboCount > kSplitMaxBoneCombos)
++            {
++                wxl::LogCat("M2", "'%s' boneCombos count=%u out of range, skipping bone split", name, boneComboCount);
++                return false;
++            }
++            const uint16_t* boneCombos = md->m_boneCombos.Data();
++            const uint32_t vertexCount = static_cast<uint32_t>(w.vtx.size());
++            const uint32_t indexCount = static_cast<uint32_t>(w.idx.size());
++
++            bool needsSplit = false;
++            for (const M2SkinSection& s : w.sections)
++                if ((extended || Level(s) == 0) && s.m_boneCount > kMaxBonesPerDraw) { needsSplit = true; break; }
++            if (!needsSplit) return false;
++
++            std::vector<uint16_t> newVtx, newIdx, newBoneCombos(boneCombos, boneCombos + boneComboCount);
++            std::vector<uint8_t> newBones;
++            std::vector<SplitSection> out;
++            newVtx.reserve(vertexCount);
++            newBones.reserve(vertexCount * 4);
++            newIdx.reserve(indexCount);
++
++            splitCount = 0;
++
++            for (uint32_t si = 0; si < w.sections.size(); ++si)
++            {
++                M2SkinSection s = w.sections[si];
++
++                // A level>0 submesh is a sub-batch the engine cannot draw. Pass it through as one zeroed
++                // placeholder so the batch re-point stays 1:1; its batch is later skipped.
++                if (Level(s) > 0 && !extended)
++                {
++                    SetLevel(s, 0);
++                    s.m_vertexStart = 0; s.m_vertexCount = 0; s.m_indexStart = 0; s.m_indexCount = 0;
++                    s.m_boneComboIndex = 0; s.m_centerBoneIndex = 0; s.m_boneCount = 1;
++                    reinterpret_cast<uint8_t*>(&s)[0x11] = 0;
++                    out.push_back({ s, static_cast<uint16_t>(si) });
++                    continue;
++                }
++
++                const uint32_t sourceStart = FullIndexStart(s, extended);
++                if (sourceStart > indexCount || s.m_indexCount > indexCount - sourceStart)
++                {
++                    wxl::LogCat("M2", "'%s' submesh %u index window past skin indexCount, skipping bone split", name, si);
++                    return false;
++                }
++
++                const uint32_t triCount = s.m_indexCount / 3;
++                const uint32_t comboBase = s.m_boneComboIndex;
++
++                std::vector<uint16_t> curGlobals;
++                uint32_t curTriStart = 0;
++                uint32_t emitted = 0;
++
++                // Emit triangles [triFrom, triTo) as one sub-section.
++                auto emit = [&](uint32_t triFrom, uint32_t triTo, std::vector<uint16_t>& globals) -> bool
++                {
++                    if (triFrom >= triTo) return true;
++                    std::sort(globals.begin(), globals.end());
++                    const uint32_t comboIndex = static_cast<uint32_t>(newBoneCombos.size());
++                    if (comboIndex > kSkinU16Max) return false;
++                    for (uint16_t g : globals) newBoneCombos.push_back(g);
++
++                    const uint32_t secVertStart = static_cast<uint32_t>(newVtx.size());
++                    const uint32_t secIndexStart = static_cast<uint32_t>(newIdx.size());
++                    if (secVertStart > kSkinU16Max) return false;
++                    if (!extended && secIndexStart > kSkinU16Max) return false;
++                    if (extended && (secIndexStart >> 16) > kSkinU16Max) return false;
++
++                    std::unordered_map<uint16_t, uint16_t> vmap;
++                    for (uint32_t t = triFrom; t < triTo; ++t)
++                    {
++                        for (uint32_t k = 0; k < 3; ++k)
++                        {
++                            const uint16_t lv = w.idx[sourceStart + t * 3 + k];
++                            if (lv >= vertexCount) return false;
++                            auto it = vmap.find(lv);
++                            uint16_t nv;
++                            if (it == vmap.end())
++                            {
++                                const uint32_t at = static_cast<uint32_t>(newVtx.size());
++                                if (at > kSkinU16Max) return false;
++                                nv = static_cast<uint16_t>(at);
++                                vmap.emplace(lv, nv);
++                                newVtx.push_back(w.vtx[lv]);
++                                const uint8_t* infl = w.bones.data() + static_cast<size_t>(lv) * 4;
++                                for (uint32_t j = 0; j < 4; ++j)
++                                {
++                                    const uint32_t comboIdx = comboBase + infl[j];
++                                    const uint16_t g = comboIdx < boneComboCount ? boneCombos[comboIdx] : globals[0];
++                                    auto lo = std::lower_bound(globals.begin(), globals.end(), g);
++                                    const uint16_t local = (lo != globals.end() && *lo == g)
++                                                         ? static_cast<uint16_t>(lo - globals.begin()) : 0;
++                                    newBones.push_back(static_cast<uint8_t>(local));
++                                }
++                            }
++                            else nv = it->second;
++                            newIdx.push_back(nv);
++                        }
++                    }
++
++                    const uint32_t secVertCount = static_cast<uint32_t>(newVtx.size()) - secVertStart;
++                    const uint32_t secIndexCount = static_cast<uint32_t>(newIdx.size()) - secIndexStart;
++                    if (secVertCount > kSkinU16Max || secIndexCount > kSkinU16Max) return false;
++
++                    M2SkinSection sec = s;
++                    sec.m_vertexStart    = static_cast<uint16_t>(secVertStart);
++                    sec.m_vertexCount    = static_cast<uint16_t>(secVertCount);
++                    SetLevel(sec, extended ? static_cast<uint16_t>(secIndexStart >> 16) : 0);
++                    sec.m_indexStart     = static_cast<uint16_t>(secIndexStart & kSkinU16Max);
++                    sec.m_indexCount     = static_cast<uint16_t>(secIndexCount);
++                    sec.m_boneCount      = static_cast<uint16_t>(globals.size());
++                    sec.m_boneComboIndex = static_cast<uint16_t>(comboIndex);
++                    out.push_back({ sec, static_cast<uint16_t>(si) });
++                    ++emitted;
++                    return true;
++                };
++
++                for (uint32_t t = 0; t < triCount; ++t)
++                {
++                    uint16_t g[12]; int gn = 0;
++                    for (uint32_t k = 0; k < 3; ++k)
++                    {
++                        const uint16_t lv = w.idx[sourceStart + t * 3 + k];
++                        if (lv >= vertexCount) return false;
++                        const uint8_t* infl = w.bones.data() + static_cast<size_t>(lv) * 4;
++                        for (uint32_t j = 0; j < 4; ++j)
++                        {
++                            const uint32_t comboIdx = comboBase + infl[j];
++                            const uint16_t gg = comboIdx < boneComboCount ? boneCombos[comboIdx] : 0;
++                            bool seen = false;
++                            for (int e = 0; e < gn; ++e) if (g[e] == gg) { seen = true; break; }
++                            if (!seen && gn < 12) g[gn++] = gg;
++                        }
++                    }
++                    size_t unionSize = curGlobals.size();
++                    for (int e = 0; e < gn; ++e)
++                        if (std::find(curGlobals.begin(), curGlobals.end(), g[e]) == curGlobals.end()) ++unionSize;
++
++                    if (unionSize > kMaxBonesPerDraw && t > curTriStart)
++                    {
++                        if (!emit(curTriStart, t, curGlobals)) return false;
++                        curGlobals.clear();
++                        curTriStart = t;
++                    }
++                    for (int e = 0; e < gn; ++e)
++                        if (std::find(curGlobals.begin(), curGlobals.end(), g[e]) == curGlobals.end())
++                            curGlobals.push_back(g[e]);
++                }
++                if (!emit(curTriStart, triCount, curGlobals)) return false;
++
++                if (emitted == 0)
++                {
++                    M2SkinSection sec = s;
++                    sec.m_vertexCount = 0; sec.m_indexCount = 0; sec.m_boneCount = 1;
++                    out.push_back({ sec, static_cast<uint16_t>(si) });
++                }
++                else if (emitted > 1)
++                {
++                    splitCount += emitted - 1;
++                }
++            }
++
++            if (newVtx.size() > kSkinU16Max || out.size() > kMaxBatches) return false;
++
++            splitMap.assign(w.sections.size(), SplitRun{ 0, 0 });
++            for (uint16_t i = 0; i < out.size(); ++i)
++            {
++                const uint16_t orig = out[i].origSubmesh;
++                if (orig >= splitMap.size()) continue;
++                if (splitMap[orig].count == 0) splitMap[orig].first = i;
++                ++splitMap[orig].count;
++            }
++
++            w.vtx = std::move(newVtx);
++            w.bones = std::move(newBones);
++            w.idx = std::move(newIdx);
++            w.sections.clear();
++            for (const SplitSection& s : out) w.sections.push_back(s.section);
++            w.boneCombos = std::move(newBoneCombos);
++            w.boneComboCount = static_cast<uint32_t>(w.boneCombos.size());
++            w.boneCombosChanged = true;
++            w.geometryChanged = true;
++            return true;
++        }
++
++        /// Re-points a skin's existing batches across the sub-section run their original submesh became,
++        /// duplicating a batch per extra sub-section without touching any other field.
++        void RepointBatchesAfterSplit(Work& w, const std::vector<SplitRun>& splitMap)
++        {
++            if (splitMap.empty() || w.batches.empty()) return;
++            std::vector<M2Batch> out;
++            out.reserve(w.batches.size());
++            for (const M2Batch& b : w.batches)
++            {
++                SplitRun run{ b.m_skinSectionIndex, 1 };
++                if (b.m_skinSectionIndex < splitMap.size()) run = splitMap[b.m_skinSectionIndex];
++                for (uint16_t s = 0; s < run.count; ++s)
++                {
++                    M2Batch nb = b;
++                    nb.m_skinSectionIndex = static_cast<uint16_t>(run.first + s);
++                    out.push_back(nb);
++                }
++            }
++            if (out.empty() || out.size() > kMaxBatches) return;
++            w.batches = std::move(out);
++        }
++
++        // ------------------------------------------------------------------------------ contract rebuild
++        // A source skin encodes each batch's material in its own shaderId (packed blend-bit pair, or a modern
++        // effect index) and leaves the header's texture-unit lookup empty. The client's first shader-id pass
++        // indexes textureCoordCombos[batch.textureCoordComboIndex] and binds the second texture only when the
++        // contract is present, so it is decoded into the fixed-function blend bits the client understands
++        // and the lookups are synthesized.
++
++        uint16_t LookupSingle(std::vector<uint16_t>& lookup, int16_t v)
++        {
++            for (size_t n = 0; n < lookup.size(); ++n)
++                if (static_cast<int16_t>(lookup[n]) == v) return static_cast<uint16_t>(n);
++            lookup.push_back(static_cast<uint16_t>(v));
++            return static_cast<uint16_t>(lookup.size() - 1);
++        }
++
++        /// Appends an adjacent pair, reusing an overlapping tail so [base] and [base+1] equal a and b.
++        uint16_t LookupPair(std::vector<uint16_t>& lookup, int16_t a, int16_t b)
++        {
++            for (size_t n = 0; n + 1 < lookup.size(); ++n)
++                if (static_cast<int16_t>(lookup[n]) == a && static_cast<int16_t>(lookup[n + 1]) == b)
++                    return static_cast<uint16_t>(n);
++            const size_t sz = lookup.size();
++            if (sz > 1 && static_cast<int16_t>(lookup[sz - 1]) == a)
++            {
++                lookup.push_back(static_cast<uint16_t>(b));
++                return static_cast<uint16_t>(sz - 1);
++            }
++            lookup.push_back(static_cast<uint16_t>(a));
++            lookup.push_back(static_cast<uint16_t>(b));
++            return static_cast<uint16_t>(sz);
++        }
++
++        /// Finds or appends a (blend1, blend2) pair in textureCombinerCombos.
++        uint16_t BlendOverride(std::vector<uint16_t>& combos, uint16_t b1, uint16_t b2)
++        {
++            for (size_t n = 0; n + 1 < combos.size(); n += 2)
++                if (combos[n] == b1 && combos[n + 1] == b2) return static_cast<uint16_t>(n);
++            const uint16_t base = static_cast<uint16_t>(combos.size());
++            combos.push_back(b1);
++            combos.push_back(b2);
++            return base;
++        }
++
++        uint16_t NextLookup(uint16_t base, uint32_t count)
++        {
++            const uint32_t next = static_cast<uint32_t>(base) + 1u;
++            return next < count ? static_cast<uint16_t>(next) : base;
++        }
++
++        /// Parks LOD submeshes and clamps drawn-submesh bone counts to the client ceiling. A level>0 (LOD)
++        /// submesh has its geometry zeroed with boneCount kept >= 1 (the native finalize divides the budget
++        /// by every submesh boneCount); a drawn submesh's boneCount is clamped to the ceiling and to the
++        /// boneCombos bounds. A zero-geometry section is marked bad.
++        void FixSubmeshes(Work& w, bool extended, std::vector<uint8_t>& bad, const char* name)
++        {
++            const uint32_t indexCount = static_cast<uint32_t>(w.idx.size());
++            bad.assign(w.sections.size(), 0);
++            for (uint32_t i = 0; i < w.sections.size(); ++i)
++            {
++                M2SkinSection& s = w.sections[i];
++                if (Level(s) > 0 && !extended)
++                {
++                    SetLevel(s, 0);
++                    s.m_vertexStart = 0; s.m_vertexCount = 0; s.m_indexStart = 0; s.m_indexCount = 0;
++                    s.m_boneComboIndex = 0; s.m_centerBoneIndex = 0;
++                }
++                else if (s.m_indexCount != 0)
++                {
++                    const uint32_t start = FullIndexStart(s, extended);
++                    if (start > indexCount || s.m_indexCount > indexCount - start)
++                    {
++                        wxl::LogCat("M2", "'%s' submesh %u index window past skin indexCount, parking", name, i);
++                        SetLevel(s, 0);
++                        s.m_vertexStart = 0; s.m_vertexCount = 0; s.m_indexStart = 0; s.m_indexCount = 0;
++                        s.m_boneComboIndex = 0; s.m_centerBoneIndex = 0;
++                    }
++                }
++
++                if (s.m_indexCount == 0)
++                {
++                    if (s.m_boneCount < 1) s.m_boneCount = 1;
++                    bad[i] = 1;
++                }
++                else
++                {
++                    uint16_t cap = static_cast<uint16_t>(kMaxBonesPerDraw);
++                    const uint16_t byCombo = w.boneComboCount > s.m_boneComboIndex
++                                           ? static_cast<uint16_t>(w.boneComboCount - s.m_boneComboIndex) : 1;
++                    if (byCombo < cap) cap = byCombo;
++                    if (cap < 1) cap = 1;
++                    if (s.m_boneCount > cap) s.m_boneCount = cap;
++                    if (s.m_boneCount < 1) s.m_boneCount = 1;
++                    if (s.m_boneInfluences == 0) s.m_boneInfluences = 1;
++                }
++                reinterpret_cast<uint8_t*>(&s)[0x11] = 0;
++            }
++        }
++
++        /// Decodes a < kSourceShaderMin shaderId's blend bits and synthesizes its lookup entries, in place.
++        void DecodeBlendBits(M2Batch& b, uint16_t shaderId, uint16_t textureCount,
++                             std::vector<uint16_t>& texCoord, std::vector<uint16_t>& blendOverride)
++        {
++            const uint16_t blend1 = (shaderId >> 4) & 0x7;
++            const uint16_t blend2 = shaderId & 0x7;
++
++            const bool twoTex = textureCount > 1 && (shaderId & 0x4000) && blend1 != 0 && blend2 != 0;
++            uint16_t shaderToSave = 0;
++            if (twoTex) shaderToSave = BlendOverride(blendOverride, blend1, blend2);
++            else        textureCount = 1;
++
++            b.m_flags &= 0x10;
++            b.m_shader = shaderToSave;
++
++            if (textureCount == 1)
++            {
++                const int16_t t0 = (shaderId & 0x80) ? -1 : 0;
++                b.m_textureCoordComboIndex = LookupSingle(texCoord, t0);
++            }
++            else
++            {
++                int16_t t0, t1;
++                if (shaderId & 0x80) { t0 = -1; t1 = (shaderId & 0x8) ? -1 : 0; }
++                else { t0 = 0; t1 = (shaderId & 0x8) ? -1 : ((shaderId & 0x4000) ? 1 : 0); }
++                b.m_textureCoordComboIndex = LookupPair(texCoord, t0, t1);
++            }
++
++            b.m_textureCount = textureCount < 2 ? textureCount : 2;
++        }
++
++        /// Splits one source env batch into a primary plus a follower second render pass over the same
++        /// geometry: the follower carries material layer 1 and material index +1 so the engine binds it as
++        /// the layered second pass over the diffuse below it. Returns false when `low` is not an env split.
++        bool EnvSplit(uint16_t low, uint16_t shaderId, M2Batch primary, uint32_t nTransparencyLookup,
++                      uint32_t nTransformLookup, std::vector<M2Batch>& out,
++                      std::vector<uint16_t>& texCoord, std::vector<uint16_t>& blendOverride)
++        {
++            M2Batch follower = primary;
++            follower.m_materialIndex = static_cast<uint16_t>(primary.m_materialIndex + 1);
++            follower.m_materialLayer = 1;
++            follower.m_textureCount = 1;
++
++            switch (low)
++            {
++            case 0: case 3: case 9: case 17: case 24:
++            {
++                primary.m_textureCount = 2;
++                const uint16_t blendIdx = BlendOverride(blendOverride, 1, 4);
++                const uint16_t tc = LookupPair(texCoord, 0, -1);
++                primary.m_shader = blendIdx;  primary.m_textureCoordComboIndex = tc;
++                follower.m_shader = blendIdx; follower.m_textureCoordComboIndex = tc;
++                out.push_back(primary); out.push_back(follower);
++                return true;
++            }
++            case 1: case 15:
++            {
++                primary.m_textureCount = 1;
++                primary.m_shader = 0; follower.m_shader = 0;
++                follower.m_textureComboIndex = static_cast<uint16_t>(primary.m_textureComboIndex + 1);
++                if (static_cast<uint32_t>(primary.m_textureWeightComboIndex) + 1 < nTransparencyLookup)
++                    follower.m_textureWeightComboIndex = static_cast<uint16_t>(primary.m_textureWeightComboIndex + 1);
++                follower.m_textureTransformComboIndex = NextLookup(primary.m_textureTransformComboIndex, nTransformLookup);
++                const int16_t t1 = (shaderId == 0x8001) ? -1 : 1;
++                const uint16_t tc = LookupPair(texCoord, 0, t1);
++                primary.m_textureCoordComboIndex = tc;
++                follower.m_textureCoordComboIndex = static_cast<uint16_t>(tc + 1);
++                out.push_back(primary); out.push_back(follower);
++                return true;
++            }
++            case 2:
++            {
++                const uint16_t blendIdx = BlendOverride(blendOverride, 1, 3);
++                const uint16_t tc = LookupPair(texCoord, 0, -1);
++                primary.m_shader = blendIdx;  primary.m_textureCoordComboIndex = tc;
++                follower.m_shader = blendIdx; follower.m_textureCoordComboIndex = tc;
++                out.push_back(primary); out.push_back(follower);
++                return true;
++            }
++            default:
++                return false;
++            }
++        }
++
++        /// Reshapes one batch into 'piece' (one batch, or primary plus follower for an env split). Does not
++        /// touch skinSectionIndex; the caller re-points it per target sub-section.
++        void DownConvertBatch(M2Batch b, uint32_t nTransparencyLookup, uint32_t nTransformLookup,
++                              std::vector<M2Batch>& piece, std::vector<uint16_t>& texCoord,
++                              std::vector<uint16_t>& blendOverride)
++        {
++            uint16_t shaderId = b.m_shader;
++            uint16_t textureCount = b.m_textureCount;
++            b.m_flags &= 0x10;
++
++            if (shaderId >= kSourceShaderMin)
++            {
++                // Source shader-effect indices [0..2] are Diffuse_T1_Env effects the engine renders natively,
++                // re-based to engine index = sourceIdx + 1 (index 0 is "no shader"). One 2-texture batch
++                // (T1 + env coord); not routed through the env-split heuristic.
++                const uint16_t sourceIdx = shaderId & 0x7fff;
++                if (sourceIdx <= 2)
++                {
++                    b.m_shader = static_cast<uint16_t>(kSourceShaderMin | (sourceIdx + 1));
++                    b.m_textureCount = 2;
++                    b.m_textureCoordComboIndex = LookupPair(texCoord, 0, -1);
++                    b.m_flags &= 0x10;
++                    piece.push_back(b);
++                    return;
++                }
++
++                const uint16_t low = shaderId & 0xFF;
++                if (EnvSplit(low, shaderId, b, nTransparencyLookup, nTransformLookup, piece, texCoord, blendOverride))
++                    return;
++                switch (low)
++                {
++                case 5: case 8: case 10: case 12: case 16: case 23:
++                    shaderId = 0; textureCount = 1; break;
++                case 21: case 33: case 35:
++                    // The additive-overlay combiner. The extension substituted its pixel shader at draw time
++                    // (CombinerPatch, D3D9 bytecode); here it keeps the two-texture blend decode only.
++                    shaderId = 0x4011; textureCount = 2; break;
++                default:
++                    shaderId = 0x0010; textureCount = 1; break;
++                }
++            }
++
++            if (shaderId < kSourceShaderMin) DecodeBlendBits(b, shaderId, textureCount, texCoord, blendOverride);
++            else b.m_textureCount = textureCount < 2 ? textureCount : 2;
++
++            piece.push_back(b);
++        }
++
++        /// Builds the reshaped batch array: each original batch is processed once, then emitted for every
++        /// sub-section its original submesh became (skinSectionIndex re-pointed). A batch on a bad section
++        /// is reduced to a no-draw batch.
++        void FixTexUnits(Work& w, const std::vector<uint8_t>& bad, const std::vector<SplitRun>& splitMap,
++                         std::vector<M2Batch>& out, uint32_t nTransparencyLookup, uint32_t nTransformLookup)
++        {
++            out.reserve(w.batches.size());
++            for (const M2Batch& original : w.batches)
++            {
++                SplitRun run{ original.m_skinSectionIndex, 1 };
++                if (original.m_skinSectionIndex < splitMap.size()) run = splitMap[original.m_skinSectionIndex];
++
++                std::vector<M2Batch> piece;
++                DownConvertBatch(original, nTransparencyLookup, nTransformLookup, piece, w.texCoord, w.combiner);
++
++                for (uint16_t s = 0; s < run.count; ++s)
++                {
++                    const uint16_t sectionIdx = static_cast<uint16_t>(run.first + s);
++                    const bool isBad = sectionIdx < bad.size() && bad[sectionIdx];
++                    for (const M2Batch& p : piece)
++                    {
++                        M2Batch nb = p;
++                        nb.m_skinSectionIndex = sectionIdx;
++                        if (isBad) nb.m_shader = 0x8000;
++                        out.push_back(nb);
++                    }
++                }
++            }
++        }
++
++        /// A model with texture transforms but no transform lookup gets the identity lookup, extended to
++        /// cover every index its batches name.
++        void EnsureTextureTransformLookup(const M2Data* md, Work& w, const char* name)
++        {
++            if (!md->m_textureTransforms.m_count || md->m_textureTransformCombos.m_count) return;
++
++            uint32_t needed = md->m_textureTransforms.m_count;
++            for (const M2Batch& b : w.batches)
++            {
++                const uint32_t base = b.m_textureTransformComboIndex;
++                if (base == 0xFFFFu) continue;
++                const uint32_t count = b.m_textureCount ? b.m_textureCount : 1u;
++                if (base <= 0xFFFFu - count && needed < base + count) needed = base + count;
++            }
++
++            w.transformCombos.resize(needed);
++            for (uint32_t i = 0; i < needed; ++i)
++                w.transformCombos[i] = i < md->m_textureTransforms.m_count ? static_cast<uint16_t>(i) : static_cast<uint16_t>(0xFFFF);
++            w.transformChanged = true;
++            wxl::LogCat("M2", "'%s' synthesized %u texture-transform lookup entries", name, needed);
++        }
++
++        /// Render-flag bits this client understands and that must survive the mask:
++        ///   0x00-0x1F the classic render flags; 0x40 SHADOW-EXCLUDE (the stock caster collector drops the
++        ///   batch outright); 0x80 SHADOW-FORCE (casts even when the blend mode would not qualify).
++        constexpr uint16_t kMaterialFlagMask = 0x1Fu | 0x40u | 0x80u;
++
++        void FixRenderFlags(M2Data* md)
++        {
++            for (uint32_t i = 0; i < md->m_materials.m_count; ++i)
++            {
++                M2Material& m = md->m_materials[i];
++                if (m.m_blendMode > 6) { m.m_blendMode = 4; m.m_flags |= 0x5; }
++                m.m_flags &= kMaterialFlagMask;
++            }
++        }
++
++        /// Rebuilds the material / texunit contract on a modern model's working skin.
++        void Rebuild(M2Data* md, Work& w, bool extended, const std::vector<SplitRun>& splitMap, const char* name)
++        {
++            if (w.batches.size() > kMaxBatches)
++            {
++                wxl::LogCat("M2", "'%s' skin batchCount=%u exceeds cap, clamping", name, static_cast<uint32_t>(w.batches.size()));
++                w.batches.resize(kMaxBatches);
++            }
++
++            const uint32_t nTransparencyLookup = md->m_textureWeightCombos.m_count;
++            EnsureTextureTransformLookup(md, w, name);
++            const uint32_t nTransformLookup = w.transformChanged ? static_cast<uint32_t>(w.transformCombos.size())
++                                                                 : md->m_textureTransformCombos.m_count;
++
++            std::vector<uint8_t> bad;
++            std::vector<M2Batch> batches;
++            FixSubmeshes(w, extended, bad, name);
++            FixTexUnits(w, bad, splitMap, batches, nTransparencyLookup, nTransformLookup);
++
++            if (!batches.empty()) w.batches = std::move(batches);
++            if (!w.texCoord.empty())  w.texCoordChanged = true;
++            if (!w.combiner.empty())  w.combinerChanged = true;
++            FixRenderFlags(md);
++        }
++
++        // -------------------------------------------------------------------------------------- commit
++        void* PlaceInModelBlock(CM2Shared* shared, State& state, size_t bytes)
++        {
++            bytes = (bytes + 15) & ~static_cast<size_t>(15);
++            if (state.reserveUsed + bytes <= state.reserveCap)
++            {
++                uint8_t* p = reinterpret_cast<uint8_t*>(shared->m_data) + state.reserveBase + state.reserveUsed;
++                state.reserveUsed += static_cast<uint32_t>(bytes);
++                return p;
++            }
++#if defined(WOWDECOMP_ARCH_64)
++            void* p = OsAllocNear(shared->m_data, bytes);
++#else
++            void* p = SMemAlloc(static_cast<uint32_t>(bytes), __FILE__, __LINE__, 0);
++#endif
++            if (p) state.farBlocks.push_back(p);
++            return p;
++        }
++
++        State& EnsureState(CM2Shared* shared)
++        {
++            if (!shared->m_wxl) shared->m_wxl = new State();
++            return *shared->m_wxl;
++        }
++
++        template <class T>
++        bool SetArray(M2Array<T>& array, T* data, uint32_t count)
++        {
++            array.m_count = count;
++            array.Set(count ? data : nullptr);
++            return !count || array.Data() == data; // false when the data is out of reach of a 32-bit offset
++        }
++
++        /// Writes the working copy back: model arrays into the model block (or near it), skin arrays into a
++        /// re-seated skin block when their size changed. Memory is gathered first and nothing is modified
++        /// until every allocation succeeded.
++        bool Commit(CM2Shared* shared, uint32_t skinBytes, Work& w, const char* name)
++        {
++            M2Data* md = shared->m_data;
++            M2SkinProfile* sk = shared->m_skinData;
++            State& state = EnsureState(shared);
++
++            // --- model-level arrays
++            uint16_t* pBoneCombos = nullptr; uint16_t* pTexCoord = nullptr;
++            uint16_t* pCombiner = nullptr;   uint16_t* pTransform = nullptr;
++            if (w.boneCombosChanged && !(pBoneCombos = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.boneCombos.size() * 2)))) return false;
++            if (w.texCoordChanged && !(pTexCoord = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.texCoord.size() * 2)))) return false;
++            if (w.combinerChanged && !(pCombiner = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.combiner.size() * 2)))) return false;
++            if (w.transformChanged && !(pTransform = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.transformCombos.size() * 2)))) return false;
++
++            // --- skin block
++            const bool reseat = w.geometryChanged || w.batches.size() != sk->m_batches.m_count;
++            uint8_t* newBlock = nullptr;
++            size_t offVtx = 0, offBones = 0, offIdx = 0, offSections = 0, offBatches = 0;
++            if (reseat)
++            {
++                size_t at = (static_cast<size_t>(skinBytes) + 15) & ~static_cast<size_t>(15);
++                auto take = [&](size_t bytes) { const size_t o = at; at += (bytes + 15) & ~static_cast<size_t>(15); return o; };
++                if (w.geometryChanged)
++                {
++                    offVtx = take(w.vtx.size() * 2);
++                    offBones = take(w.bones.size());
++                    offIdx = take(w.idx.size() * 2);
++                }
++                offSections = take(w.sections.size() * sizeof(M2SkinSection));
++                offBatches = take(w.batches.size() * sizeof(M2Batch));
++                newBlock = static_cast<uint8_t*>(SIMD::AllocA16(static_cast<uint32_t>(at), __FILE__, __LINE__));
++                if (!newBlock) return false;
++            }
++
++            // --- apply: model arrays
++            bool ok = true;
++            if (w.boneCombosChanged)
++            {
++                std::memcpy(pBoneCombos, w.boneCombos.data(), w.boneCombos.size() * 2);
++                ok &= SetArray(md->m_boneCombos, pBoneCombos, static_cast<uint32_t>(w.boneCombos.size()));
++            }
++            if (w.texCoordChanged)
++            {
++                std::memcpy(pTexCoord, w.texCoord.data(), w.texCoord.size() * 2);
++                ok &= SetArray(md->m_textureCoordCombos, pTexCoord, static_cast<uint32_t>(w.texCoord.size()));
++            }
++            if (w.combinerChanged)
++            {
++                std::memcpy(pCombiner, w.combiner.data(), w.combiner.size() * 2);
++                ok &= SetArray(md->m_textureCombinerCombos, pCombiner, static_cast<uint32_t>(w.combiner.size()));
++                md->m_flags |= 0x8; // use the texture combiner combos
++            }
++            if (w.transformChanged)
++            {
++                std::memcpy(pTransform, w.transformCombos.data(), w.transformCombos.size() * 2);
++                ok &= SetArray(md->m_textureTransformCombos, pTransform, static_cast<uint32_t>(w.transformCombos.size()));
++            }
++
++            // --- apply: skin arrays
++            if (reseat)
++            {
++                std::memcpy(newBlock, sk, skinBytes);
++                auto* nsk = reinterpret_cast<M2SkinProfile*>(newBlock);
++                if (w.geometryChanged)
++                {
++                    std::memcpy(newBlock + offVtx, w.vtx.data(), w.vtx.size() * 2);
++                    std::memcpy(newBlock + offBones, w.bones.data(), w.bones.size());
++                    std::memcpy(newBlock + offIdx, w.idx.data(), w.idx.size() * 2);
++                    ok &= SetArray(nsk->m_vertices, reinterpret_cast<uint16_t*>(newBlock + offVtx), static_cast<uint32_t>(w.vtx.size()));
++                    ok &= SetArray(nsk->m_bones, reinterpret_cast<ubyte4*>(newBlock + offBones), static_cast<uint32_t>(w.bones.size() / 4));
++                    ok &= SetArray(nsk->m_indices, reinterpret_cast<uint16_t*>(newBlock + offIdx), static_cast<uint32_t>(w.idx.size()));
++                }
++                std::memcpy(newBlock + offSections, w.sections.data(), w.sections.size() * sizeof(M2SkinSection));
++                std::memcpy(newBlock + offBatches, w.batches.data(), w.batches.size() * sizeof(M2Batch));
++                ok &= SetArray(nsk->m_skinSections, reinterpret_cast<M2SkinSection*>(newBlock + offSections), static_cast<uint32_t>(w.sections.size()));
++                ok &= SetArray(nsk->m_batches, reinterpret_cast<M2Batch*>(newBlock + offBatches), static_cast<uint32_t>(w.batches.size()));
++                shared->m_skinData = nsk;
++                SIMD::FreeA16(sk);
++            }
++            else
++            {
++                std::memcpy(sk->m_skinSections.Data(), w.sections.data(), w.sections.size() * sizeof(M2SkinSection));
++                if (!w.batches.empty())
++                    std::memcpy(sk->m_batches.Data(), w.batches.data(), w.batches.size() * sizeof(M2Batch));
++            }
++
++            if (!ok)
++                wxl::LogCat("M2", "'%s' rebuilt array out of reach of its 32-bit offset", name);
++            return ok;
++        }
++
++        /// A section with boneInfluences == 0 takes the client's shadow-map vertex variant that skips the
++        /// inverse(cameraView) * lightView rebase, which makes a shadow stay rigidly aligned to the camera
++        /// instead of the light. Every drawn submesh with boneInfluences == 0 is lifted to 1.
++        void NormalizeBoneInfluences(M2SkinProfile* sk)
++        {
++            M2SkinSection* sections = sk->m_skinSections.Data();
++            for (uint32_t i = 0; i < sk->m_skinSections.m_count; ++i)
++                if (sections[i].m_indexCount != 0 && sections[i].m_boneInfluences == 0)
++                    sections[i].m_boneInfluences = 1;
++        }
++
++        /// The shadow-pass animate step reads the shared's bone-flag tally (m_billboardBoneCount): at zero it
++        /// takes a fast path that never rebuilds the bone palette, so the palette keeps an older frame's view
++        /// matrix while the shadow renderer uploads the current one and the shadow drifts with the camera.
++        /// Stock content always has the count > 0; a model from a toolchain that ships empty bone flags
++        /// would not. Runtime object only, never the model data.
++        void ForceShadowAnimGate(CM2Shared* shared)
++        {
++            if (shared->m_billboardBoneCount == 0) shared->m_billboardBoneCount = 1;
++        }
++    }
++
++    // ----------------------------------------------------------------------------------------- FinalizeSkin
++    void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes)
++    {
++        M2Data* md = shared->m_data;
++        M2SkinProfile* sk = shared->m_skinData;
++        if (!md || !sk) return;
++
++        const char* name = shared->m_fileName;
++        const State* existing = shared->m_wxl;
++        const bool modern = existing && existing->modern;
++        const bool extended = UsesExtendedIndexStart(name);
++
++        bool anyLevel = false;
++        if (extended)
++        {
++            const M2SkinSection* sections = sk->m_skinSections.Data();
++            for (uint32_t i = 0; i < sk->m_skinSections.m_count; ++i)
++                if (Level(sections[i]) != 0) { anyLevel = true; break; }
++        }
++
++        const bool split = NeedsSplit(sk, extended);
++
++        // Stock content with nothing to rebuild: only the two unconditional fixes.
++        if (!modern && !split && !anyLevel)
++        {
++            NormalizeBoneInfluences(sk);
++            ForceShadowAnimGate(shared);
++            return;
++        }
++
++        Work w;
++        {
++            const uint32_t vc = sk->m_vertices.m_count;
++            const uint16_t* vtx = sk->m_vertices.Data();
++            w.vtx.assign(vtx, vtx + vc);
++            const ubyte4* bones = sk->m_bones.Data();
++            w.bones.resize(static_cast<size_t>(sk->m_bones.m_count) * 4);
++            for (uint32_t i = 0; i < sk->m_bones.m_count; ++i) std::memcpy(&w.bones[static_cast<size_t>(i) * 4], bones[i].b, 4);
++            const uint16_t* idx = sk->m_indices.Data();
++            w.idx.assign(idx, idx + sk->m_indices.m_count);
++            const M2SkinSection* sec = sk->m_skinSections.Data();
++            w.sections.assign(sec, sec + sk->m_skinSections.m_count);
++            const M2Batch* bat = sk->m_batches.Data();
++            w.batches.assign(bat, bat + sk->m_batches.m_count);
++            w.boneComboCount = md->m_boneCombos.m_count;
++        }
++
++        // The bone-budget split is a hard client-engine constraint, not a format concern: it runs for every
++        // model whatever its origin.
++        std::vector<SplitRun> splitMap;
++        uint32_t splitCount = 0;
++        const bool didSplit = split && SplitSubmeshes(md, w, extended, name, splitMap, splitCount) && splitCount > 0;
++        if (didSplit)
++            wxl::LogCat("M2", "'%s' bone splitter produced %u extra sub-draw(s)", name, splitCount);
++
++        if (modern)
++        {
++            // The shaderId decode + texture-unit synthesis assumes the packed modern encoding the loader
++            // leaves on the skin; a stock v264 skin already carries a resolved contract.
++            Rebuild(md, w, extended, splitMap, name);
++        }
++        else
++        {
++            if (didSplit) RepointBatchesAfterSplit(w, splitMap);
++            for (M2SkinSection& s : w.sections)
++                if (s.m_indexCount != 0 && s.m_boneInfluences == 0) s.m_boneInfluences = 1;
++        }
++
++        // Extended encoding: the high half of an index start rides in the section's level. Take it out of
++        // the section id (the rest of the client reads that as a plain id) and keep the full starts here.
++        std::vector<uint32_t> sourceStart;
++        if (extended && anyLevel)
++        {
++            sourceStart.resize(w.sections.size());
++            for (size_t i = 0; i < w.sections.size(); ++i)
++            {
++                sourceStart[i] = FullIndexStart(w.sections[i], true);
++                SetLevel(w.sections[i], 0);
++            }
++        }
++
++        if (!Commit(shared, skinBytes, w, name))
++            wxl::LogCat("M2", "'%s' skin finalize could not commit", name);
++
++        if (!sourceStart.empty())
++        {
++            State& state = EnsureState(shared);
++            state.extendedIndexStart = true;
++            state.sectionStart = sourceStart;
++            state.sourceStart = std::move(sourceStart);
++        }
++
++        ForceShadowAnimGate(shared);
++    }
++}
+diff --git a/Tools/WxlModuleTest/modernm2_test.cpp b/Tools/WxlModuleTest/modernm2_test.cpp
+new file mode 100644
+index 0000000..f406c55
+--- /dev/null
++++ b/Tools/WxlModuleTest/modernm2_test.cpp
+@@ -0,0 +1,393 @@
++// Host-side test of ModernM2Load.cpp / ModernM2Skin.cpp against the real M2Data / CM2Shared headers.
++// Build and run it with run_modernm2_tests.sh. It builds synthetic MD21 files and skins, so it needs no game data.
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
++#include "Engine/Source/WXL/Services.h"
++#include "Engine/Source/WXL/Log.h"
++#define WXL_ALLOW_32BIT_HEADER 1
++#include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
++
++// ---- stubs for engine services the module calls
++namespace SIMD
++{
++    void* AllocA16(uint32_t size, const char*, int32_t) { return std::aligned_alloc(16, (size + 15) & ~15u); }
++    void FreeA16(void* p) { std::free(p); }
++}
++void* OsAllocNear(const void*, size_t size) { return std::aligned_alloc(16, (size + 15) & ~size_t(15)); }
++void OsFreeNear(void* p) { std::free(p); }
++namespace wxl
++{
++    void LogCat(const char* cat, const char* fmt, ...)
++    {
++        std::printf("    [log %s] ", cat); va_list a; va_start(a, fmt); std::vprintf(fmt, a); va_end(a); std::printf("\n");
++    }
++    bool LogThrottle(const char*, unsigned, unsigned) { return true; }
++}
++
++static int g_fail = 0, g_pass = 0;
++#define CHECK(c, msg) do { if (c) { ++g_pass; std::printf("  [ok] %s\n", msg); } else { ++g_fail; std::printf("  [FAIL] %s  (%s:%d)\n", msg, __FILE__, __LINE__); } } while (0)
++
++// ---- fake listfile service
++static int FakeResolve(uint32_t id, uint32_t kind, char* out, size_t cap)
++{
++    if (id == 100) { std::snprintf(out, cap, "world\\generic\\tex100.blp"); return WXL_LISTFILE_FOUND; }
++    std::snprintf(out, cap, "WXL\\NotFound%s", kind == WXL_LISTFILE_TEXTURE ? ".blp" : "");
++    return WXL_LISTFILE_NOTFOUND;
++}
++static WxlListfileServices g_listfile = { sizeof(WxlListfileServices), nullptr, &FakeResolve, nullptr, nullptr, nullptr, nullptr };
++
++// ---- synthetic file builders
++static void Put32(std::vector<uint8_t>& v, size_t at, uint32_t x) { std::memcpy(&v[at], &x, 4); }
++static void Put16(std::vector<uint8_t>& v, size_t at, uint16_t x) { std::memcpy(&v[at], &x, 2); }
++static void PutF(std::vector<uint8_t>& v, size_t at, float x) { std::memcpy(&v[at], &x, 4); }
++static uint32_t Get32(const uint8_t* p) { uint32_t x; std::memcpy(&x, p, 4); return x; }
++static uint16_t Get16(const uint8_t* p) { uint16_t x; std::memcpy(&x, p, 2); return x; }
++static float GetF(const uint8_t* p) { float x; std::memcpy(&x, p, 4); return x; }
++
++struct Fixture
++{
++    std::vector<uint8_t> file;
++    uint32_t partOff, camOff, seqOff, matOff, texOff;
++};
++
++static Fixture BuildModernFile(uint32_t version)
++{
++    const uint32_t hdr = sizeof(M2Data);
++    const uint32_t seqOff = hdr, seqBytes = 2 * sizeof(M2Sequence);
++    const uint32_t matOff = seqOff + seqBytes, matBytes = 2 * sizeof(M2Material);
++    const uint32_t texOff = matOff + matBytes, texBytes = 3 * sizeof(M2Texture);
++    const uint32_t partOff = (texOff + texBytes + 15) & ~15u, partBytes = 2 * 0x1FC;
++    const uint32_t camOff = partOff + partBytes, camBytes = 2 * 0x74;
++    const uint32_t bodySize = camOff + camBytes;
++
++    Fixture f;
++    f.partOff = partOff; f.camOff = camOff; f.seqOff = seqOff; f.matOff = matOff; f.texOff = texOff;
++    std::vector<uint8_t> body(bodySize, 0);
++    Put32(body, 0, 0x3032444D);                 // 'MD20'
++    Put32(body, offsetof(M2Data, m_version), version);
++    auto setArr = [&](size_t at, uint32_t count, uint32_t off) { Put32(body, at, count); Put32(body, at + 4, off); };
++    setArr(offsetof(M2Data, m_sequences), 2, seqOff);
++    setArr(offsetof(M2Data, m_materials), 2, matOff);
++    setArr(offsetof(M2Data, m_textures), 3, texOff);
++    setArr(offsetof(M2Data, m_particles), 2, partOff);
++    setArr(offsetof(M2Data, m_cameras), 2, camOff);
++    Put32(body, offsetof(M2Data, m_numSkinProfiles), 7); // LDV1-era count, must be clamped
++
++    // sequences: #0 inline keys, #1 external (flags 0), source id 564 -> client 37, packed blend in|out
++    auto* seqs = reinterpret_cast<M2Sequence*>(&body[seqOff]);
++    seqs[0].m_id = 0;   seqs[0].m_flags = 0x20; seqs[0].m_blendTime = 0x00030002;
++    seqs[1].m_id = 564; seqs[1].m_flags = 0x00; seqs[1].m_blendTime = 0x00050004;
++    auto* mats = reinterpret_cast<M2Material*>(&body[matOff]);
++    mats[0].m_flags = 0xFFFF; mats[0].m_blendMode = 9;
++    mats[1].m_flags = 0x0003; mats[1].m_blendMode = 2;
++    auto* texs = reinterpret_cast<M2Texture*>(&body[texOff]);
++    texs[0].m_type = 0; texs[1].m_type = 0; texs[2].m_type = 11;
++
++    // particles (modern stride): flags at +4, texture at +0x16, marker at +0x10
++    for (uint32_t i = 0; i < 2; ++i)
++    {
++        const size_t r = partOff + i * 0x1FC;
++        Put32(body, r + 0x10, 0xA0A00000u + i);
++        Put32(body, r + 0x1D8, 0xBEEF0000u + i);                  // last client-shape dword
++        Put32(body, r + 0x1DC, 0xDEAD0000u + i);                  // trailing multi-texture block
++    }
++    Put32(body, partOff + 4, 0x10000000);                          // multi-texture flag
++    Put16(body, partOff + 0x16, 2 | (1 << 5) | (3 << 10));         // packed layers: first = 2
++    Put16(body, partOff + 0x1FC + 0x16, 1);
++
++    // cameras (modern stride): type, far, near, body marker, trailing fov track (empty)
++    for (uint32_t i = 0; i < 2; ++i)
++    {
++        const size_t r = camOff + i * 0x74;
++        Put32(body, r + 0x00, 1 + i);                 // type
++        PutF(body, r + 0x04, 100.0f + i);             // far
++        PutF(body, r + 0x08, 0.5f + i);               // near
++        Put32(body, r + 0x0C, 0xC0DE0000u + i);       // first body dword
++        Put32(body, r + 0x0C + 0x50, 0xFACE0000u + i); // last body dword
++    }
++
++    // container: MD21 chunk then TXID
++    auto& out = f.file;
++    auto chunk = [&](const char* tag, const std::vector<uint8_t>& payload)
++    {
++        const size_t at = out.size(); out.resize(at + 8 + payload.size());
++        std::memcpy(&out[at], tag, 4); Put32(out, at + 4, static_cast<uint32_t>(payload.size()));
++        std::memcpy(&out[at + 8], payload.data(), payload.size());
++    };
++    chunk("MD21", body);
++    std::vector<uint8_t> txid(12); Put32(txid, 0, 100); Put32(txid, 4, 200); Put32(txid, 8, 300);
++    chunk("TXID", txid);
++    return f;
++}
++
++static CM2Shared* MakeShared(const std::vector<uint8_t>& file, const char* name)
++{
++    void* mem = std::calloc(1, sizeof(CM2Shared));
++    auto* sh = static_cast<CM2Shared*>(mem);
++    sh->m_data = static_cast<M2Data*>(SIMD::AllocA16(static_cast<uint32_t>(file.size()), __FILE__, __LINE__));
++    std::memcpy(sh->m_data, file.data(), file.size());
++    sh->m_fileSize = static_cast<uint32_t>(file.size());
++    std::snprintf(sh->m_fileName, sizeof sh->m_fileName, "%s", name);
++    return sh;
++}
++
++static void TestLoad()
++{
++    std::printf("modern container load\n");
++    wxl::services::Register(WXL_SERVICE_LISTFILE, &g_listfile, sizeof g_listfile);
++
++    Fixture f = BuildModernFile(272);
++    CM2Shared* sh = MakeShared(f.file, "Creature\\Test\\Test.m2");
++    auto result = wxl::modernm2::PrepareLoad(sh);
++    CHECK(result == wxl::modernm2::LoadResult::Modern, "container recognized");
++    const uint8_t* b = reinterpret_cast<const uint8_t*>(sh->m_data);
++    CHECK(Get32(b) == 0x3032444D && Get32(b + offsetof(M2Data, m_version)) == 272, "flat MD20 body at base, version kept");
++    CHECK(sh->m_fileSize == f.camOff + 2 * 0x74, "file size is the body size (container header and trailing chunks dropped)");
++    CHECK(sh->m_data->m_numSkinProfiles == 1, "oversized skin-profile count clamped");
++
++    const auto* seqs = reinterpret_cast<const M2Sequence*>(b + f.seqOff);
++    CHECK(seqs[0].m_blendTime == 0x0002 && seqs[1].m_blendTime == 0x0004, "split blend times masked to the single value");
++    CHECK(seqs[1].m_id == 37, "source anim id 564 remapped to client 37");
++    const auto* mats = reinterpret_cast<const M2Material*>(b + f.matOff);
++    CHECK(mats[0].m_blendMode == 4 && (mats[0].m_flags & 0x5) == 0x5 && (mats[0].m_flags & ~0x1Fu) == 0, "out-of-table blend mode clamped to Add, flags masked");
++    CHECK(mats[1].m_blendMode == 2 && mats[1].m_flags == 3, "in-range material untouched");
++
++    // particles: shrunk to the client stride in place
++    const uint8_t* p0 = b + f.partOff;
++    const uint8_t* p1 = b + f.partOff + 0x1DC;
++    CHECK(Get32(p0 + 0x10) == 0xA0A00000u && Get32(p1 + 0x10) == 0xA0A00001u, "particle records re-strided to 0x1DC");
++    CHECK(Get32(p1 + 0x1D8) == 0xBEEF0001u, "second particle's last client dword carried");
++    CHECK(Get16(p0 + 0x16) == 2, "multi-texture packed id reduced to its first layer");
++    CHECK(Get16(p1 + 0x16) == 1, "single-texture id untouched");
++
++    // cameras: fov float inserted, body shifted one float
++    const uint8_t* c0 = b + f.camOff;
++    const uint8_t* c1 = b + f.camOff + 0x64;
++    CHECK(Get32(c0) == 1 && Get32(c1) == 2, "camera types carried");
++    CHECK(GetF(c0 + 0x08) == 100.0f && GetF(c0 + 0x0C) == 0.5f, "camera far/near clip moved to the client slots");
++    CHECK(GetF(c0 + 0x04) > 0.78f && GetF(c0 + 0x04) < 0.79f, "camera with no addressable fov key gets the 45-degree default");
++    CHECK(Get32(c0 + 0x10) == 0xC0DE0000u && Get32(c1 + 0x10) == 0xC0DE0001u, "camera track bodies re-strided to 0x64");
++    CHECK(Get32(c1 + 0x10 + 0x50) == 0xFACE0001u, "second camera body complete");
++
++    // TXID -> listfile
++    char path[260];
++    M2Texture hard{}; hard.m_type = 0; M2Texture dyn{}; dyn.m_type = 11;
++    CHECK(wxl::modernm2::TextureName(sh, 0, hard, path, sizeof path) && std::strcmp(path, "world\\generic\\tex100.blp") == 0, "TXID[0] resolved through the listfile service");
++    CHECK(wxl::modernm2::TextureName(sh, 1, hard, path, sizeof path) && std::strcmp(path, "WXL\\NotFound.blp") == 0, "unknown id yields the listfile's not-found texture name");
++    CHECK(!wxl::modernm2::TextureName(sh, 2, dyn, path, sizeof path), "dynamic texture slot is not given a file");
++    CHECK(!wxl::modernm2::TextureName(sh, 5, hard, path, sizeof path), "index past the TXID list: no answer");
++
++    wxl::modernm2::Destroy(sh);
++    SIMD::FreeA16(sh->m_data);
++    std::free(sh);
++
++    // refusals
++    std::printf("refusals\n");
++    Fixture bad = BuildModernFile(264 + 3);                         // 267: outside the window
++    CM2Shared* s2 = MakeShared(bad.file, "x.m2");
++    CHECK(wxl::modernm2::PrepareLoad(s2) == wxl::modernm2::LoadResult::Failed, "version outside the window refused");
++    std::free(s2->m_data); std::free(s2);
++
++    std::vector<uint8_t> stock(64, 0); Put32(stock, 0, 0x3032444D);
++    CM2Shared* s3 = MakeShared(stock, "stock.m2");
++    CHECK(wxl::modernm2::PrepareLoad(s3) == wxl::modernm2::LoadResult::NotModern && !s3->m_wxl, "plain MD20 left alone, no state");
++    std::free(s3->m_data); std::free(s3);
++
++    Fixture trunc = BuildModernFile(272); trunc.file.resize(trunc.file.size() / 2);
++    CM2Shared* s4 = MakeShared(trunc.file, "t.m2");
++    CHECK(wxl::modernm2::PrepareLoad(s4) == wxl::modernm2::LoadResult::Failed, "truncated container refused");
++    std::free(s4->m_data); std::free(s4);
++}
++
++// ---- skin
++struct SkinFixture { std::vector<uint8_t> block; };
++
++static SkinFixture BuildSkin(uint32_t verts, uint32_t indices, uint32_t sections, uint32_t batches)
++{
++    const uint32_t hdr = sizeof(M2SkinProfile);
++    size_t at = (hdr + 15) & ~15u;
++    const size_t offV = at;  at += verts * 2;       at = (at + 15) & ~15u;
++    const size_t offI = at;  at += indices * 2;     at = (at + 15) & ~15u;
++    const size_t offB = at;  at += verts * 4;       at = (at + 15) & ~15u;
++    const size_t offS = at;  at += sections * sizeof(M2SkinSection); at = (at + 15) & ~15u;
++    const size_t offT = at;  at += batches * sizeof(M2Batch);        at = (at + 15) & ~15u;
++    SkinFixture f; f.block.assign(at, 0);
++    auto* sk = reinterpret_cast<M2SkinProfile*>(f.block.data());
++    sk->m_magic = 0x4E494B53;
++    sk->m_vertices.m_count = verts;  sk->m_vertices.Set(reinterpret_cast<uint16_t*>(&f.block[offV]));
++    sk->m_indices.m_count = indices; sk->m_indices.Set(reinterpret_cast<uint16_t*>(&f.block[offI]));
++    sk->m_bones.m_count = verts;     sk->m_bones.Set(reinterpret_cast<ubyte4*>(&f.block[offB]));
++    sk->m_skinSections.m_count = sections; sk->m_skinSections.Set(reinterpret_cast<M2SkinSection*>(&f.block[offS]));
++    sk->m_batches.m_count = batches; sk->m_batches.Set(reinterpret_cast<M2Batch*>(&f.block[offT]));
++    sk->m_boneCountMax = 256;
++    return f;
++}
++
++static void TestSkinSplit()
++{
++    std::printf("skin finalize: bone split + modern contract\n");
++    Fixture f = BuildModernFile(272);
++    CM2Shared* sh = MakeShared(f.file, "Creature\\Big\\Big.m2");
++    CHECK(wxl::modernm2::PrepareLoad(sh) == wxl::modernm2::LoadResult::Modern, "loaded");
++    M2Data* md = sh->m_data;
++
++    // relocate the arrays the finalize reads (what the stock walk does), and give the model 100 bone combos
++    uint8_t* base = reinterpret_cast<uint8_t*>(md);
++    const uint32_t reserve = (sh->m_fileSize + 15) & ~15u;
++    (void)reserve;
++    md->m_materials.Relocate(base);
++    md->m_textures.Relocate(base);
++    // bone combos live in the body's own tail would need a larger fixture: park them in a malloc'd region by
++    // using a far block the way the reader does, here simply through the reserve at the end of the model block
++    // (the reader's reserve starts after the body; take the last 512 bytes so it cannot collide).
++    uint16_t* combos = reinterpret_cast<uint16_t*>(base + reserve + 4096 - 256);
++    for (int i = 0; i < 100; ++i) combos[i] = static_cast<uint16_t>(i + 10);
++    md->m_boneCombos.m_count = 100; md->m_boneCombos.Set(combos);
++
++    const uint32_t V = 300, T = 100; // 100 triangles over 300 vertices
++    SkinFixture sf = BuildSkin(V, T * 3, 1, 2);
++    auto* sk = reinterpret_cast<M2SkinProfile*>(sf.block.data());
++    for (uint32_t i = 0; i < V; ++i)
++    {
++        sk->m_vertices.Data()[i] = static_cast<uint16_t>(i);
++        ubyte4& b = sk->m_bones.Data()[i];
++        for (int j = 0; j < 4; ++j) b.b[j] = static_cast<uint8_t>((i + j * 7) % 100);
++    }
++    for (uint32_t i = 0; i < T * 3; ++i) sk->m_indices.Data()[i] = static_cast<uint16_t>(i);
++    M2SkinSection& sec = sk->m_skinSections.Data()[0];
++    sec.m_vertexCount = V; sec.m_indexCount = T * 3; sec.m_boneCount = 100; sec.m_boneComboIndex = 0; sec.m_boneInfluences = 4;
++    M2Batch* batches = sk->m_batches.Data();
++    batches[0].m_shader = 0x8000;            // source effect 0 (env) 
++    batches[0].m_textureCount = 2; batches[0].m_skinSectionIndex = 0;
++    batches[1].m_shader = 0x4011;            // packed two-texture blend
++    batches[1].m_textureCount = 2; batches[1].m_skinSectionIndex = 0;
++
++    sh->m_skinData = static_cast<M2SkinProfile*>(SIMD::AllocA16(static_cast<uint32_t>(sf.block.size()), __FILE__, __LINE__));
++    std::memcpy(sh->m_skinData, sf.block.data(), sf.block.size());
++    const M2SkinProfile* oldSkin = sh->m_skinData;
++    (void)oldSkin;
++
++    wxl::modernm2::FinalizeSkin(sh, static_cast<uint32_t>(sf.block.size()));
++
++    sk = sh->m_skinData;
++    const uint32_t n = sk->m_skinSections.m_count;
++    CHECK(n > 1, "the 100-bone submesh was split into several draws");
++    bool allUnder = true; uint32_t idxTotal = 0, vertTotal = 0;
++    for (uint32_t i = 0; i < n; ++i)
++    {
++        const M2SkinSection& s = sk->m_skinSections.Data()[i];
++        if (s.m_boneCount > wxl::modernm2::kMaxBonesPerDraw) allUnder = false;
++        idxTotal += s.m_indexCount; vertTotal += s.m_vertexCount;
++    }
++    CHECK(allUnder, "every sub-section holds at most 75 bones");
++    CHECK(idxTotal == T * 3, "all triangles survive the split");
++    CHECK(sk->m_batches.m_count == n * 2, "each original batch repeated once per sub-section");
++
++    // bone remap correctness: every vertex keeps the same global bones
++    bool bonesOk = true, idxOk = true;
++    const uint16_t* newCombos = md->m_boneCombos.Data();
++    for (uint32_t i = 0; i < n && bonesOk; ++i)
++    {
++        const M2SkinSection& s = sk->m_skinSections.Data()[i];
++        for (uint32_t v = s.m_vertexStart; v < s.m_vertexStart + s.m_vertexCount; ++v)
++        {
++            const uint32_t orig = sk->m_vertices.Data()[v];
++            for (int j = 0; j < 4; ++j)
++            {
++                const uint32_t want = (orig + j * 7) % 100 + 10;
++                const uint32_t got = newCombos[s.m_boneComboIndex + sk->m_bones.Data()[v].b[j]];
++                if (got != want) { bonesOk = false; break; }
++            }
++        }
++        for (uint32_t k = 0; k < s.m_indexCount; ++k)
++        {
++            const uint32_t v = sk->m_indices.Data()[s.m_indexStart + k];
++            if (v < s.m_vertexStart || v >= s.m_vertexStart + s.m_vertexCount) idxOk = false;
++        }
++    }
++    CHECK(bonesOk, "every vertex still resolves to its original global bones through the new combos");
++    CHECK(idxOk, "every index stays inside its sub-section's vertex block");
++
++    // contract rebuild
++    CHECK((md->m_flags & 0x8) != 0 && md->m_textureCoordCombos.m_count > 0 && md->m_textureCombinerCombos.m_count > 0,
++          "texture-unit lookups and combiner combos synthesized, combiner flag set");
++    const M2Batch& b0 = sk->m_batches.Data()[0];
++    const M2Batch& b1 = sk->m_batches.Data()[1];
++    CHECK(b0.m_shader == (0x8000 | 1), "source env effect 0 re-based to engine effect 1");
++    CHECK(b1.m_textureCount == 2 && b1.m_shader != 0x4011, "packed blend shader id decoded into a combiner entry");
++    CHECK(sh->m_billboardBoneCount >= 1, "shadow animate gate forced");
++    for (uint32_t i = 0; i < n; ++i)
++        if (sk->m_skinSections.Data()[i].m_boneInfluences == 0) { CHECK(false, "boneInfluences lifted"); break; }
++
++    wxl::modernm2::Destroy(sh);
++    SIMD::FreeA16(sh->m_skinData); SIMD::FreeA16(sh->m_data); std::free(sh);
++}
++
++static void TestExtendedStart()
++{
++    std::printf("skin finalize: extended index start\n");
++    std::vector<uint8_t> stock(64, 0); Put32(stock, 0, 0x3032444D);
++    CM2Shared* sh = MakeShared(stock, "Character\\Human\\Male\\HumanMale.m2");
++    // minimal model data block big enough for the header
++    std::free(sh->m_data);
++    sh->m_data = static_cast<M2Data*>(SIMD::AllocA16(sizeof(M2Data) + 64, __FILE__, __LINE__));
++    std::memset(sh->m_data, 0, sizeof(M2Data) + 64);
++
++    const uint32_t I = 66000;
++    SkinFixture sf = BuildSkin(300, I, 2, 0);
++    auto* sk = reinterpret_cast<M2SkinProfile*>(sf.block.data());
++    M2SkinSection* s = sk->m_skinSections.Data();
++    s[0].m_indexCount = 300; s[0].m_indexStart = 0x0010; s[0].m_skinSectionId = (1u << 16) | 5; // start 0x10010, id 5
++    s[0].m_boneCount = 10; s[0].m_boneInfluences = 4;
++    s[1].m_indexCount = 300; s[1].m_indexStart = 0x0200; s[1].m_skinSectionId = 7;               // start 0x200, id 7
++    s[1].m_boneCount = 10; s[1].m_boneInfluences = 0;
++
++    sh->m_skinData = static_cast<M2SkinProfile*>(SIMD::AllocA16(static_cast<uint32_t>(sf.block.size()), __FILE__, __LINE__));
++    std::memcpy(sh->m_skinData, sf.block.data(), sf.block.size());
++    wxl::modernm2::FinalizeSkin(sh, static_cast<uint32_t>(sf.block.size()));
++
++    sk = sh->m_skinData;
++    CHECK(sh->m_wxl && sh->m_wxl->sourceStart.size() == 2, "full starts kept for the model");
++    CHECK(sh->m_wxl->sourceStart[0] == 0x10010u && sh->m_wxl->sourceStart[1] == 0x200u, "high half taken from the section level");
++    CHECK((sk->m_skinSections.Data()[0].m_skinSectionId >> 16) == 0 && (sk->m_skinSections.Data()[0].m_skinSectionId & 0xFFFF) == 5,
++          "section id no longer carries the level (geoset ids stay plain)");
++    CHECK(sk->m_skinSections.Data()[1].m_boneInfluences == 1, "boneInfluences 0 lifted to 1");
++    sh->m_skinSections = sk->m_skinSections.Data(); // the shared's copy, as InitializeSkinProfile makes it
++    sh->m_wxl->sectionStart = sh->m_wxl->sourceStart;
++    CHECK(wxl::modernm2::SectionIndexStart(sh, &sh->m_skinSections[0]) == 0x10010u, "draw start of section 0 is the full 32-bit value");
++    CHECK(wxl::modernm2::SkinIndexStart(sh, 1, &sk->m_skinSections.Data()[1]) == 0x200u, "file-order lookup agrees");
++
++    wxl::modernm2::Destroy(sh);
++    SIMD::FreeA16(sh->m_skinData); SIMD::FreeA16(sh->m_data); std::free(sh);
++}
++
++static void TestAnimAndCaps()
++{
++    std::printf("anim unwrap, caps\n");
++    std::vector<uint8_t> a(8 + 16, 0);
++    std::memcpy(&a[0], "AFM2", 4); Put32(a, 4, 16);
++    for (int i = 0; i < 16; ++i) a[8 + i] = static_cast<uint8_t>(0x40 + i);
++    uint32_t size = static_cast<uint32_t>(a.size());
++    CHECK(wxl::modernm2::UnwrapAnim(a.data(), size) && size == 16 && a[0] == 0x40 && a[15] == 0x4F, "AFM2 payload slid onto the buffer base");
++    std::vector<uint8_t> flat(16, 7); uint32_t fs = 16;
++    CHECK(!wxl::modernm2::UnwrapAnim(flat.data(), fs) && fs == 16 && flat[0] == 7, "a flat anim file is left alone");
++    std::vector<uint8_t> lie(8 + 4, 0); std::memcpy(&lie[0], "AFM2", 4); Put32(lie, 4, 9999); uint32_t ls = 12;
++    CHECK(!wxl::modernm2::UnwrapAnim(lie.data(), ls), "chunk size past the file refused");
++    CHECK(wxl::modernm2::DoodadInstanceCap(10) == 7 && wxl::modernm2::DoodadInstanceCap(100) == 1 && wxl::modernm2::DoodadInstanceCap(75) == 1,
++          "doodad instance cap: 75 / bones, at least 1");
++}
++
++int main()
++{
++    TestLoad();
++    TestSkinSplit();
++    TestExtendedStart();
++    TestAnimAndCaps();
++    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/run_modernm2_tests.sh b/Tools/WxlModuleTest/run_modernm2_tests.sh
+new file mode 100755
+index 0000000..6bdc189
+--- /dev/null
++++ b/Tools/WxlModuleTest/run_modernm2_tests.sh
+@@ -0,0 +1,15 @@
++#!/bin/sh
++# Builds the modern M2 reader (Engine/Source/Model2/ModernM2) with its host test using g++ (Linux or MinGW),
++# with address and undefined-behaviour sanitizers, and runs it. Synthetic data only; no game files needed.
++#   ./run_modernm2_tests.sh        (exit code 0 = everything passed)
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd)
++R=$(cd "$HERE/../.." && pwd)
++M=$R/Engine/Source/Model2/ModernM2
++OUT=${TMPDIR:-/tmp}/wxl_modernm2_test
++mkdir -p "$OUT"
++g++ -std=c++20 -O1 -g -w -fpermissive -DWOWDECOMP_ARCH_64 -fsanitize=address,undefined -pthread \
++    -include "$HERE/stub_m2/shims.h" -I "$HERE/stub_m2" -I "$R" \
++    "$HERE/modernm2_test.cpp" "$M/ModernM2Load.cpp" "$M/ModernM2Skin.cpp" "$R/Engine/Source/WXL/Services.cpp" \
++    -o "$OUT/modernm2_test"
++"$OUT/modernm2_test"
+diff --git a/Tools/WxlModuleTest/stub_m2/shims.h b/Tools/WxlModuleTest/stub_m2/shims.h
+new file mode 100644
+index 0000000..4289128
+--- /dev/null
++++ b/Tools/WxlModuleTest/stub_m2/shims.h
+@@ -0,0 +1,13 @@
++// Force-included by run_modernm2_tests.sh: MSVC-isms the decompiled headers use, so the host test builds with g++.
++#pragma once
++
++#define __stdcall
++#define __cdecl
++#define __fastcall
++#define __thiscall
++#define __forceinline inline
++#define __declspec(x)
++#define raw_name name
++#define STORMAPI
++#include <alloca.h>
++#define _alloca alloca
+diff --git a/Tools/WxlModuleTest/stub_m2/windows.h b/Tools/WxlModuleTest/stub_m2/windows.h
+new file mode 100644
+index 0000000..656595a
+--- /dev/null
++++ b/Tools/WxlModuleTest/stub_m2/windows.h
+@@ -0,0 +1,20 @@
++// Just enough of <windows.h> to compile the Model2 headers on Linux for the modern-M2 host test. Never used by the real build.
++#pragma once
++#include <cstdint>
++#include <cstddef>
++typedef void* HANDLE; typedef unsigned long DWORD; typedef int BOOL; typedef void* HWND; typedef void* HINSTANCE;
++typedef void* HMODULE; typedef long LONG; typedef unsigned int UINT; typedef const char* LPCSTR; typedef char* LPSTR;
++typedef void* LPVOID; typedef unsigned short WORD; typedef unsigned char BYTE; typedef long long LONGLONG;
++typedef uintptr_t UINT_PTR; typedef intptr_t LONG_PTR; typedef uintptr_t ULONG_PTR; typedef void* HDC; typedef void* HGLRC;
++typedef long HRESULT; typedef unsigned long ULONG; typedef void* HKEY; typedef void* HICON; typedef void* HMONITOR;
++struct CRITICAL_SECTION { void* p[6]; };
++struct RECT { long left, top, right, bottom; }; struct POINT { long x, y; };
++union LARGE_INTEGER { struct { DWORD LowPart; LONG HighPart; }; LONGLONG QuadPart; };
++#define WINAPI
++#define CALLBACK
++#define APIENTRY
++#define INFINITE 0xFFFFFFFF
++#define TRUE 1
++#define FALSE 0
++#define MAX_PATH 260
++#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)

@@ -33,7 +33,8 @@ enum EGxBlend {
     GxBlend_SrcAlphaOpaque = 9,
     GxBlend_NoAlphaAdd = 10,
     GxBlend_ConstantAlpha = 11,
-    GxBlends_Last = 12,
+    GxBlend_ScreenAdd = 12, // WXL: incoming * (1 - destination) + destination: brightens toward white, never clips
+    GxBlends_Last = 13,
 };
 
 enum EGxTexFormat {

@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdint>
+#include "Engine/Source/Model2/ModernM2/ModernM2.h"
 #include "Engine/Source/Model2/CM2SceneRender.h"
 #include "Engine/Source/Gx/CGxBuf.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
@@ -472,7 +473,7 @@ void CM2SceneRender::DrawBatch() {
 
     CGxBatch batch;
     batch.m_primType = GxPrim_Triangles;
-    batch.m_start = this->m_curSkinSection->m_indexStart;
+    batch.m_start = wxl::modernm2::SectionIndexStart(this->m_curShared, this->m_curSkinSection);
     batch.m_count = this->m_curSkinSection->m_indexCount;
 
     if (CShaderEffect::s_enableShaders) {
@@ -614,11 +615,18 @@ void CM2SceneRender::DrawBatchDoodad(M2Element* elements, uint32_t* indices) {
         instances = total;
     }
 
+    // WXL: the vertex shader's bone palette holds 75 bones per draw; chunk the instances to fit it.
+    const uint32_t boneInstanceCap = wxl::modernm2::DoodadInstanceCap(this->m_curSkinSection->m_boneCount);
+
+    if (instances > boneInstanceCap) {
+        instances = boneInstanceCap;
+    }
+
     this->m_curShared->SetIndices();
 
     CGxBatch batch;
     batch.m_primType = GxPrim_Triangles;
-    batch.m_start = this->m_curSkinSection->m_indexStart;
+    batch.m_start = wxl::modernm2::SectionIndexStart(this->m_curShared, this->m_curSkinSection);
     batch.m_count = 0;
     batch.m_minIndex = 0;
     batch.m_maxIndex = 0;

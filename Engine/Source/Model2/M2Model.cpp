@@ -11,6 +11,7 @@
 #else
 #include <alloca.h>
 #endif
+#include "Engine/Source/Model2/ModernM2/ModernM2.h"
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Base/Handle.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
@@ -2673,10 +2674,12 @@ int32_t CM2Model::SetIndices() {
                 M2SkinSection* section = &skin->m_skinSections[sectionIndex];
 
                 if (copyIndices || singleBone) {
-                    memcpy(indices, &skin->m_indices[section->m_indexStart], section->m_indexCount * sizeof(uint16_t));
+                    memcpy(indices, &skin->m_indices[wxl::modernm2::SkinIndexStart(shared, sectionIndex, section)], section->m_indexCount * sizeof(uint16_t));
                 } else {
+                    const uint32_t sourceStart = wxl::modernm2::SkinIndexStart(shared, sectionIndex, section);
+
                     for (uint32_t j = 0; j < section->m_indexCount; j++) {
-                        indices[j] = vertexBase + skin->m_indices[j + section->m_indexStart] - section->m_vertexStart;
+                        indices[j] = vertexBase + skin->m_indices[j + sourceStart] - section->m_vertexStart;
                     }
                 }
 
@@ -2892,7 +2895,7 @@ void CM2Model::RenderModelBatchesForProjectedTexture() {
 
             CGxBatch gxBatch;
             gxBatch.m_primType = GxPrim_Triangles;
-            gxBatch.m_start = section->m_indexStart;
+            gxBatch.m_start = wxl::modernm2::SectionIndexStart(this->m_shared, section);
             gxBatch.m_count = section->m_indexCount;
             gxBatch.m_minIndex = 0;
             gxBatch.m_maxIndex = this->m_shared->m_skinData->m_vertices.m_count - 1;
@@ -2941,7 +2944,7 @@ void CM2Model::RenderBatchShadowMap(int32_t untextured, M2Batch* batch, const CM
 
     CGxBatch gxBatch;
     gxBatch.m_primType = GxPrim_Triangles;
-    gxBatch.m_start = section->m_indexStart;
+    gxBatch.m_start = wxl::modernm2::SectionIndexStart(this->m_shared, section);
     gxBatch.m_count = 0;
     gxBatch.m_minIndex = 0;
     gxBatch.m_maxIndex = 0;
@@ -7431,6 +7434,15 @@ int32_t CM2Model::InitializeLoaded() {
 
                 case 6:
                     material.m_blendMode = 5;
+                    material.m_flags &= ~4u;
+                    break;
+
+                // WXL: a source emitter can name a blend mode past the stock map. The stock default (opaque, alpha test
+                // left on) draws a fire sprite as a solid quad; the one usable state those sources add is a screen blend.
+                // Alpha testing belongs to the two modes that do not blend at all. The record keeps the mode it was
+                // authored with; only this emitter's material resolves to the screen state.
+                default:
+                    material.m_blendMode = kParticleBlendScreen;
                     material.m_flags &= ~4u;
                     break;
             }

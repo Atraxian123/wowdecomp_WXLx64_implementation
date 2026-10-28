@@ -4,6 +4,7 @@
 #include <cstring>
 #include <new>
 #include <xmmintrin.h>
+#include "Engine/Source/Model2/ModernM2/ModernM2.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
@@ -26,7 +27,10 @@
 const uint32_t s_localLighting[7] = { 1, 1, 1, 1, 1, 0, 0 };
 
 // STATIC: 0x00A453B0
-const uint32_t s_blendModes[3][7] = { { 0, 1, 2, 10, 3, 4, 5 }, { 2, 2, 2, 10, 3, 4, 5 }, { 2, 2, 2, 10, 3, 4, 5 } };
+const uint32_t s_blendModes[3][8] = { { 0, 1, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 } };
+
+static_assert(sizeof(s_blendModes[0]) / sizeof(s_blendModes[0][0]) > kM2BlendScreen, "s_blendModes must reach the screen blend index");
+static_assert(GxBlend_ScreenAdd == 12 && GxBlend_ScreenAdd < GxBlends_Last, "the screen state must be inside the device tables");
 
 // STATIC: 0x00AF5898
 uint32_t CM2Scene::s_optFlags = 0xFFFFFFFF;
@@ -89,6 +93,8 @@ uint32_t ParticleBlendToM2Blend(uint32_t blend) {
             return 6;
         case 10:
             return 3;
+        case kParticleBlendScreen:
+            return kM2BlendScreen;
         default:
             return 0;
     }
@@ -666,7 +672,7 @@ M2HitRec* CM2Scene::HitTestGeometry(const CM2Model* model, uint32_t pass, const 
             this->TransformHitTestVerticesBlend(model, skinData, section, pass, dir, d);
         }
 
-        const uint16_t* indices = &skinData->m_indices[section->m_indexStart];
+        const uint16_t* indices = &skinData->m_indices[wxl::modernm2::SkinIndexStart(model->m_shared, batch->m_skinSectionIndex, section)];
         best = this->IntersectHitTestTriangles(indices, indices + section->m_indexCount, section->m_vertexStart, section->m_vertexCount, start, pass, rec, t, best);
     }
 

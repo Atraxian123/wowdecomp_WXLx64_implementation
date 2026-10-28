@@ -18,6 +18,8 @@ class CShaderEffect;
 class CTexture;
 class SFileImpl;
 
+namespace wxl::modernm2 { struct State; }
+
 class TextureComboList {
     public:
     /* 0000 */ uint32_t m_count;
@@ -72,6 +74,7 @@ class CM2Shared {
     /* 0198 */ uint16_t m_billboardBoneCount;
     /* 019C */ uint32_t m_lastUsedTime;
     /* 01A0 */ TSLink<CM2Shared> m_updateLink;
+    /* WXL */ wxl::modernm2::State* m_wxl; // modern-M2 per-model state (null for stock models)
 
     static void LoadFailedCallback(void* param);
     static void LoadSucceededCallback(void* param);
