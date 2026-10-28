@@ -11,6 +11,8 @@
 #include "Engine/Source/Tempest/CImVector.h"
 
 class C44Matrix;
+class CGxBatch;
+class CGxTex;
 class CTexture;
 
 class CRibbonMat {
@@ -68,6 +70,7 @@ class CRibbonEmitter {
     /* 0174 */ float m_above;
     /* 0178 */ float m_below;
     /* 017C */ float m_gravity;
+    /* WXL */ uint32_t m_foldLayers; // nonzero: draw a ribbon of 2-4 layers as ONE combined pass, not one pass per layer
 
     CRibbonEmitter();
     ~CRibbonEmitter();
@@ -82,6 +85,7 @@ class CRibbonEmitter {
     void InterpEdge(float age, float t, uint32_t advance);
     int32_t IsDead();
     int32_t Render(const C44Matrix* frameOfReference);
+    void RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers); // WXL
     int32_t ReplaceTexture(uint32_t type, CTexture* texture);
     void SetAbove(float above);
     void SetAlpha(float alpha);

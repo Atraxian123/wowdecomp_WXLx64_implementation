@@ -7243,7 +7243,8 @@ int32_t CM2Model::InitializeLoaded() {
                 ribbonMaterial->m_depthTest = !(material->m_flags & 8);
                 ribbonMaterial->m_depthWrite = !(material->m_flags & 0x10);
                 ribbonMaterial->m_cull = !(material->m_flags & 4);
-                ribbonMaterial->m_blendMode = s_ribbonBlendModes[material->m_blendMode];
+                // WXL: a modern material can name a blend mode past the end of the stock table. Additive is the nearest fit.
+                ribbonMaterial->m_blendMode = material->m_blendMode < sizeof(s_ribbonBlendModes) / sizeof(s_ribbonBlendModes[0]) ? s_ribbonBlendModes[material->m_blendMode] : static_cast<uint32_t>(GxBlend_Add);
             }
 
             CAaRect texCoords;
@@ -7260,6 +7261,8 @@ int32_t CM2Model::InitializeLoaded() {
 
             this->m_ribbonEmitters[i]->Initialize(ribbonData->m_edgesPerSecond, ribbonData->m_edgeLifetime, color, s_ribbonTextures, s_ribbonMaterials, s_ribbonTextureTypes, texCoords, ribbonData->m_textureRows, ribbonData->m_textureCols);
             this->m_ribbonEmitters[i]->SetGravity(ribbonData->m_gravity);
+            // WXL: every model's multi-layer ribbons (stock and modern alike) draw as one multiplied image.
+            this->m_ribbonEmitters[i]->m_foldLayers = 1;
             this->m_ribbonEmitters[i]->SetDataEnabled(0);
             this->m_ribbons[i].m_visibilityTrack.m_currentValue = 1;
             this->m_ribbons[i].m_alphaTrack.m_currentValue = 1.0f;

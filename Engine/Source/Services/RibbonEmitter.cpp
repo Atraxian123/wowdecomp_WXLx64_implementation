@@ -14,6 +14,16 @@
 // STATIC: 0x00B2D658
 static int32_t s_ribbonRenderEnable = 1;
 
+// WXL: multi-texture ribbons. A ribbon can name up to four texture layers meant to be multiplied into one
+// image. The stock draw below runs one pass per layer, each blended into the frame on its own, which sums the
+// layers instead. A flagged emitter (CRibbonEmitter::m_foldLayers, set for every model) with
+// kRibbonFoldMinLayers..kRibbonFoldMaxLayers layers is drawn in one fixed-function pass instead: stage k samples layer k, every stage modulates the one
+// before it (stage 0 modulates the vertex colour), and the last two stages double, so the result is
+// layer0 * layer1 [* layer2 [* layer3]] * vertex colour * 4, in colour and alpha. Blend state, depth, culling and
+// alpha test come from layer 0's material, as for any single pass.
+static const uint32_t kRibbonFoldMinLayers = 2;
+static const uint32_t kRibbonFoldMaxLayers = 4;
+
 // INLINED
 CRibbonMat::CRibbonMat() {
     this->m_lit = 1;
@@ -398,6 +408,7 @@ CRibbonEmitter::CRibbonEmitter() {
     this->m_texCoords.maxX = 0.0f;
     this->m_texCoords.maxY = 0.0f;
     this->m_flags &= ~0x12;
+    this->m_foldLayers = 0;
 }
 
 // VERIFY: 85ed808e manual
@@ -454,6 +465,83 @@ void CRibbonEmitter::DecRef() {
     }
 }
 
+// WXL: the combined pass of a multi-texture ribbon. Runs the stock per-pass state setup for layer 0's material,
+// then switches the draw to the fixed-function pipeline (a pixel shader reads one texture; the stage chain below
+// reads up to four) and binds every layer to its own stage.
+void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers) {
+    g_theGxDevicePtr->RsPush();
+
+    const CRibbonMat& material = this->m_materials.m_data[0];
+    C4Vector emissive;
+
+    emissive.x = material.m_lit ? 0.0f : 1.0f;
+    emissive.y = emissive.x;
+    emissive.z = emissive.x;
+    emissive.w = 0.0f;
+
+    CShaderEffect::SetEmissive(emissive);
+    CShaderEffect::SetFogEnabled(material.m_fogged);
+    CShaderEffect::SetLightingEnabled(material.m_lit);
+    g_theGxDevicePtr->RsSet(GxRs_DepthTest, static_cast<int32_t>(material.m_depthTest));
+    g_theGxDevicePtr->RsSet(GxRs_DepthWrite, static_cast<int32_t>(material.m_depthWrite));
+    g_theGxDevicePtr->RsSet(GxRs_Culling, static_cast<int32_t>(material.m_cull));
+    g_theGxDevicePtr->RsSet(GxRs_BlendingMode, static_cast<int32_t>(material.m_blendMode));
+    CShaderEffect::SetAlphaRefDefault();
+
+    if (CShaderEffect::s_enableShaders) {
+        // The stock calls above only fed shader constants. Redo the parts the fixed-function pipeline reads.
+        g_theGxDevicePtr->RsSet(GxRs_VertexShader, static_cast<void*>(nullptr));
+        g_theGxDevicePtr->RsSet(GxRs_PixelShader, static_cast<void*>(nullptr));
+        g_theGxDevicePtr->RsSet(GxRs_Lighting, 0); // the ribbon vertices carry no normals
+        g_theGxDevicePtr->RsSet(GxRs_AlphaRef, static_cast<int32_t>(CShaderEffect::s_fogColorAlphaRef.w * 255.0f));
+
+        // Fog: recover the linear range and colour from the constants CShaderEffect::SetFogParams stored.
+        float fogScale = CShaderEffect::s_fogMul != 0.0f ? -CShaderEffect::s_fogParams.x / CShaderEffect::s_fogMul : 0.0f;
+        int32_t fogOn = 0;
+
+        if (material.m_fogged && g_theGxDevicePtr->MasterEnable(GxMasterEnable_Fog) && fogScale > 0.0f) {
+            float fogEnd = CShaderEffect::s_fogParams.y / fogScale;
+            float fogStart = fogEnd - 1.0f / fogScale;
+
+            CImVector fogColor;
+            fogColor.r = static_cast<uint8_t>(CShaderEffect::s_fogColorAlphaRef.x * 255.0f + 0.5f);
+            fogColor.g = static_cast<uint8_t>(CShaderEffect::s_fogColorAlphaRef.y * 255.0f + 0.5f);
+            fogColor.b = static_cast<uint8_t>(CShaderEffect::s_fogColorAlphaRef.z * 255.0f + 0.5f);
+            fogColor.a = 0xFF;
+
+            g_theGxDevicePtr->RsSet(GxRs_FogStart, fogStart);
+            g_theGxDevicePtr->RsSet(GxRs_FogEnd, fogEnd);
+            g_theGxDevicePtr->RsSet(GxRs_FogColor, *reinterpret_cast<int32_t*>(&fogColor));
+            fogOn = 1;
+        }
+
+        g_theGxDevicePtr->RsSet(GxRs_Fog, fogOn);
+    }
+
+    // Stage ops first, then the textures: binding a texture applies its stage's op. Every stage multiplies the
+    // result of the one before it; the last two double as well, for the x4 of the whole chain.
+    for (uint32_t k = 0; k < layers; k++) {
+        EGxTexOp op = k + 2 >= layers ? GxTexOp_Mod2x : GxTexOp_Mod;
+
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_ColorOp0 + k), static_cast<int32_t>(op));
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_AlphaOp0 + k), static_cast<int32_t>(op));
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), 0);
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TexGen0 + k), 0);
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureCoord0 + k), 0); // all layers share the ribbon's one UV set
+    }
+
+    for (uint32_t k = 0; k < layers; k++) {
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_Texture0 + k), layerTex[k]);
+        GxTexSetWrap(layerTex[k], GxTex_Clamp, GxTex_Clamp);
+    }
+
+    // No SetDefaultShaders / UpdateWorldViewMatrix here: both only feed the shader pipeline, and the first would
+    // bind the effect's shaders straight back.
+    g_theGxDevicePtr->Draw(const_cast<CGxBatch*>(&batch), 1);
+
+    g_theGxDevicePtr->RsPop();
+}
+
 // VERIFY: b28c0986 manual
 // OFFSET: 0x00980B70
 int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
@@ -495,7 +583,35 @@ int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
     batch.m_minIndex = 0;
     batch.m_maxIndex = this->m_vertices.Count() - 1;
 
-    for (uint32_t i = 0; i < this->m_materials.Count(); i++) {
+    // WXL: a flagged 2-4 layer ribbon is one combined pass (see kRibbonFoldMinLayers). A layer whose texture is
+    // still loading holds the whole ribbon back, so it never shows as a different look while it streams in.
+    bool folded = false;
+
+    if (this->m_foldLayers) {
+        uint32_t layers = this->m_materials.Count() < this->m_textures.Count() ? this->m_materials.Count() : this->m_textures.Count();
+
+        if (layers >= kRibbonFoldMinLayers && layers <= kRibbonFoldMaxLayers && layers <= static_cast<uint32_t>(g_theGxDevicePtr->Caps().m_numTmus)) {
+            folded = true;
+
+            CGxTex* foldTex[kRibbonFoldMaxLayers] = {};
+            bool ready = true;
+
+            for (uint32_t k = 0; k < layers; k++) {
+                CTexture* texture = this->m_textures.m_data[k];
+                foldTex[k] = texture ? TextureGetGxTex(texture, 0, nullptr) : nullptr;
+
+                if (!foldTex[k]) {
+                    ready = false;
+                }
+            }
+
+            if (ready) {
+                this->RenderFolded(batch, foldTex, layers);
+            }
+        }
+    }
+
+    for (uint32_t i = 0; !folded && i < this->m_materials.Count(); i++) {
         g_theGxDevicePtr->RsPush();
 
         const CRibbonMat& material = this->m_materials.m_data[i];
