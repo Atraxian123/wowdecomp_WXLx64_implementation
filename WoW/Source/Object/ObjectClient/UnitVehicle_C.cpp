@@ -1,3 +1,4 @@
+#include "WoW/Source/Object/ObjectClient/Types.h"
 #include "UnitVehicle_C.h"
 #include "Engine/Source/Base/CDataStore.h"
 #include "Engine/Source/FrameScript/FrameScript.h"
@@ -237,7 +238,7 @@ int32_t CGUnit_C::VehiclePassengerShouldWaitForVehicleTransitionAnim(uint64_t tr
 
         uint32_t anim = seatRec->m_vehicleEnterAnim;
 
-        if (anim > 0x1F9) {
+        if (anim >= ANIM_COUNT) {
             return 0;
         }
 
@@ -249,7 +250,7 @@ int32_t CGUnit_C::VehiclePassengerShouldWaitForVehicleTransitionAnim(uint64_t tr
     }
 
     uint32_t anim = seatRec->m_vehicleExitAnim;
-    return anim <= 0x1F9 && animVehicle->CanPlayBoneAnim(anim);
+    return anim < ANIM_COUNT && animVehicle->CanPlayBoneAnim(anim);
 }
 
 // VERIFY: 0d563d24 manual
@@ -294,7 +295,7 @@ int32_t CGUnit_C::VehiclePassengerStartWaitingForVehicleTransitionAnim(uint64_t 
     CVehicle_C* animVehicle = vehicle->FindVehicleToPlayBoneAnim();
 
     if (entering) {
-        if (!(seatRec->m_flags & 0x400000) || static_cast<uint32_t>(seatRec->m_vehicleEnterAnim) > 0x1F9 || !animVehicle->PlayBoneAnim(seatRec->m_field33512213034, seatRec->m_vehicleEnterAnim)) {
+        if (!(seatRec->m_flags & 0x400000) || static_cast<uint32_t>(seatRec->m_vehicleEnterAnim) >= ANIM_COUNT || !animVehicle->PlayBoneAnim(seatRec->m_field33512213034, seatRec->m_vehicleEnterAnim)) {
             return 0;
         }
 
@@ -304,7 +305,7 @@ int32_t CGUnit_C::VehiclePassengerStartWaitingForVehicleTransitionAnim(uint64_t 
             animVehicle->SetBoneAnimForceFacing(this->m_obj->m_guid, seatRec->m_field33512213034);
         }
     } else {
-        if (!(seatRec->m_flags & ((this->m_movementData.m_flags2 & 0x40) ? 0x40000 : 0x80000)) || static_cast<uint32_t>(seatRec->m_vehicleExitAnim) > 0x1F9 || !animVehicle->PlayBoneAnim(seatRec->m_vehicleExitAnimBone, seatRec->m_vehicleExitAnim)) {
+        if (!(seatRec->m_flags & ((this->m_movementData.m_flags2 & 0x40) ? 0x40000 : 0x80000)) || static_cast<uint32_t>(seatRec->m_vehicleExitAnim) >= ANIM_COUNT || !animVehicle->PlayBoneAnim(seatRec->m_vehicleExitAnimBone, seatRec->m_vehicleExitAnim)) {
             return 0;
         }
 

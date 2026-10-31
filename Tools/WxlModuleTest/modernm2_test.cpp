@@ -1,12 +1,14 @@
 // Host-side test of ModernM2Load.cpp / ModernM2Skin.cpp against the real M2Data / CM2Shared headers.
 // Build and run it with run_modernm2_tests.sh. It builds synthetic MD21 files and skins, so it needs no game data.
 #include <cstdarg>
+#include <initializer_list>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
 
 #include "Engine/Source/Model2/ModernM2/ModernM2.h"
+#include "Engine/Source/Model2/ModernM2/FlightAnim.h"
 #include "Engine/Source/WXL/Services.h"
 #include "Engine/Source/WXL/Log.h"
 #define WXL_ALLOW_32BIT_HEADER 1
@@ -52,26 +54,28 @@ static float GetF(const uint8_t* p) { float x; std::memcpy(&x, p, 4); return x; 
 struct Fixture
 {
     std::vector<uint8_t> file;
-    uint32_t partOff, camOff, seqOff, matOff, texOff;
+    uint32_t partOff, camOff, seqOff, matOff, texOff, lookupOff;
 };
 
 static Fixture BuildModernFile(uint32_t version)
 {
     const uint32_t hdr = sizeof(M2Data);
-    const uint32_t seqOff = hdr, seqBytes = 2 * sizeof(M2Sequence);
+    const uint32_t seqOff = hdr, seqBytes = 6 * sizeof(M2Sequence);
     const uint32_t matOff = seqOff + seqBytes, matBytes = 2 * sizeof(M2Material);
     const uint32_t texOff = matOff + matBytes, texBytes = 3 * sizeof(M2Texture);
     const uint32_t partOff = (texOff + texBytes + 15) & ~15u, partBytes = 2 * 0x1FC;
     const uint32_t camOff = partOff + partBytes, camBytes = 2 * 0x74;
-    const uint32_t bodySize = camOff + camBytes;
+    const uint32_t lookupOff = camOff + camBytes, lookupBytes = 600 * 2;
+    const uint32_t bodySize = lookupOff + lookupBytes;
 
     Fixture f;
-    f.partOff = partOff; f.camOff = camOff; f.seqOff = seqOff; f.matOff = matOff; f.texOff = texOff;
+    f.partOff = partOff; f.camOff = camOff; f.seqOff = seqOff; f.matOff = matOff; f.texOff = texOff; f.lookupOff = lookupOff;
     std::vector<uint8_t> body(bodySize, 0);
     Put32(body, 0, 0x3032444D);                 // 'MD20'
     Put32(body, offsetof(M2Data, m_version), version);
     auto setArr = [&](size_t at, uint32_t count, uint32_t off) { Put32(body, at, count); Put32(body, at + 4, off); };
-    setArr(offsetof(M2Data, m_sequences), 2, seqOff);
+    setArr(offsetof(M2Data, m_sequences), 6, seqOff);
+    setArr(offsetof(M2Data, m_sequenceIdxHashById), 600, lookupOff);
     setArr(offsetof(M2Data, m_materials), 2, matOff);
     setArr(offsetof(M2Data, m_textures), 3, texOff);
     setArr(offsetof(M2Data, m_particles), 2, partOff);
@@ -82,6 +86,15 @@ static Fixture BuildModernFile(uint32_t version)
     auto* seqs = reinterpret_cast<M2Sequence*>(&body[seqOff]);
     seqs[0].m_id = 0;   seqs[0].m_flags = 0x20; seqs[0].m_blendTime = 0x00030002;
     seqs[1].m_id = 564; seqs[1].m_flags = 0x00; seqs[1].m_blendTime = 0x00050004;
+    seqs[2].m_id = 548; seqs[2].m_flags = 0x20;   // source flight idle
+    seqs[3].m_id = 562; seqs[3].m_flags = 0x20;   // source flight backwards
+    seqs[4].m_id = 41;  seqs[4].m_flags = 0x20;   // a native swim idle the model keeps
+    seqs[5].m_id = 700; seqs[5].m_flags = 0x20;   // a modern id with no client counterpart: the table covers it now
+    {   // the id lookup: direct-indexed, as modern files write it
+        uint16_t* lk = reinterpret_cast<uint16_t*>(&body[lookupOff]);
+        for (int i = 0; i < 600; ++i) lk[i] = 0xFFFF;
+        lk[0] = 0; lk[564] = 1; lk[548] = 2; lk[562] = 3; lk[41] = 4;
+    }
     auto* mats = reinterpret_cast<M2Material*>(&body[matOff]);
     mats[0].m_flags = 0xFFFF; mats[0].m_blendMode = 9;
     mats[1].m_flags = 0x0003; mats[1].m_blendMode = 2;
@@ -147,12 +160,20 @@ static void TestLoad()
     CHECK(result == wxl::modernm2::LoadResult::Modern, "container recognized");
     const uint8_t* b = reinterpret_cast<const uint8_t*>(sh->m_data);
     CHECK(Get32(b) == 0x3032444D && Get32(b + offsetof(M2Data, m_version)) == 272, "flat MD20 body at base, version kept");
-    CHECK(sh->m_fileSize == f.camOff + 2 * 0x74, "file size is the body size (container header and trailing chunks dropped)");
+    CHECK(sh->m_fileSize == f.lookupOff + 600 * 2, "file size is the body size (container header and trailing chunks dropped)");
     CHECK(sh->m_data->m_numSkinProfiles == 1, "oversized skin-profile count clamped");
 
     const auto* seqs = reinterpret_cast<const M2Sequence*>(b + f.seqOff);
     CHECK(seqs[0].m_blendTime == 0x0002 && seqs[1].m_blendTime == 0x0004, "split blend times masked to the single value");
     CHECK(seqs[1].m_id == 37, "source anim id 564 remapped to client 37");
+    CHECK(seqs[2].m_id == 270 && seqs[3].m_id == 274, "source flight ids 548 / 562 filed under the flight twins 0x10E / 0x112");
+    CHECK(seqs[4].m_id == 41, "the model's own swim idle is left alone (flight does not replace swim)");
+    CHECK(seqs[5].m_id == 700, "a modern id above the old table keeps its own number (ANIM_COUNT covers it now)");
+    {
+        const uint16_t* lk = reinterpret_cast<const uint16_t*>(b + f.lookupOff);
+        CHECK(lk[270] == 2 && lk[274] == 3, "id lookup points the flight twins at the flight sequences");
+        CHECK(lk[41] == 4, "id lookup still points swim idle at the swim sequence");
+    }
     const auto* mats = reinterpret_cast<const M2Material*>(b + f.matOff);
     CHECK(mats[0].m_blendMode == 4 && (mats[0].m_flags & 0x5) == 0x5 && (mats[0].m_flags & ~0x1Fu) == 0, "out-of-table blend mode clamped to Add, flags masked");
     CHECK(mats[1].m_blendMode == 2 && mats[1].m_flags == 3, "in-range material untouched");
@@ -366,6 +387,33 @@ static void TestExtendedStart()
     SIMD::FreeA16(sh->m_skinData); SIMD::FreeA16(sh->m_data); std::free(sh);
 }
 
+static void TestFlightChoice()
+{
+    std::printf("flight animation choice\n");
+    namespace fa = wxl::flightanim;
+    auto none = [](uint32_t) { return false; };
+    auto onlyFlight = [](uint32_t id) { return fa::IsFlightSet(id); };
+    auto has = [](std::initializer_list<uint32_t> ids) { return [ids](uint32_t id) { for (uint32_t i : ids) if (i == id) return true; return false; }; };
+
+    CHECK(fa::kFlightSwimIdle == 270 && fa::kFlightSwimBackwards == 274 && fa::kFlightOffset == 229, "flight twin ids are 0x10E-0x112");
+    for (uint32_t id = 41; id <= 45; ++id)
+    {
+        CHECK(fa::Prefer(id, true, onlyFlight) == id + 229, "flying, model has the flight twin: flight twin chosen");
+        CHECK(fa::Prefer(id, true, none) == id, "flying, model has no flight twin: plain swim chosen");
+        CHECK(fa::Prefer(id, false, onlyFlight) == id, "swimming, not flying: swim chosen even when the model has the flight twin");
+    }
+    CHECK(fa::Prefer(42, true, has({ 271 })) == 271 && fa::Prefer(42, true, has({ 270 })) == 42,
+          "only the twin of the requested id counts (idle's twin does not answer a forward request)");
+    CHECK(fa::Prefer(272, true, none) == 43 && fa::Prefer(272, false, none) == 43, "a flight-twin request on a model without it falls back to swim");
+    CHECK(fa::Prefer(272, true, onlyFlight) == 272, "a flight-twin request on a model that has it is kept");
+    CHECK(fa::Prefer(0, true, onlyFlight) == 0 && fa::Prefer(135, true, onlyFlight) == 135 && fa::Prefer(40, true, onlyFlight) == 40
+          && fa::Prefer(46, true, onlyFlight) == 46 && fa::Prefer(269, true, none) == 269 && fa::Prefer(275, true, none) == 275,
+          "ids outside the swim set and its twin are never touched");
+    CHECK(fa::FlightIdForSource(548) == 270 && fa::FlightIdForSource(556) == 271 && fa::FlightIdForSource(552) == 272
+          && fa::FlightIdForSource(554) == 273 && fa::FlightIdForSource(562) == 274 && fa::FlightIdForSource(564) == 0 && fa::FlightIdForSource(41) == 0,
+          "source ids map idle / forward / left / right / backwards onto the twins, nothing else");
+}
+
 static void TestAnimAndCaps()
 {
     std::printf("anim unwrap, caps\n");
@@ -388,6 +436,7 @@ int main()
     TestSkinSplit();
     TestExtendedStart();
     TestAnimAndCaps();
+    TestFlightChoice();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

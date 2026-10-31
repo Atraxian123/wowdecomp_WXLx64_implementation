@@ -1,3 +1,4 @@
+#include "WoW/Source/Object/ObjectClient/Types.h"
 #include "CGGameObject_C_Type_Transport.h"
 #include "WoW/Source/Object/ObjectClient/Movement_C.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -79,7 +80,7 @@ static int32_t FindTransportRotationIndex(int32_t transportId) {
 
 // VERIFY: e9e508da manual
 // OFFSET: 0x00713820
-CGGameObject_C_Type_Transport::CGGameObject_C_Type_Transport(CGGameObject_C* owner) : CGGameObject_C_Type_TransportBase(owner), m_frames(nullptr), m_frameCount(0), m_currentFrame(0), m_rotations(nullptr), m_rotationCount(0), m_currentRotation(0), m_lastSequence(506), m_stateChangeSequenceTime(0) {
+CGGameObject_C_Type_Transport::CGGameObject_C_Type_Transport(CGGameObject_C* owner) : CGGameObject_C_Type_TransportBase(owner), m_frames(nullptr), m_frameCount(0), m_currentFrame(0), m_rotations(nullptr), m_rotationCount(0), m_currentRotation(0), m_lastSequence(ANIM_COUNT), m_stateChangeSequenceTime(0) {
     int32_t index = FindTransportAnimationIndex(owner->m_obj->m_entryID);
 
     if (index != -1) {
@@ -188,7 +189,7 @@ void CGGameObject_C_Type_Transport::PostInitWithStats() {
 // VERIFY: 1347bf69 auto
 // OFFSET: 0x0070B630
 void CGGameObject_C_Type_Transport::PostReenable() {
-    this->m_lastSequence = 506;
+    this->m_lastSequence = ANIM_COUNT;
     this->CreateWorldObj();
 
     if (this->m_worldObject) {

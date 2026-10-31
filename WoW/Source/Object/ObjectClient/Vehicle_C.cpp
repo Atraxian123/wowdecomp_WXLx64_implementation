@@ -1,3 +1,4 @@
+#include "WoW/Source/Object/ObjectClient/Types.h"
 #include "Vehicle_C.h"
 #include "Engine/Source/Base/CDataStore.h"
 #include "Engine/Source/Base/ObjectAlloc.h"
@@ -608,7 +609,7 @@ void CVehicle_C::StartMirroringAnimsToPassengers() {
 int32_t CVehicle_C::PlayBoneAnim(uint32_t boneId, uint32_t animId) {
     CM2Model* model = this->m_unit->GetObjectModel();
 
-    if (!model || animId > 505) {
+    if (!model || animId >= ANIM_COUNT) {
         return 0;
     }
 
@@ -626,7 +627,7 @@ int32_t CVehicle_C::CanPlayBoneAnim(uint32_t animId) const {
         return 0;
     }
 
-    return animId <= 0x1F9;
+    return animId < ANIM_COUNT;
 }
 
 // VERIFY: 86ddcfee manual

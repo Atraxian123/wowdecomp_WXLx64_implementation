@@ -7,6 +7,7 @@
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Model2/M2Shared.h"
 #include "Engine/Source/Model2/Types.h"
+#include "WoW/Source/Object/ObjectClient/Types.h"
 #include "Engine/Source/Tempest/C3Vector.h"
 #include "Engine/Source/Tempest/CImVector.h"
 #include "Engine/Source/Tempest/CMath.h"
@@ -172,9 +173,9 @@ static int32_t Script_SetSequence(lua_State* L) {
 
     uint32_t sequence = static_cast<uint32_t>(lua_tonumber(L, 2));
 
-    if (sequence >= 506) {
+    if (sequence >= ANIM_COUNT) {
         const char* name = model->GetName();
-        luaL_error(L, "Error: %s:SetSequence(sequence) exceeds valid range of 0 - %d", name ? name : "<unnamed>", 506);
+        luaL_error(L, "Error: %s:SetSequence(sequence) exceeds valid range of 0 - %d", name ? name : "<unnamed>", static_cast<int>(ANIM_COUNT));
         return 0;
     }
 

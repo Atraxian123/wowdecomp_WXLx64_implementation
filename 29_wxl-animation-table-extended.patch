@@ -1,0 +1,3154 @@
+diff --git a/Engine/Source/Frame/CSimpleModel_Scripts.cpp b/Engine/Source/Frame/CSimpleModel_Scripts.cpp
+index aa1cc32..0e6dc7f 100644
+--- a/Engine/Source/Frame/CSimpleModel_Scripts.cpp
++++ b/Engine/Source/Frame/CSimpleModel_Scripts.cpp
+@@ -7,6 +7,7 @@
+ #include "Engine/Source/Model2/M2Model.h"
+ #include "Engine/Source/Model2/M2Shared.h"
+ #include "Engine/Source/Model2/Types.h"
++#include "WoW/Source/Object/ObjectClient/Types.h"
+ #include "Engine/Source/Tempest/C3Vector.h"
+ #include "Engine/Source/Tempest/CImVector.h"
+ #include "Engine/Source/Tempest/CMath.h"
+@@ -172,9 +173,9 @@ static int32_t Script_SetSequence(lua_State* L) {
+ 
+     uint32_t sequence = static_cast<uint32_t>(lua_tonumber(L, 2));
+ 
+-    if (sequence >= 506) {
++    if (sequence >= ANIM_COUNT) {
+         const char* name = model->GetName();
+-        luaL_error(L, "Error: %s:SetSequence(sequence) exceeds valid range of 0 - %d", name ? name : "<unnamed>", 506);
++        luaL_error(L, "Error: %s:SetSequence(sequence) exceeds valid range of 0 - %d", name ? name : "<unnamed>", static_cast<int>(ANIM_COUNT));
+         return 0;
+     }
+ 
+diff --git a/Engine/Source/Model2/M2Model.cpp b/Engine/Source/Model2/M2Model.cpp
+index d98a188..acf16ae 100644
+--- a/Engine/Source/Model2/M2Model.cpp
++++ b/Engine/Source/Model2/M2Model.cpp
+@@ -1138,7 +1138,7 @@ uint32_t CM2Model::ResolveSequenceFallback(uint32_t id) {
+ // VERIFY: af94bf41 manual
+ // OFFSET: 0x00826050
+ int32_t CM2Model::IsSequenceLoaded(uint32_t id) {
+-    if (id >= 506) {
++    if (id >= ANIM_COUNT) {
+         return 0;
+     }
+ 
+diff --git a/Engine/Source/Model2/ModernM2/FlightAnim.h b/Engine/Source/Model2/ModernM2/FlightAnim.h
+index 9c4d603..71cd24c 100644
+--- a/Engine/Source/Model2/ModernM2/FlightAnim.h
++++ b/Engine/Source/Model2/ModernM2/FlightAnim.h
+@@ -32,8 +32,9 @@ namespace wxl::flightanim
+     constexpr bool IsSwimSet(uint32_t id)   { return id >= kSwimIdle && id <= kSwimBackwards; }
+     constexpr bool IsFlightSet(uint32_t id) { return id >= kFlightSwimIdle && id <= kFlightSwimBackwards; }
+ 
+-    // Source (modern-era) ids of the flight set, in the same idle / forward / left / right / backwards order as
+-    // the swim set. They are above the client's table (ANIM_COUNT), so the reader re-files them under the twins.
++    // Source (modern-era) ids of the flight set (MountFlightIdle / Run / Left / Right / WalkBackwards), in the same
++    // idle / forward / left / right / backwards order as the swim set. The reader re-files them under the twins, so
++    // a modern model and a model authored natively at the twin ids behave the same.
+     constexpr uint32_t kSourceFlyIdle      = 548;
+     constexpr uint32_t kSourceFly          = 556;
+     constexpr uint32_t kSourceFlyLeft      = 552;
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2Load.cpp b/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
+index 4d5494d..f88ad1a 100644
+--- a/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
++++ b/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
+@@ -120,13 +120,13 @@ namespace wxl::modernm2
+ 
+         // --------------------------------------------------------------------- in-place field deltas
+         /// Sequence deltas: masks the split u16 in|out blendTime to the client's single value (read whole it
+-        /// would be a huge blend, so transitions never complete) and remaps the curated set of source ids
+-        /// above the client's id table onto client ids (the flight set onto its own FLY_SWIM twins), patching
+-        /// the lookup. Counts the sequences whose data
++        /// would be a huge blend, so transitions never complete) and remaps the curated set of source ids that
++        /// have a client counterpart onto client ids (the flight set onto its own FLY_SWIM twins, the takeoff /
++        /// landing set onto the jump ids), patching the lookup. Every other id keeps its own number: the client's
++        /// table (ANIM_COUNT) now covers the modern one. Counts the sequences whose data
+         /// streams from a .anim file (flags bit 0x20 clear).
+         uint32_t FixSequences(uint8_t* base, uint32_t size, M2Data* h)
+         {
+-            constexpr uint16_t kClientMaxAnimId = 505;
+             uint32_t external = 0;
+             if (!h->m_sequences.m_count || !h->m_sequences.m_offset) return 0;
+             if (!FitsInBody(size, h->m_sequences.m_offset, h->m_sequences.m_count, sizeof(M2Sequence))) return 0;
+@@ -158,32 +158,29 @@ namespace wxl::modernm2
+             for (uint32_t i = 0; i < h->m_sequences.m_count; ++i)
+             {
+                 const uint16_t id = seqs[i].m_id;
+-                if (id > kClientMaxAnimId)
+-                {
+-                    uint16_t anim = id;
++                uint16_t anim = id;
+ 
+-                    // The flight set is filed under its own twin ids (the client's FLY_SWIM family), NOT on top of
+-                    // the swim ids: a model with both keeps both, and the game layer asks for the flight twin
+-                    // first and falls back to swim (see FlightAnim.h).
+-                    if (const uint32_t flight = wxl::flightanim::FlightIdForSource(id))
+-                    {
+-                        anim = static_cast<uint16_t>(flight);
+-                    }
+-                    else
+-                    {
+-                        switch (id)
+-                        {
+-                        case 564: anim = 37;  break;
+-                        case 572: anim = 39;  break;
+-                        case 574: anim = 187; break;
+-                        }
+-                    }
+-                    if (anim != id)
++                // The flight set is filed under its own twin ids (the client's FLY_SWIM family), NOT on top of
++                // the swim ids: a model with both keeps both, and the game layer asks for the flight twin
++                // first and falls back to swim (see FlightAnim.h).
++                if (const uint32_t flight = wxl::flightanim::FlightIdForSource(id))
++                {
++                    anim = static_cast<uint16_t>(flight);
++                }
++                else
++                {
++                    switch (id)
+                     {
+-                        patchLookup(indexById(anim), anim, static_cast<int16_t>(i));
+-                        seqs[i].m_id = anim;
++                    case 564: anim = 37;  break;
++                    case 572: anim = 39;  break;
++                    case 574: anim = 187; break;
+                     }
+                 }
++                if (anim != id)
++                {
++                    patchLookup(indexById(anim), anim, static_cast<int16_t>(i));
++                    seqs[i].m_id = anim;
++                }
+                 seqs[i].m_blendTime &= 0xFFFFu;
+                 if (!(seqs[i].m_flags & 0x20u)) ++external;
+             }
+diff --git a/Tools/AnimIds/AnimationNames.txt b/Tools/AnimIds/AnimationNames.txt
+new file mode 100644
+index 0000000..8214e35
+--- /dev/null
++++ b/Tools/AnimIds/AnimationNames.txt
+@@ -0,0 +1,1094 @@
++# Animation names, one per line, numbered by position starting at @first (the AnimationData row id).
++#
++# Sources:
++#   * ids 466-1491: Marlamin's AnimationData name list (gist 91e5f37a1ba4d2276550525133095f5b, June 2020),
++#     numbered by position. Checked against: ids 466-505 (this client's own enum, every name reproduced exactly),
++#     ids 469 and 471 (the wowdev M2/AnimationList snippet: FlyDeathStart / FlyDeathEnd), and ids 548-574 (the
++#     modern-M2 extension's remap table: MountFlightIdle / Left / Right / Run / WalkBackwards, MountFlightStart /
++#     Land / LandRun).
++#   * ids 1731-1777: wowdev M2/AnimationList, explicit ids (Dragonflight sections, up to 10.2.6.53840).
++#   * ids 1492-1730: NO NAMES AVAILABLE when this was written. They are generated as ANIM_UNNAMED_<id>
++#     placeholders so the table is dense up to 1777 and ANIM_COUNT is correct. Replace the '@unnamed' line with the
++#     real names (start with an explicit id: "1492 SomeName", then one name per line) and re-run the generator;
++#     nothing in the client refers to the placeholders by name.
++#   * The list ends at 1777 (FlyMountMedium): animations added after 10.2.6 are not included.
++#
++# To add newer animations: append names (they take the next id), or start a line with an explicit id
++# ("1492 SomeNewName") to resume after a gap, then run gen_anim_enum.py.
++#
++# Ids 466-505 overlap the enum that already existed; the generator verifies them and only emits ids from 506.
++@first 466
++DeathStart
++DeathLoop
++DeathEnd
++FlyDeathStart
++FlyDeathLoop
++FlyDeathEnd
++DeathEndHold
++FlyDeathEndHold
++Strangulate
++FlyStrangulate
++ReadyJoust
++LoadJoust
++HoldJoust
++FlyReadyJoust
++FlyLoadJoust
++FlyHoldJoust
++AttackJoust
++FlyAttackJoust
++ReclinedMount
++FlyReclinedMount
++ToAltered
++FromAltered
++FlyToAltered
++FlyFromAltered
++InStocks
++FlyInStocks
++VehicleGrab
++VehicleThrow
++FlyVehicleGrab
++FlyVehicleThrow
++ToAlteredPostSwap
++FromAlteredPostSwap
++FlyToAlteredPostSwap
++FlyFromAlteredPostSwap
++ReclinedMountPassenger
++FlyReclinedMountPassenger
++Carry2H
++Carried2H
++FlyCarry2H
++FlyCarried2H
++EmoteSniff
++EmoteFlySniff
++AttackFist1H
++FlyAttackFist1H
++AttackFist1HOff
++FlyAttackFist1HOff
++ParryFist1H
++FlyParryFist1H
++ReadyFist1H
++FlyReadyFist1H
++SpecialFist1H
++FlySpecialFist1H
++EmoteReadStart
++FlyEmoteReadStart
++EmoteReadLoop
++FlyEmoteReadLoop
++EmoteReadEnd
++FlyEmoteReadEnd
++SwimRun
++FlySwimRun
++SwimWalk
++FlySwimWalk
++SwimWalkBackwards
++FlySwimWalkBackwards
++SwimSprint
++FlySwimSprint
++MountSwimIdle
++FlyMountSwimIdle
++MountSwimBackwards
++FlyMountSwimBackwards
++MountSwimLeft
++FlyMountSwimLeft
++MountSwimRight
++FlyMountSwimRight
++MountSwimRun
++FlyMountSwimRun
++MountSwimSprint
++FlyMountSwimSprint
++MountSwimWalk
++FlyMountSwimWalk
++MountSwimWalkBackwards
++FlyMountSwimWalkBackwards
++MountFlightIdle
++FlyMountFlightIdle
++MountFlightBackwards
++FlyMountFlightBackwards
++MountFlightLeft
++FlyMountFlightLeft
++MountFlightRight
++FlyMountFlightRight
++MountFlightRun
++FlyMountFlightRun
++MountFlightSprint
++FlyMountFlightSprint
++MountFlightWalk
++FlyMountFlightWalk
++MountFlightWalkBackwards
++FlyMountFlightWalkBackwards
++MountFlightStart
++FlyMountFlightStart
++MountSwimStart
++FlyMountSwimStart
++MountSwimLand
++FlyMountSwimLand
++MountSwimLandRun
++FlyMountSwimLandRun
++MountFlightLand
++FlyMountFlightLand
++MountFlightLandRun
++FlyMountFlightLandRun
++ReadyBlowDart
++FlyReadyBlowDart
++LoadBlowDart
++FlyLoadBlowDart
++HoldBlowDart
++FlyHoldBlowDart
++AttackBlowDart
++FlyAttackBlowDart
++CarriageMount
++FlyCarriageMount
++CarriagePassengerMount
++FlyCarriagePassengerMount
++CarriageMountAttack
++FlyCarriageMountAttack
++BarTendStand
++FlyBarTendStand
++BarServerWalk
++FlyBarServerWalk
++BarServerRun
++FlyBarServerRun
++BarServerShuffleLeft
++FlyBarServerShuffleLeft
++BarServerShuffleRight
++FlyBarServerShuffleRight
++BarTendEmoteTalk
++FlyBarTendEmoteTalk
++BarTendEmotePoint
++FlyBarTendEmotePoint
++BarServerStand
++FlyBarServerStand
++BarSweepWalk
++FlyBarSweepWalk
++BarSweepRun
++FlyBarSweepRun
++BarSweepShuffleLeft
++FlyBarSweepShuffleLeft
++BarSweepShuffleRight
++FlyBarSweepShuffleRight
++BarSweepEmoteTalk
++FlyBarSweepEmoteTalk
++BarPatronSitEmotePoint
++FlyBarPatronSitEmotePoint
++MountSelfIdle
++FlyMountSelfIdle
++MountSelfWalk
++FlyMountSelfWalk
++MountSelfRun
++FlyMountSelfRun
++MountSelfSprint
++FlyMountSelfSprint
++MountSelfRunLeft
++FlyMountSelfRunLeft
++MountSelfRunRight
++FlyMountSelfRunRight
++MountSelfShuffleLeft
++FlyMountSelfShuffleLeft
++MountSelfShuffleRight
++FlyMountSelfShuffleRight
++MountSelfWalkBackwards
++FlyMountSelfWalkBackwards
++MountSelfSpecial
++FlyMountSelfSpecial
++MountSelfJump
++FlyMountSelfJump
++MountSelfJumpStart
++FlyMountSelfJumpStart
++MountSelfJumpEnd
++FlyMountSelfJumpEnd
++MountSelfJumpLandRun
++FlyMountSelfJumpLandRun
++MountSelfStart
++FlyMountSelfStart
++MountSelfFall
++FlyMountSelfFall
++Stormstrike
++FlyStormstrike
++ReadyJoustNoSheathe
++FlyReadyJoustNoSheathe
++Slam
++FlySlam
++DeathStrike
++FlyDeathStrike
++SwimAttackUnarmed
++FlySwimAttackUnarmed
++SpinningKick
++FlySpinningKick
++RoundHouseKick
++FlyRoundHouseKick
++RollStart
++FlyRollStart
++Roll
++FlyRoll
++RollEnd
++FlyRollEnd
++PalmStrike
++FlyPalmStrike
++MonkOffenseAttackUnarmed
++FlyMonkOffenseAttackUnarmed
++MonkOffenseAttackUnarmedOff
++FlyMonkOffenseAttackUnarmedOff
++MonkOffenseParryUnarmed
++FlyMonkOffenseParryUnarmed
++MonkOffenseReadyUnarmed
++FlyMonkOffenseReadyUnarmed
++MonkOffenseSpecialUnarmed
++FlyMonkOffenseSpecialUnarmed
++MonkDefenseAttackUnarmed
++FlyMonkDefenseAttackUnarmed
++MonkDefenseAttackUnarmedOff
++FlyMonkDefenseAttackUnarmedOff
++MonkDefenseParryUnarmed
++FlyMonkDefenseParryUnarmed
++MonkDefenseReadyUnarmed
++FlyMonkDefenseReadyUnarmed
++MonkDefenseSpecialUnarmed
++FlyMonkDefenseSpecialUnarmed
++MonkHealAttackUnarmed
++FlyMonkHealAttackUnarmed
++MonkHealAttackUnarmedOff
++FlyMonkHealAttackUnarmedOff
++MonkHealParryUnarmed
++FlyMonkHealParryUnarmed
++MonkHealReadyUnarmed
++FlyMonkHealReadyUnarmed
++MonkHealSpecialUnarmed
++FlyMonkHealSpecialUnarmed
++FlyingKick
++FlyFlyingKick
++FlyingKickStart
++FlyFlyingKickStart
++FlyingKickEnd
++FlyFlyingKickEnd
++CraneStart
++FlyCraneStart
++CraneLoop
++FlyCraneLoop
++CraneEnd
++FlyCraneEnd
++Despawned
++FlyDespawned
++ThousandFists
++FlyThousandFists
++MonkHealReadySpellDirected
++FlyMonkHealReadySpellDirected
++MonkHealReadySpellOmni
++FlyMonkHealReadySpellOmni
++MonkHealSpellCastDirected
++FlyMonkHealSpellCastDirected
++MonkHealSpellCastOmni
++FlyMonkHealSpellCastOmni
++MonkHealChannelCastDirected
++FlyMonkHealChannelCastDirected
++MonkHealChannelCastOmni
++FlyMonkHealChannelCastOmni
++Torpedo
++FlyTorpedo
++Meditate
++FlyMeditate
++BreathOfFire
++FlyBreathOfFire
++RisingSunKick
++FlyRisingSunKick
++GroundKick
++FlyGroundKick
++KickBack
++FlyKickBack
++PetBattleStand
++FlyPetBattleStand
++PetBattleDeath
++FlyPetBattleDeath
++PetBattleRun
++FlyPetBattleRun
++PetBattleWound
++FlyPetBattleWound
++PetBattleAttack
++FlyPetBattleAttack
++PetBattleReadySpell
++FlyPetBattleReadySpell
++PetBattleSpellCast
++FlyPetBattleSpellCast
++PetBattleCustom0
++FlyPetBattleCustom0
++PetBattleCustom1
++FlyPetBattleCustom1
++PetBattleCustom2
++FlyPetBattleCustom2
++PetBattleCustom3
++FlyPetBattleCustom3
++PetBattleVictory
++FlyPetBattleVictory
++PetBattleLoss
++FlyPetBattleLoss
++PetBattleStun
++FlyPetBattleStun
++PetBattleDead
++FlyPetBattleDead
++PetBattleFreeze
++FlyPetBattleFreeze
++MonkOffenseAttackWeapon
++FlyMonkOffenseAttackWeapon
++BarTendEmoteWave
++FlyBarTendEmoteWave
++BarServerEmoteTalk
++FlyBarServerEmoteTalk
++BarServerEmoteWave
++FlyBarServerEmoteWave
++BarServerPourDrinks
++FlyBarServerPourDrinks
++BarServerPickup
++FlyBarServerPickup
++BarServerPutDown
++FlyBarServerPutDown
++BarSweepStand
++FlyBarSweepStand
++BarPatronSit
++FlyBarPatronSit
++BarPatronSitEmoteTalk
++FlyBarPatronSitEmoteTalk
++BarPatronStand
++FlyBarPatronStand
++BarPatronStandEmoteTalk
++FlyBarPatronStandEmoteTalk
++BarPatronStandEmotePoint
++FlyBarPatronStandEmotePoint
++CarrionSwarm
++FlyCarrionSwarm
++WheelLoop
++FlyWheelLoop
++StandCharacterCreate
++FlyStandCharacterCreate
++MountChopper
++FlyMountChopper
++FacePose
++FlyFacePose
++CombatAbility2HBig01
++FlyCombatAbility2HBig01
++CombatAbility2H01
++FlyCombatAbility2H01
++CombatWhirlwind
++FlyCombatWhirlwind
++CombatChargeLoop
++FlyCombatChargeLoop
++CombatAbility1H01
++FlyCombatAbility1H01
++CombatChargeEnd
++FlyCombatChargeEnd
++CombatAbility1H02
++FlyCombatAbility1H02
++CombatAbility1HBig01
++FlyCombatAbility1HBig01
++CombatAbility2H02
++FlyCombatAbility2H02
++ShaSpellPrecastBoth
++FlyShaSpellPrecastBoth
++ShaSpellCastBothFront
++FlyShaSpellCastBothFront
++ShaSpellCastLeftFront
++FlyShaSpellCastLeftFront
++ShaSpellCastRightFront
++FlyShaSpellCastRightFront
++ReadyCrossbow
++FlyReadyCrossbow
++LoadCrossbow
++FlyLoadCrossbow
++AttackCrossbow
++FlyAttackCrossbow
++HoldCrossbow
++FlyHoldCrossbow
++CombatAbility2HL01
++FlyCombatAbility2HL01
++CombatAbility2HL02
++FlyCombatAbility2HL02
++CombatAbility2HLBig01
++FlyCombatAbility2HLBig01
++CombatUnarmed01
++FlyCombatUnarmed01
++CombatStompLeft
++FlyCombatStompLeft
++CombatStompRight
++FlyCombatStompRight
++CombatLeapLoop
++FlyCombatLeapLoop
++CombatLeapEnd
++FlyCombatLeapEnd
++ShaReadySpellCast
++FlyShaReadySpellCast
++ShaSpellPrecastBothChannel
++FlyShaSpellPrecastBothChannel
++ShaSpellCastBothUp
++FlyShaSpellCastBothUp
++ShaSpellCastBothUpChannel
++FlyShaSpellCastBothUpChannel
++ShaSpellCastBothFrontChannel
++FlyShaSpellCastBothFrontChannel
++ShaSpellCastLeftFrontChannel
++FlyShaSpellCastLeftFrontChannel
++ShaSpellCastRightFrontChannel
++FlyShaSpellCastRightFrontChannel
++PriReadySpellCast
++FlyPriReadySpellCast
++PriSpellPrecastBoth
++FlyPriSpellPrecastBoth
++PriSpellPrecastBothChannel
++FlyPriSpellPrecastBothChannel
++PriSpellCastBothUp
++FlyPriSpellCastBothUp
++PriSpellCastBothFront
++FlyPriSpellCastBothFront
++PriSpellCastLeftFront
++FlyPriSpellCastLeftFront
++PriSpellCastRightFront
++FlyPriSpellCastRightFront
++PriSpellCastBothUpChannel
++FlyPriSpellCastBothUpChannel
++PriSpellCastBothFrontChannel
++FlyPriSpellCastBothFrontChannel
++PriSpellCastLeftFrontChannel
++FlyPriSpellCastLeftFrontChannel
++PriSpellCastRightFrontChannel
++FlyPriSpellCastRightFrontChannel
++MagReadySpellCast
++FlyMagReadySpellCast
++MagSpellPrecastBoth
++FlyMagSpellPrecastBoth
++MagSpellPrecastBothChannel
++FlyMagSpellPrecastBothChannel
++MagSpellCastBothUp
++FlyMagSpellCastBothUp
++MagSpellCastBothFront
++FlyMagSpellCastBothFront
++MagSpellCastLeftFront
++FlyMagSpellCastLeftFront
++MagSpellCastRightFront
++FlyMagSpellCastRightFront
++MagSpellCastBothUpChannel
++FlyMagSpellCastBothUpChannel
++MagSpellCastBothFrontChannel
++FlyMagSpellCastBothFrontChannel
++MagSpellCastLeftFrontChannel
++FlyMagSpellCastLeftFrontChannel
++MagSpellCastRightFrontChannel
++FlyMagSpellCastRightFrontChannel
++LocReadySpellCast
++FlyLocReadySpellCast
++LocSpellPrecastBoth
++FlyLocSpellPrecastBoth
++LocSpellPrecastBothChannel
++FlyLocSpellPrecastBothChannel
++LocSpellCastBothUp
++FlyLocSpellCastBothUp
++LocSpellCastBothFront
++FlyLocSpellCastBothFront
++LocSpellCastLeftFront
++FlyLocSpellCastLeftFront
++LocSpellCastRightFront
++FlyLocSpellCastRightFront
++LocSpellCastBothUpChannel
++FlyLocSpellCastBothUpChannel
++LocSpellCastBothFrontChannel
++FlyLocSpellCastBothFrontChannel
++LocSpellCastLeftFrontChannel
++FlyLocSpellCastLeftFrontChannel
++LocSpellCastRightFrontChannel
++FlyLocSpellCastRightFrontChannel
++DruReadySpellCast
++FlyDruReadySpellCast
++DruSpellPrecastBoth
++FlyDruSpellPrecastBoth
++DruSpellPrecastBothChannel
++FlyDruSpellPrecastBothChannel
++DruSpellCastBothUp
++FlyDruSpellCastBothUp
++DruSpellCastBothFront
++FlyDruSpellCastBothFront
++DruSpellCastLeftFront
++FlyDruSpellCastLeftFront
++DruSpellCastRightFront
++FlyDruSpellCastRightFront
++DruSpellCastBothUpChannel
++FlyDruSpellCastBothUpChannel
++DruSpellCastBothFrontChannel
++FlyDruSpellCastBothFrontChannel
++DruSpellCastLeftFrontChannel
++FlyDruSpellCastLeftFrontChannel
++DruSpellCastRightFrontChannel
++FlyDruSpellCastRightFrontChannel
++ArtMainLoop
++FlyArtMainLoop
++ArtDualLoop
++FlyArtDualLoop
++ArtFistsLoop
++FlyArtFistsLoop
++ArtBowLoop
++FlyArtBowLoop
++CombatAbility1H01Off
++FlyCombatAbility1H01Off
++CombatAbility1H02Off
++FlyCombatAbility1H02Off
++CombatFuriousStrike01
++FlyCombatFuriousStrike01
++CombatFuriousStrike02
++FlyCombatFuriousStrike02
++CombatFuriousStrikes
++FlyCombatFuriousStrikes
++CombatReadySpellCast
++FlyCombatReadySpellCast
++CombatShieldThrow
++FlyCombatShieldThrow
++PalSpellCast1HUp
++FlyPalSpellCast1HUp
++CombatReadyPostSpellCast
++FlyCombatReadyPostSpellCast
++PriReadyPostSpellCast
++FlyPriReadyPostSpellCast
++DHCombatRun
++FlyDHCombatRun
++CombatShieldBash
++FlyCombatShieldBash
++CombatThrow
++FlyCombatThrow
++CombatAbility1HPierce
++FlyCombatAbility1HPierce
++CombatAbility1HOffPierce
++FlyCombatAbility1HOffPierce
++CombatMutilate
++FlyCombatMutilate
++CombatBladeStorm
++FlyCombatBladeStorm
++CombatFinishingMove
++FlyCombatFinishingMove
++CombatLeapStart
++FlyCombatLeapStart
++GlvThrowMain
++FlyGlvThrowMain
++GlvThrownOff
++FlyGlvThrownOff
++DHCombatSprint
++FlyDHCombatSprint
++CombatAbilityGlv01
++FlyCombatAbilityGlv01
++CombatAbilityGlv02
++FlyCombatAbilityGlv02
++CombatAbilityGlvOff01
++FlyCombatAbilityGlvOff01
++CombatAbilityGlvOff02
++FlyCombatAbilityGlvOff02
++CombatAbilityGlvBig01
++FlyCombatAbilityGlvBig01
++CombatAbilityGlvBig02
++FlyCombatAbilityGlvBig02
++ReadyGlv
++FlyReadyGlv
++CombatAbilityGlvBig03
++FlyCombatAbilityGlvBig03
++DoubleJumpStart
++FlyDoubleJumpStart
++DoubleJump
++FlyDoubleJump
++CombatEviscerate
++FlyCombatEviscerate
++DoubleJumpLandRun
++FlyDoubleJumpLandRun
++BackFlipStart
++FlyBackFlipStart
++BackFlipLoop
++FlyBackFlipLoop
++FelRushLoop
++FlyFelRushLoop
++FelRushEnd
++FlyFelRushEnd
++DHToAlteredStart
++FlyDHToAlteredStart
++DHToAlteredEnd
++FlyDHToAlteredEnd
++DHGlide
++FlyDHGlide
++FanOfKnives
++FlyFanOfKnives
++SingleJumpStart
++FlySingleJumpStart
++DHBladeDance1
++FlyDHBladeDance1
++DHBladeDance2
++FlyDHBladeDance2
++DHBladeDance3
++FlyDHBladeDance3
++DHMeteorStrike
++FlyDHMeteorStrike
++CombatExecute
++FlyCombatExecute
++ArtLoop
++FlyArtLoop
++ParryGlv
++FlyParryGlv
++CombatUnarmed02
++FlyCombatUnarmed02
++CombatPistolShot
++FlyCombatPistolShot
++CombatPistolShotOff
++FlyCombatPistolShotOff
++Monk2HLIdle
++FlyMonk2HLIdle
++ArtShieldLoop
++FlyArtShieldLoop
++CombatAbility2H03
++FlyCombatAbility2H03
++CombatStomp
++FlyCombatStomp
++CombatRoar
++FlyCombatRoar
++PalReadySpellCast
++FlyPalReadySpellCast
++PalSpellPrecastRight
++FlyPalSpellPrecastRight
++PalSpellPrecastRightChannel
++FlyPalSpellPrecastRightChannel
++PalSpellCastRightFront
++FlyPalSpellCastRightFront
++ShaSpellCastBothOut
++FlyShaSpellCastBothOut
++AttackWeapon
++FlyAttackWeapon
++ReadyWeapon
++FlyReadyWeapon
++AttackWeaponOff
++FlyAttackWeaponOff
++SpecialDual
++FlySpecialDual
++DkCast1HFront
++FlyDkCast1HFront
++CastStrongRight
++FlyCastStrongRight
++CastStrongLeft
++FlyCastStrongLeft
++CastCurseRight
++FlyCastCurseRight
++CastCurseLeft
++FlyCastCurseLeft
++CastSweepRight
++FlyCastSweepRight
++CastSweepLeft
++FlyCastSweepLeft
++CastStrongUpLeft
++FlyCastStrongUpLeft
++CastTwistUpBoth
++FlyCastTwistUpBoth
++CastOutStrong
++FlyCastOutStrong
++DrumLoop
++FlyDrumLoop
++ParryWeapon
++FlyParryWeapon
++ReadyFL
++FlyReadyFL
++AttackFL
++FlyAttackFL
++AttackFLOff
++FlyAttackFLOff
++ParryFL
++FlyParryFL
++SpecialFL
++FlySpecialFL
++PriHoverForward
++FlyPriHoverForward
++PriHoverBackward
++FlyPriHoverBackward
++PriHoverRight
++FlyPriHoverRight
++PriHoverLeft
++FlyPriHoverLeft
++RunBackwards
++FlyRunBackwards
++CastStrongUpRight
++FlyCastStrongUpRight
++WAWalk
++FlyWAWalk
++WARun
++FlyWARun
++WADrunkStand
++FlyWADrunkStand
++WADrunkShuffleLeft
++FlyWADrunkShuffleLeft
++WADrunkShuffleRight
++FlyWADrunkShuffleRight
++WADrunkWalk
++FlyWADrunkWalk
++WADrunkWalkBackwards
++FlyWADrunkWalkBackwards
++WADrunkWound
++FlyWADrunkWound
++WADrunkTalk
++FlyWADrunkTalk
++WATrance01
++FlyWATrance01
++WATrance02
++FlyWATrance02
++WAChant01
++FlyWAChant01
++WAChant02
++FlyWAChant02
++WAChant03
++FlyWAChant03
++WAHang01
++FlyWAHang01
++WAHang02
++FlyWAHang02
++WASummon01
++FlyWASummon01
++WASummon02
++FlyWASummon02
++WABeggarTalk
++FlyWABeggarTalk
++WABeggarStand
++FlyWABeggarStand
++WABeggarPoint
++FlyWABeggarPoint
++WABeggarBeg
++FlyWABeggarBeg
++WASit01
++FlyWASit01
++WASit02
++FlyWASit02
++WASit03
++FlyWASit03
++WACrierStand01
++FlyWACrierStand01
++WACrierStand02
++FlyWACrierStand02
++WACrierStand03
++FlyWACrierStand03
++WACrierTalk
++FlyWACrierTalk
++WACrateHold
++FlyWACrateHold
++WABarrelHold
++FlyWABarrelHold
++WASackHold
++FlyWASackHold
++WAWheelBarrowStand
++FlyWAWheelBarrowStand
++WAWheelBarrowWalk
++FlyWAWheelBarrowWalk
++WAWheelBarrowRun
++FlyWAWheelBarrowRun
++WAHammerLoop
++FlyWAHammerLoop
++WACrankLoop
++FlyWACrankLoop
++WAPourStart
++FlyWAPourStart
++WAPourLoop
++FlyWAPourLoop
++WAPourEnd
++FlyWAPourEnd
++WAEmotePour
++FlyWAEmotePour
++WARowingStandRight
++FlyWARowingStandRight
++WARowingStandLeft
++FlyWARowingStandLeft
++WARowingRight
++FlyWARowingRight
++WARowingLeft
++FlyWARowingLeft
++WAGuardStand01
++FlyWAGuardStand01
++WAGuardStand02
++FlyWAGuardStand02
++WAGuardStand03
++FlyWAGuardStand03
++WAGuardStand04
++FlyWAGuardStand04
++WAFreezing01
++FlyWAFreezing01
++WAFreezing02
++FlyWAFreezing02
++WAVendorStand01
++FlyWAVendorStand01
++WAVendorStand02
++FlyWAVendorStand02
++WAVendorStand03
++FlyWAVendorStand03
++WAVendorTalk
++FlyWAVendorTalk
++WALean01
++FlyWALean01
++WALean02
++FlyWALean02
++WALean03
++FlyWALean03
++WALeanTalk
++FlyWALeanTalk
++WABoatWheel
++FlyWABoatWheel
++WASmithLoop
++FlyWASmithLoop
++WAScrubbing
++FlyWAScrubbing
++WAWeaponSharpen
++FlyWAWeaponSharpen
++WAStirring
++FlyWAStirring
++WAPerch01
++FlyWAPerch01
++WAPerch02
++FlyWAPerch02
++HoldWeapon
++FlyHoldWeapon
++WABarrelWalk
++FlyWABarrelWalk
++WAPourHold
++FlyWAPourHold
++CastStrong
++FlyCastStrong
++CastCurse
++FlyCastCurse
++CastSweep
++FlyCastSweep
++CastStrongUp
++FlyCastStrongUp
++WABoatWheelStand
++FlyWABoatWheelStand
++WASmithStand
++FlyWASmithStand
++WACrankStand
++FlyWACrankStand
++WAPourWalk
++FlyWAPourWalk
++FalconeerStart
++FlyFalconeerStart
++FalconeerLoop
++FlyFalconeerLoop
++FalconeerEnd
++FlyFalconeerEnd
++WADrunkDrink
++FlyWADrunkDrink
++WAStandEat
++FlyWAStandEat
++WAStandDrink
++FlyWAStandDrink
++WABound01
++FlyWABound01
++WABound02
++FlyWABound02
++CombatAbility1H03Off
++FlyCombatAbility1H03Off
++CombatAbilityDualWield01
++FlyCombatAbilityDualWield01
++WACradle01
++FlyWACradle01
++LocSummon
++FlyLocSummon
++LoadWeapon
++FlyLoadWeapon
++ArtOffLoop
++FlyArtOffLoop
++WADead01
++FlyWADead01
++WADead02
++FlyWADead02
++WADead03
++FlyWADead03
++WADead04
++FlyWADead04
++WADead05
++FlyWADead05
++WADead06
++FlyWADead06
++WADead07
++FlyWADead07
++GiantRun
++FlyGiantRun
++BarTendEmoteCheer
++FlyBarTendEmoteCheer
++BarTendEmoteTalkQuestion
++FlyBarTendEmoteTalkQuestion
++BarTendEmoteTalkExclamation
++FlyBarTendEmoteTalkExclamation
++BarTendWalk
++FlyBarTendWalk
++BartendShuffleLeft
++FlyBartendShuffleLeft
++BarTendShuffleRight
++FlyBarTendShuffleRight
++BarTendCustomSpell01
++FlyBarTendCustomSpell01
++BarTendCustomSpell02
++FlyBarTendCustomSpell02
++BarTendCustomSpell03
++FlyBarTendCustomSpell03
++BarServerEmoteCheer
++FlyBarServerEmoteCheer
++BarServerEmoteTalkQuestion
++FlyBarServerEmoteTalkQuestion
++BarServerEmoteTalkExclamation
++FlyBarServerEmoteTalkExclamation
++BarServerCustomSpell01
++FlyBarServerCustomSpell01
++BarServerCustomSpell02
++FlyBarServerCustomSpell02
++BarServerCustomSpell03
++FlyBarServerCustomSpell03
++BarPatronEmoteDrink
++FlyBarPatronEmoteDrink
++BarPatronEmoteCheer
++FlyBarPatronEmoteCheer
++BarPatronCustomSpell01
++FlyBarPatronCustomSpell01
++BarPatronCustomSpell02
++FlyBarPatronCustomSpell02
++BarPatronCustomSpell03
++FlyBarPatronCustomSpell03
++HoldDart
++FlyHoldDart
++ReadyDart
++FlyReadyDart
++AttackDart
++FlyAttackDart
++LoadDart
++FlyLoadDart
++WADartTargetStand
++FlyWADartTargetStand
++WADartTargetEmoteTalk
++FlyWADartTargetEmoteTalk
++BarPatronSitEmoteCheer
++FlyBarPatronSitEmoteCheer
++BarPatronSitCustomSpell01
++FlyBarPatronSitCustomSpell01
++BarPatronSitCustomSpell02
++FlyBarPatronSitCustomSpell02
++BarPatronSitCustomSpell03
++FlyBarPatronSitCustomSpell03
++BarPianoStand
++FlyBarPianoStand
++BarPianoEmoteTalk
++FlyBarPianoEmoteTalk
++WAHearthSit
++FlyWAHearthSit
++WAHearthSitEmoteCry
++FlyWAHearthSitEmoteCry
++WAHearthSitEmoteCheer
++FlyWAHearthSitEmoteCheer
++WAHearthSitCustomSpell01
++FlyWAHearthSitCustomSpell01
++WAHearthSitCustomSpell02
++FlyWAHearthSitCustomSpell02
++WAHearthSitCustomSpell03
++FlyWAHearthSitCustomSpell03
++WAHearthStand
++FlyWAHearthStand
++WAHearthStandEmoteCheer
++FlyWAHearthStandEmoteCheer
++WAHearthStandEmoteTalk
++FlyWAHearthStandEmoteTalk
++WAHearthStandCustomSpell01
++FlyWAHearthStandCustomSpell01
++WAHearthStandCustomSpell02
++FlyWAHearthStandCustomSpell02
++WAHearthStandCustomSpell03
++FlyWAHearthStandCustomSpell03
++WAScribeStart
++FlyWAScribeStart
++WAScribeLoop
++FlyWAScribeLoop
++WAScribeEnd
++FlyWAScribeEnd
++WAEmoteScribe
++FlyWAEmoteScribe
++Haymaker
++FlyHaymaker
++HaymakerPrecast
++FlyHaymakerPrecast
++ChannelCastOmniUp
++FlyChannelCastOmniUp
++DHJumpLandRun
++FlyDHJumpLandRun
++Cinematic01
++FlyCinematic01
++Cinematic02
++FlyCinematic02
++Cinematic03
++FlyCinematic03
++Cinematic04
++FlyCinematic04
++Cinematic05
++FlyCinematic05
++Cinematic06
++FlyCinematic06
++Cinematic07
++FlyCinematic07
++Cinematic08
++FlyCinematic08
++Cinematic09
++FlyCinematic09
++Cinematic10
++FlyCinematic10
++TakeOffStart
++FlyTakeOffStart
++TakeOffFinish
++FlyTakeOffFinish
++LandStart
++FlyLandStart
++LandFinish
++FlyLandFinish
++WAWalkTalk
++FlyWAWalkTalk
++WAPerch03
++FlyWAPerch03
++CarriageMountMoving
++FlyCarriageMountMoving
++TakeOffFinishFly
++FlyTakeOffFinishFly
++CombatAbility2HBig02
++FlyCombatAbility2HBig02
++MountWide
++FlyMountWide
++@unnamed 1492 1730
++1731 FlyFloatWalk
++CinematicTalk
++FlyCinematicTalk
++CinematicWAGuardEmoteSlam01
++FlyCinematicWAGuardEmoteSlam01
++WABlowHorn
++FlyWABlowHorn
++MountExtraWide
++FlyMountExtraWide
++WA2HIdle
++FlyWA2HIdle
++HerbalismLoop
++FlyHerbalismLoop
++CookingLoop
++FlyCookingLoop
++WAWeaponSharpenNoSheathe
++FlyWAWeaponSharpenNoSheathe
++CinematicDeath
++FlyCinematicDeath
++CinematicDeathPose
++FlyCinematicDeathPose
++EmpSlamPrecast
++FlyEmpSlamPrecast
++EmpSlamPrecastChannel
++FlyEmpSlamPrecastChannel
++EmpSlamSpellCast
++FlyEmpSlamSpellCast
++Climb
++FlyClimb
++ClimbStart
++FlyClimbStart
++ClimbEnd
++FlyClimbEnd
++MountLeanLeft
++FlyMountLeanLeft
++MountLeanRight
++FlyMountLeanRight
++MountDive
++FlyMountDive
++MountCrouch
++FlyMountCrouch
++WAShovelLoop
++FlyWAShovelLoop
++EmoteTalkFrustrated
++FlyEmoteTalkFrustrated
++MountMedium
++FlyMountMedium
+diff --git a/Tools/AnimIds/gen_anim_enum.py b/Tools/AnimIds/gen_anim_enum.py
+new file mode 100644
+index 0000000..7fc283d
+--- /dev/null
++++ b/Tools/AnimIds/gen_anim_enum.py
+@@ -0,0 +1,142 @@
++#!/usr/bin/env python3
++"""Regenerates the animation enumerators in WoW/Source/Object/ObjectClient/Types.h from AnimationNames.txt.
++
++  python3 Tools/AnimIds/gen_anim_enum.py            rewrite the generated block and ANIM_COUNT
++  python3 Tools/AnimIds/gen_anim_enum.py --check    verify only (exit 1 when Types.h is out of date)
++
++The names file lists animation names by AnimationData row id (see its header; '@unnamed A B' reserves ids whose
++names are not known yet as ANIM_UNNAMED_<id>). Ids that already have a hand-written
++enumerator in Types.h (everything before the generated block) are only VERIFIED: the name derived from the file must
++equal the existing enumerator, which is what guarantees the new names follow the existing naming style. Ids after
++them become the generated block, and ANIM_COUNT is set to the highest id + 1.
++
++Naming: ANIM_ + the CamelCase name in UPPER_SNAKE (Carry2H -> ANIM_CARRY_2H, WAWalk -> ANIM_WA_WALK,
++PetBattleCustom0 -> ANIM_PET_BATTLE_CUSTOM_0), the same rule the existing enumerators follow.
++"""
++import argparse
++import os
++import re
++import sys
++
++BEGIN = "    // BEGIN GENERATED ANIMATION IDS (Tools/AnimIds/gen_anim_enum.py - edit AnimationNames.txt, not this block)"
++END = "    // END GENERATED ANIMATION IDS"
++
++
++def enumerator(name):
++    s = re.sub(r'(?<=[a-z])(?=[A-Z])', '_', name)          # fooBar   -> foo_Bar
++    s = re.sub(r'(?<=[A-Z0-9])(?=[A-Z][a-z])', '_', s)      # ABCd     -> AB_Cd (acronym, then a word)
++    s = re.sub(r'(?<=[A-Za-z])(?=[0-9])', '_', s)           # letters|digits
++    return 'ANIM_' + s.upper()
++
++
++def read_names(path):
++    ids, nxt = {}, None
++    for raw in open(path, encoding='utf-8'):
++        line = raw.strip()
++        if not line or line.startswith('#'):
++            continue
++        if line.startswith('@first'):
++            nxt = int(line.split()[1])
++            continue
++        if line.startswith('@unnamed'):
++            # '@unnamed A B': ids A..B exist but their names are not known; they become ANIM_UNNAMED_<id>
++            parts = line.split()
++            first, last = int(parts[1]), int(parts[2])
++            if last < first:
++                sys.exit(f"{path}: '{line}' is an empty range")
++            for i in range(first, last + 1):
++                if i in ids:
++                    sys.exit(f"{path}: id {i} listed twice")
++                ids[i] = f"Unnamed{i}"
++            nxt = last + 1
++            continue
++        m = re.match(r'^(\d+)\s+(\S+)$', line)
++        if m:
++            nxt = int(m.group(1)); line = m.group(2)
++        if nxt is None:
++            sys.exit(f"{path}: a name before any '@first N' or explicit id")
++        if not re.match(r'^[A-Za-z][A-Za-z0-9]*$', line):
++            sys.exit(f"{path}: '{line}' is not a usable name")
++        if nxt in ids:
++            sys.exit(f"{path}: id {nxt} listed twice")
++        ids[nxt] = line
++        nxt += 1
++    return ids
++
++
++def main():
++    here = os.path.dirname(os.path.abspath(__file__))
++    root = os.path.abspath(os.path.join(here, '..', '..'))
++    ap = argparse.ArgumentParser()
++    ap.add_argument('--types', default=os.path.join(root, 'WoW/Source/Object/ObjectClient/Types.h'))
++    ap.add_argument('--names', default=os.path.join(here, 'AnimationNames.txt'))
++    ap.add_argument('--check', action='store_true')
++    a = ap.parse_args()
++
++    raw = open(a.types, 'rb').read().decode('utf-8')
++    eol = '\r\n' if '\r\n' in raw else '\n'
++    text = raw.replace('\r\n', '\n')
++
++    # the enum: everything up to (not including) the generated block or ANIM_COUNT
++    m = re.search(r'enum ANIMATION_ID[^\n]*\{\n(.*?)\n\};', text, re.S)
++    if not m:
++        sys.exit("could not find the animation enum in " + a.types)
++    body = m.group(1)
++    cut = body.find(BEGIN)
++    if cut < 0:
++        cut = body.find('    ANIM_COUNT')
++    hand = body[:cut].rstrip('\n')
++
++    existing = {}
++    for l in hand.split('\n'):
++        mm = re.match(r'\s*(ANIM_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+),', l)
++        if mm:
++            existing[int(mm.group(2), 0)] = mm.group(1)
++    last_hand = max(existing)
++
++    names = read_names(a.names)
++
++    # verify the overlap, so the naming rule is proven against the real enumerators every run
++    bad = [(i, names[i], enumerator(names[i]), existing[i]) for i in sorted(names) if i in existing and enumerator(names[i]) != existing[i]]
++    if bad:
++        for i, n, got, want in bad:
++            print(f"id {i}: {n} -> {got}, but Types.h has {want}", file=sys.stderr)
++        sys.exit("names file disagrees with the hand-written enumerators; fix the file (numbering or names)")
++    overlap = sum(1 for i in names if i in existing)
++
++    new_ids = sorted(i for i in names if i > last_hand)
++    if not new_ids:
++        sys.exit("no ids past the existing enum in the names file")
++    if new_ids[0] != last_hand + 1:
++        sys.exit(f"gap: the enum ends at {last_hand} but the names file resumes at {new_ids[0]}")
++    for p, q in zip(new_ids, new_ids[1:]):
++        if q != p + 1:
++            sys.exit(f"gap in the names file between {p} and {q}")
++
++    used = set(existing.values())
++    lines = []
++    for i in new_ids:
++        e = enumerator(names[i])
++        if e in used:
++            sys.exit(f"id {i}: {names[i]} would be {e}, which already exists")
++        used.add(e)
++        lines.append(f"    {e} = 0x{i:X},")
++    count = new_ids[-1] + 1
++
++    block = BEGIN + '\n' + '\n'.join(lines) + '\n' + END + f"\n    ANIM_COUNT = 0x{count:X},"
++    new_body = hand + '\n' + block
++    new_text = text[:m.start(1)] + new_body + text[m.end(1):]
++    out = new_text.replace('\n', eol)
++
++    if a.check:
++        if out != raw:
++            print("Types.h is out of date: run Tools/AnimIds/gen_anim_enum.py", file=sys.stderr)
++            sys.exit(1)
++        print(f"up to date: {len(new_ids)} generated enumerators, ANIM_COUNT = {count} (0x{count:X}), {overlap} overlapping ids verified")
++        return
++    open(a.types, 'wb').write(out.encode('utf-8'))
++    print(f"wrote {len(new_ids)} enumerators (ids {new_ids[0]}..{new_ids[-1]}), ANIM_COUNT = {count} (0x{count:X}), {overlap} overlapping ids verified")
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/Tools/WxlModuleTest/modernm2_test.cpp b/Tools/WxlModuleTest/modernm2_test.cpp
+index 57804ef..f185783 100644
+--- a/Tools/WxlModuleTest/modernm2_test.cpp
++++ b/Tools/WxlModuleTest/modernm2_test.cpp
+@@ -60,7 +60,7 @@ struct Fixture
+ static Fixture BuildModernFile(uint32_t version)
+ {
+     const uint32_t hdr = sizeof(M2Data);
+-    const uint32_t seqOff = hdr, seqBytes = 5 * sizeof(M2Sequence);
++    const uint32_t seqOff = hdr, seqBytes = 6 * sizeof(M2Sequence);
+     const uint32_t matOff = seqOff + seqBytes, matBytes = 2 * sizeof(M2Material);
+     const uint32_t texOff = matOff + matBytes, texBytes = 3 * sizeof(M2Texture);
+     const uint32_t partOff = (texOff + texBytes + 15) & ~15u, partBytes = 2 * 0x1FC;
+@@ -74,7 +74,7 @@ static Fixture BuildModernFile(uint32_t version)
+     Put32(body, 0, 0x3032444D);                 // 'MD20'
+     Put32(body, offsetof(M2Data, m_version), version);
+     auto setArr = [&](size_t at, uint32_t count, uint32_t off) { Put32(body, at, count); Put32(body, at + 4, off); };
+-    setArr(offsetof(M2Data, m_sequences), 5, seqOff);
++    setArr(offsetof(M2Data, m_sequences), 6, seqOff);
+     setArr(offsetof(M2Data, m_sequenceIdxHashById), 600, lookupOff);
+     setArr(offsetof(M2Data, m_materials), 2, matOff);
+     setArr(offsetof(M2Data, m_textures), 3, texOff);
+@@ -89,6 +89,7 @@ static Fixture BuildModernFile(uint32_t version)
+     seqs[2].m_id = 548; seqs[2].m_flags = 0x20;   // source flight idle
+     seqs[3].m_id = 562; seqs[3].m_flags = 0x20;   // source flight backwards
+     seqs[4].m_id = 41;  seqs[4].m_flags = 0x20;   // a native swim idle the model keeps
++    seqs[5].m_id = 700; seqs[5].m_flags = 0x20;   // a modern id with no client counterpart: the table covers it now
+     {   // the id lookup: direct-indexed, as modern files write it
+         uint16_t* lk = reinterpret_cast<uint16_t*>(&body[lookupOff]);
+         for (int i = 0; i < 600; ++i) lk[i] = 0xFFFF;
+@@ -167,6 +168,7 @@ static void TestLoad()
+     CHECK(seqs[1].m_id == 37, "source anim id 564 remapped to client 37");
+     CHECK(seqs[2].m_id == 270 && seqs[3].m_id == 274, "source flight ids 548 / 562 filed under the flight twins 0x10E / 0x112");
+     CHECK(seqs[4].m_id == 41, "the model's own swim idle is left alone (flight does not replace swim)");
++    CHECK(seqs[5].m_id == 700, "a modern id above the old table keeps its own number (ANIM_COUNT covers it now)");
+     {
+         const uint16_t* lk = reinterpret_cast<const uint16_t*>(b + f.lookupOff);
+         CHECK(lk[270] == 2 && lk[274] == 3, "id lookup points the flight twins at the flight sequences");
+diff --git a/WoW/Source/Object/ObjectClient/CGGameObject_C_Type_Transport.cpp b/WoW/Source/Object/ObjectClient/CGGameObject_C_Type_Transport.cpp
+index 695355d..2caccce 100644
+--- a/WoW/Source/Object/ObjectClient/CGGameObject_C_Type_Transport.cpp
++++ b/WoW/Source/Object/ObjectClient/CGGameObject_C_Type_Transport.cpp
+@@ -1,3 +1,4 @@
++#include "WoW/Source/Object/ObjectClient/Types.h"
+ #include "CGGameObject_C_Type_Transport.h"
+ #include "WoW/Source/Object/ObjectClient/Movement_C.h"
+ #include "WoW/Source/WorldClient/World.h"
+@@ -79,7 +80,7 @@ static int32_t FindTransportRotationIndex(int32_t transportId) {
+ 
+ // VERIFY: e9e508da manual
+ // OFFSET: 0x00713820
+-CGGameObject_C_Type_Transport::CGGameObject_C_Type_Transport(CGGameObject_C* owner) : CGGameObject_C_Type_TransportBase(owner), m_frames(nullptr), m_frameCount(0), m_currentFrame(0), m_rotations(nullptr), m_rotationCount(0), m_currentRotation(0), m_lastSequence(506), m_stateChangeSequenceTime(0) {
++CGGameObject_C_Type_Transport::CGGameObject_C_Type_Transport(CGGameObject_C* owner) : CGGameObject_C_Type_TransportBase(owner), m_frames(nullptr), m_frameCount(0), m_currentFrame(0), m_rotations(nullptr), m_rotationCount(0), m_currentRotation(0), m_lastSequence(ANIM_COUNT), m_stateChangeSequenceTime(0) {
+     int32_t index = FindTransportAnimationIndex(owner->m_obj->m_entryID);
+ 
+     if (index != -1) {
+@@ -188,7 +189,7 @@ void CGGameObject_C_Type_Transport::PostInitWithStats() {
+ // VERIFY: 1347bf69 auto
+ // OFFSET: 0x0070B630
+ void CGGameObject_C_Type_Transport::PostReenable() {
+-    this->m_lastSequence = 506;
++    this->m_lastSequence = ANIM_COUNT;
+     this->CreateWorldObj();
+ 
+     if (this->m_worldObject) {
+diff --git a/WoW/Source/Object/ObjectClient/Types.h b/WoW/Source/Object/ObjectClient/Types.h
+index 200ace1..1953fba 100644
+--- a/WoW/Source/Object/ObjectClient/Types.h
++++ b/WoW/Source/Object/ObjectClient/Types.h
+@@ -567,7 +567,1281 @@ enum ANIMATION_ID {
+     ANIM_CARRIED_2H = 0x1F7,
+     ANIM_FLY_CARRY_2H = 0x1F8,
+     ANIM_FLY_CARRIED_2H = 0x1F9,
+-    ANIM_COUNT = 0x1FA,
++    // BEGIN GENERATED ANIMATION IDS (Tools/AnimIds/gen_anim_enum.py - edit AnimationNames.txt, not this block)
++    ANIM_EMOTE_SNIFF = 0x1FA,
++    ANIM_EMOTE_FLY_SNIFF = 0x1FB,
++    ANIM_ATTACK_FIST_1H = 0x1FC,
++    ANIM_FLY_ATTACK_FIST_1H = 0x1FD,
++    ANIM_ATTACK_FIST_1H_OFF = 0x1FE,
++    ANIM_FLY_ATTACK_FIST_1H_OFF = 0x1FF,
++    ANIM_PARRY_FIST_1H = 0x200,
++    ANIM_FLY_PARRY_FIST_1H = 0x201,
++    ANIM_READY_FIST_1H = 0x202,
++    ANIM_FLY_READY_FIST_1H = 0x203,
++    ANIM_SPECIAL_FIST_1H = 0x204,
++    ANIM_FLY_SPECIAL_FIST_1H = 0x205,
++    ANIM_EMOTE_READ_START = 0x206,
++    ANIM_FLY_EMOTE_READ_START = 0x207,
++    ANIM_EMOTE_READ_LOOP = 0x208,
++    ANIM_FLY_EMOTE_READ_LOOP = 0x209,
++    ANIM_EMOTE_READ_END = 0x20A,
++    ANIM_FLY_EMOTE_READ_END = 0x20B,
++    ANIM_SWIM_RUN = 0x20C,
++    ANIM_FLY_SWIM_RUN = 0x20D,
++    ANIM_SWIM_WALK = 0x20E,
++    ANIM_FLY_SWIM_WALK = 0x20F,
++    ANIM_SWIM_WALK_BACKWARDS = 0x210,
++    ANIM_FLY_SWIM_WALK_BACKWARDS = 0x211,
++    ANIM_SWIM_SPRINT = 0x212,
++    ANIM_FLY_SWIM_SPRINT = 0x213,
++    ANIM_MOUNT_SWIM_IDLE = 0x214,
++    ANIM_FLY_MOUNT_SWIM_IDLE = 0x215,
++    ANIM_MOUNT_SWIM_BACKWARDS = 0x216,
++    ANIM_FLY_MOUNT_SWIM_BACKWARDS = 0x217,
++    ANIM_MOUNT_SWIM_LEFT = 0x218,
++    ANIM_FLY_MOUNT_SWIM_LEFT = 0x219,
++    ANIM_MOUNT_SWIM_RIGHT = 0x21A,
++    ANIM_FLY_MOUNT_SWIM_RIGHT = 0x21B,
++    ANIM_MOUNT_SWIM_RUN = 0x21C,
++    ANIM_FLY_MOUNT_SWIM_RUN = 0x21D,
++    ANIM_MOUNT_SWIM_SPRINT = 0x21E,
++    ANIM_FLY_MOUNT_SWIM_SPRINT = 0x21F,
++    ANIM_MOUNT_SWIM_WALK = 0x220,
++    ANIM_FLY_MOUNT_SWIM_WALK = 0x221,
++    ANIM_MOUNT_SWIM_WALK_BACKWARDS = 0x222,
++    ANIM_FLY_MOUNT_SWIM_WALK_BACKWARDS = 0x223,
++    ANIM_MOUNT_FLIGHT_IDLE = 0x224,
++    ANIM_FLY_MOUNT_FLIGHT_IDLE = 0x225,
++    ANIM_MOUNT_FLIGHT_BACKWARDS = 0x226,
++    ANIM_FLY_MOUNT_FLIGHT_BACKWARDS = 0x227,
++    ANIM_MOUNT_FLIGHT_LEFT = 0x228,
++    ANIM_FLY_MOUNT_FLIGHT_LEFT = 0x229,
++    ANIM_MOUNT_FLIGHT_RIGHT = 0x22A,
++    ANIM_FLY_MOUNT_FLIGHT_RIGHT = 0x22B,
++    ANIM_MOUNT_FLIGHT_RUN = 0x22C,
++    ANIM_FLY_MOUNT_FLIGHT_RUN = 0x22D,
++    ANIM_MOUNT_FLIGHT_SPRINT = 0x22E,
++    ANIM_FLY_MOUNT_FLIGHT_SPRINT = 0x22F,
++    ANIM_MOUNT_FLIGHT_WALK = 0x230,
++    ANIM_FLY_MOUNT_FLIGHT_WALK = 0x231,
++    ANIM_MOUNT_FLIGHT_WALK_BACKWARDS = 0x232,
++    ANIM_FLY_MOUNT_FLIGHT_WALK_BACKWARDS = 0x233,
++    ANIM_MOUNT_FLIGHT_START = 0x234,
++    ANIM_FLY_MOUNT_FLIGHT_START = 0x235,
++    ANIM_MOUNT_SWIM_START = 0x236,
++    ANIM_FLY_MOUNT_SWIM_START = 0x237,
++    ANIM_MOUNT_SWIM_LAND = 0x238,
++    ANIM_FLY_MOUNT_SWIM_LAND = 0x239,
++    ANIM_MOUNT_SWIM_LAND_RUN = 0x23A,
++    ANIM_FLY_MOUNT_SWIM_LAND_RUN = 0x23B,
++    ANIM_MOUNT_FLIGHT_LAND = 0x23C,
++    ANIM_FLY_MOUNT_FLIGHT_LAND = 0x23D,
++    ANIM_MOUNT_FLIGHT_LAND_RUN = 0x23E,
++    ANIM_FLY_MOUNT_FLIGHT_LAND_RUN = 0x23F,
++    ANIM_READY_BLOW_DART = 0x240,
++    ANIM_FLY_READY_BLOW_DART = 0x241,
++    ANIM_LOAD_BLOW_DART = 0x242,
++    ANIM_FLY_LOAD_BLOW_DART = 0x243,
++    ANIM_HOLD_BLOW_DART = 0x244,
++    ANIM_FLY_HOLD_BLOW_DART = 0x245,
++    ANIM_ATTACK_BLOW_DART = 0x246,
++    ANIM_FLY_ATTACK_BLOW_DART = 0x247,
++    ANIM_CARRIAGE_MOUNT = 0x248,
++    ANIM_FLY_CARRIAGE_MOUNT = 0x249,
++    ANIM_CARRIAGE_PASSENGER_MOUNT = 0x24A,
++    ANIM_FLY_CARRIAGE_PASSENGER_MOUNT = 0x24B,
++    ANIM_CARRIAGE_MOUNT_ATTACK = 0x24C,
++    ANIM_FLY_CARRIAGE_MOUNT_ATTACK = 0x24D,
++    ANIM_BAR_TEND_STAND = 0x24E,
++    ANIM_FLY_BAR_TEND_STAND = 0x24F,
++    ANIM_BAR_SERVER_WALK = 0x250,
++    ANIM_FLY_BAR_SERVER_WALK = 0x251,
++    ANIM_BAR_SERVER_RUN = 0x252,
++    ANIM_FLY_BAR_SERVER_RUN = 0x253,
++    ANIM_BAR_SERVER_SHUFFLE_LEFT = 0x254,
++    ANIM_FLY_BAR_SERVER_SHUFFLE_LEFT = 0x255,
++    ANIM_BAR_SERVER_SHUFFLE_RIGHT = 0x256,
++    ANIM_FLY_BAR_SERVER_SHUFFLE_RIGHT = 0x257,
++    ANIM_BAR_TEND_EMOTE_TALK = 0x258,
++    ANIM_FLY_BAR_TEND_EMOTE_TALK = 0x259,
++    ANIM_BAR_TEND_EMOTE_POINT = 0x25A,
++    ANIM_FLY_BAR_TEND_EMOTE_POINT = 0x25B,
++    ANIM_BAR_SERVER_STAND = 0x25C,
++    ANIM_FLY_BAR_SERVER_STAND = 0x25D,
++    ANIM_BAR_SWEEP_WALK = 0x25E,
++    ANIM_FLY_BAR_SWEEP_WALK = 0x25F,
++    ANIM_BAR_SWEEP_RUN = 0x260,
++    ANIM_FLY_BAR_SWEEP_RUN = 0x261,
++    ANIM_BAR_SWEEP_SHUFFLE_LEFT = 0x262,
++    ANIM_FLY_BAR_SWEEP_SHUFFLE_LEFT = 0x263,
++    ANIM_BAR_SWEEP_SHUFFLE_RIGHT = 0x264,
++    ANIM_FLY_BAR_SWEEP_SHUFFLE_RIGHT = 0x265,
++    ANIM_BAR_SWEEP_EMOTE_TALK = 0x266,
++    ANIM_FLY_BAR_SWEEP_EMOTE_TALK = 0x267,
++    ANIM_BAR_PATRON_SIT_EMOTE_POINT = 0x268,
++    ANIM_FLY_BAR_PATRON_SIT_EMOTE_POINT = 0x269,
++    ANIM_MOUNT_SELF_IDLE = 0x26A,
++    ANIM_FLY_MOUNT_SELF_IDLE = 0x26B,
++    ANIM_MOUNT_SELF_WALK = 0x26C,
++    ANIM_FLY_MOUNT_SELF_WALK = 0x26D,
++    ANIM_MOUNT_SELF_RUN = 0x26E,
++    ANIM_FLY_MOUNT_SELF_RUN = 0x26F,
++    ANIM_MOUNT_SELF_SPRINT = 0x270,
++    ANIM_FLY_MOUNT_SELF_SPRINT = 0x271,
++    ANIM_MOUNT_SELF_RUN_LEFT = 0x272,
++    ANIM_FLY_MOUNT_SELF_RUN_LEFT = 0x273,
++    ANIM_MOUNT_SELF_RUN_RIGHT = 0x274,
++    ANIM_FLY_MOUNT_SELF_RUN_RIGHT = 0x275,
++    ANIM_MOUNT_SELF_SHUFFLE_LEFT = 0x276,
++    ANIM_FLY_MOUNT_SELF_SHUFFLE_LEFT = 0x277,
++    ANIM_MOUNT_SELF_SHUFFLE_RIGHT = 0x278,
++    ANIM_FLY_MOUNT_SELF_SHUFFLE_RIGHT = 0x279,
++    ANIM_MOUNT_SELF_WALK_BACKWARDS = 0x27A,
++    ANIM_FLY_MOUNT_SELF_WALK_BACKWARDS = 0x27B,
++    ANIM_MOUNT_SELF_SPECIAL = 0x27C,
++    ANIM_FLY_MOUNT_SELF_SPECIAL = 0x27D,
++    ANIM_MOUNT_SELF_JUMP = 0x27E,
++    ANIM_FLY_MOUNT_SELF_JUMP = 0x27F,
++    ANIM_MOUNT_SELF_JUMP_START = 0x280,
++    ANIM_FLY_MOUNT_SELF_JUMP_START = 0x281,
++    ANIM_MOUNT_SELF_JUMP_END = 0x282,
++    ANIM_FLY_MOUNT_SELF_JUMP_END = 0x283,
++    ANIM_MOUNT_SELF_JUMP_LAND_RUN = 0x284,
++    ANIM_FLY_MOUNT_SELF_JUMP_LAND_RUN = 0x285,
++    ANIM_MOUNT_SELF_START = 0x286,
++    ANIM_FLY_MOUNT_SELF_START = 0x287,
++    ANIM_MOUNT_SELF_FALL = 0x288,
++    ANIM_FLY_MOUNT_SELF_FALL = 0x289,
++    ANIM_STORMSTRIKE = 0x28A,
++    ANIM_FLY_STORMSTRIKE = 0x28B,
++    ANIM_READY_JOUST_NO_SHEATHE = 0x28C,
++    ANIM_FLY_READY_JOUST_NO_SHEATHE = 0x28D,
++    ANIM_SLAM = 0x28E,
++    ANIM_FLY_SLAM = 0x28F,
++    ANIM_DEATH_STRIKE = 0x290,
++    ANIM_FLY_DEATH_STRIKE = 0x291,
++    ANIM_SWIM_ATTACK_UNARMED = 0x292,
++    ANIM_FLY_SWIM_ATTACK_UNARMED = 0x293,
++    ANIM_SPINNING_KICK = 0x294,
++    ANIM_FLY_SPINNING_KICK = 0x295,
++    ANIM_ROUND_HOUSE_KICK = 0x296,
++    ANIM_FLY_ROUND_HOUSE_KICK = 0x297,
++    ANIM_ROLL_START = 0x298,
++    ANIM_FLY_ROLL_START = 0x299,
++    ANIM_ROLL = 0x29A,
++    ANIM_FLY_ROLL = 0x29B,
++    ANIM_ROLL_END = 0x29C,
++    ANIM_FLY_ROLL_END = 0x29D,
++    ANIM_PALM_STRIKE = 0x29E,
++    ANIM_FLY_PALM_STRIKE = 0x29F,
++    ANIM_MONK_OFFENSE_ATTACK_UNARMED = 0x2A0,
++    ANIM_FLY_MONK_OFFENSE_ATTACK_UNARMED = 0x2A1,
++    ANIM_MONK_OFFENSE_ATTACK_UNARMED_OFF = 0x2A2,
++    ANIM_FLY_MONK_OFFENSE_ATTACK_UNARMED_OFF = 0x2A3,
++    ANIM_MONK_OFFENSE_PARRY_UNARMED = 0x2A4,
++    ANIM_FLY_MONK_OFFENSE_PARRY_UNARMED = 0x2A5,
++    ANIM_MONK_OFFENSE_READY_UNARMED = 0x2A6,
++    ANIM_FLY_MONK_OFFENSE_READY_UNARMED = 0x2A7,
++    ANIM_MONK_OFFENSE_SPECIAL_UNARMED = 0x2A8,
++    ANIM_FLY_MONK_OFFENSE_SPECIAL_UNARMED = 0x2A9,
++    ANIM_MONK_DEFENSE_ATTACK_UNARMED = 0x2AA,
++    ANIM_FLY_MONK_DEFENSE_ATTACK_UNARMED = 0x2AB,
++    ANIM_MONK_DEFENSE_ATTACK_UNARMED_OFF = 0x2AC,
++    ANIM_FLY_MONK_DEFENSE_ATTACK_UNARMED_OFF = 0x2AD,
++    ANIM_MONK_DEFENSE_PARRY_UNARMED = 0x2AE,
++    ANIM_FLY_MONK_DEFENSE_PARRY_UNARMED = 0x2AF,
++    ANIM_MONK_DEFENSE_READY_UNARMED = 0x2B0,
++    ANIM_FLY_MONK_DEFENSE_READY_UNARMED = 0x2B1,
++    ANIM_MONK_DEFENSE_SPECIAL_UNARMED = 0x2B2,
++    ANIM_FLY_MONK_DEFENSE_SPECIAL_UNARMED = 0x2B3,
++    ANIM_MONK_HEAL_ATTACK_UNARMED = 0x2B4,
++    ANIM_FLY_MONK_HEAL_ATTACK_UNARMED = 0x2B5,
++    ANIM_MONK_HEAL_ATTACK_UNARMED_OFF = 0x2B6,
++    ANIM_FLY_MONK_HEAL_ATTACK_UNARMED_OFF = 0x2B7,
++    ANIM_MONK_HEAL_PARRY_UNARMED = 0x2B8,
++    ANIM_FLY_MONK_HEAL_PARRY_UNARMED = 0x2B9,
++    ANIM_MONK_HEAL_READY_UNARMED = 0x2BA,
++    ANIM_FLY_MONK_HEAL_READY_UNARMED = 0x2BB,
++    ANIM_MONK_HEAL_SPECIAL_UNARMED = 0x2BC,
++    ANIM_FLY_MONK_HEAL_SPECIAL_UNARMED = 0x2BD,
++    ANIM_FLYING_KICK = 0x2BE,
++    ANIM_FLY_FLYING_KICK = 0x2BF,
++    ANIM_FLYING_KICK_START = 0x2C0,
++    ANIM_FLY_FLYING_KICK_START = 0x2C1,
++    ANIM_FLYING_KICK_END = 0x2C2,
++    ANIM_FLY_FLYING_KICK_END = 0x2C3,
++    ANIM_CRANE_START = 0x2C4,
++    ANIM_FLY_CRANE_START = 0x2C5,
++    ANIM_CRANE_LOOP = 0x2C6,
++    ANIM_FLY_CRANE_LOOP = 0x2C7,
++    ANIM_CRANE_END = 0x2C8,
++    ANIM_FLY_CRANE_END = 0x2C9,
++    ANIM_DESPAWNED = 0x2CA,
++    ANIM_FLY_DESPAWNED = 0x2CB,
++    ANIM_THOUSAND_FISTS = 0x2CC,
++    ANIM_FLY_THOUSAND_FISTS = 0x2CD,
++    ANIM_MONK_HEAL_READY_SPELL_DIRECTED = 0x2CE,
++    ANIM_FLY_MONK_HEAL_READY_SPELL_DIRECTED = 0x2CF,
++    ANIM_MONK_HEAL_READY_SPELL_OMNI = 0x2D0,
++    ANIM_FLY_MONK_HEAL_READY_SPELL_OMNI = 0x2D1,
++    ANIM_MONK_HEAL_SPELL_CAST_DIRECTED = 0x2D2,
++    ANIM_FLY_MONK_HEAL_SPELL_CAST_DIRECTED = 0x2D3,
++    ANIM_MONK_HEAL_SPELL_CAST_OMNI = 0x2D4,
++    ANIM_FLY_MONK_HEAL_SPELL_CAST_OMNI = 0x2D5,
++    ANIM_MONK_HEAL_CHANNEL_CAST_DIRECTED = 0x2D6,
++    ANIM_FLY_MONK_HEAL_CHANNEL_CAST_DIRECTED = 0x2D7,
++    ANIM_MONK_HEAL_CHANNEL_CAST_OMNI = 0x2D8,
++    ANIM_FLY_MONK_HEAL_CHANNEL_CAST_OMNI = 0x2D9,
++    ANIM_TORPEDO = 0x2DA,
++    ANIM_FLY_TORPEDO = 0x2DB,
++    ANIM_MEDITATE = 0x2DC,
++    ANIM_FLY_MEDITATE = 0x2DD,
++    ANIM_BREATH_OF_FIRE = 0x2DE,
++    ANIM_FLY_BREATH_OF_FIRE = 0x2DF,
++    ANIM_RISING_SUN_KICK = 0x2E0,
++    ANIM_FLY_RISING_SUN_KICK = 0x2E1,
++    ANIM_GROUND_KICK = 0x2E2,
++    ANIM_FLY_GROUND_KICK = 0x2E3,
++    ANIM_KICK_BACK = 0x2E4,
++    ANIM_FLY_KICK_BACK = 0x2E5,
++    ANIM_PET_BATTLE_STAND = 0x2E6,
++    ANIM_FLY_PET_BATTLE_STAND = 0x2E7,
++    ANIM_PET_BATTLE_DEATH = 0x2E8,
++    ANIM_FLY_PET_BATTLE_DEATH = 0x2E9,
++    ANIM_PET_BATTLE_RUN = 0x2EA,
++    ANIM_FLY_PET_BATTLE_RUN = 0x2EB,
++    ANIM_PET_BATTLE_WOUND = 0x2EC,
++    ANIM_FLY_PET_BATTLE_WOUND = 0x2ED,
++    ANIM_PET_BATTLE_ATTACK = 0x2EE,
++    ANIM_FLY_PET_BATTLE_ATTACK = 0x2EF,
++    ANIM_PET_BATTLE_READY_SPELL = 0x2F0,
++    ANIM_FLY_PET_BATTLE_READY_SPELL = 0x2F1,
++    ANIM_PET_BATTLE_SPELL_CAST = 0x2F2,
++    ANIM_FLY_PET_BATTLE_SPELL_CAST = 0x2F3,
++    ANIM_PET_BATTLE_CUSTOM_0 = 0x2F4,
++    ANIM_FLY_PET_BATTLE_CUSTOM_0 = 0x2F5,
++    ANIM_PET_BATTLE_CUSTOM_1 = 0x2F6,
++    ANIM_FLY_PET_BATTLE_CUSTOM_1 = 0x2F7,
++    ANIM_PET_BATTLE_CUSTOM_2 = 0x2F8,
++    ANIM_FLY_PET_BATTLE_CUSTOM_2 = 0x2F9,
++    ANIM_PET_BATTLE_CUSTOM_3 = 0x2FA,
++    ANIM_FLY_PET_BATTLE_CUSTOM_3 = 0x2FB,
++    ANIM_PET_BATTLE_VICTORY = 0x2FC,
++    ANIM_FLY_PET_BATTLE_VICTORY = 0x2FD,
++    ANIM_PET_BATTLE_LOSS = 0x2FE,
++    ANIM_FLY_PET_BATTLE_LOSS = 0x2FF,
++    ANIM_PET_BATTLE_STUN = 0x300,
++    ANIM_FLY_PET_BATTLE_STUN = 0x301,
++    ANIM_PET_BATTLE_DEAD = 0x302,
++    ANIM_FLY_PET_BATTLE_DEAD = 0x303,
++    ANIM_PET_BATTLE_FREEZE = 0x304,
++    ANIM_FLY_PET_BATTLE_FREEZE = 0x305,
++    ANIM_MONK_OFFENSE_ATTACK_WEAPON = 0x306,
++    ANIM_FLY_MONK_OFFENSE_ATTACK_WEAPON = 0x307,
++    ANIM_BAR_TEND_EMOTE_WAVE = 0x308,
++    ANIM_FLY_BAR_TEND_EMOTE_WAVE = 0x309,
++    ANIM_BAR_SERVER_EMOTE_TALK = 0x30A,
++    ANIM_FLY_BAR_SERVER_EMOTE_TALK = 0x30B,
++    ANIM_BAR_SERVER_EMOTE_WAVE = 0x30C,
++    ANIM_FLY_BAR_SERVER_EMOTE_WAVE = 0x30D,
++    ANIM_BAR_SERVER_POUR_DRINKS = 0x30E,
++    ANIM_FLY_BAR_SERVER_POUR_DRINKS = 0x30F,
++    ANIM_BAR_SERVER_PICKUP = 0x310,
++    ANIM_FLY_BAR_SERVER_PICKUP = 0x311,
++    ANIM_BAR_SERVER_PUT_DOWN = 0x312,
++    ANIM_FLY_BAR_SERVER_PUT_DOWN = 0x313,
++    ANIM_BAR_SWEEP_STAND = 0x314,
++    ANIM_FLY_BAR_SWEEP_STAND = 0x315,
++    ANIM_BAR_PATRON_SIT = 0x316,
++    ANIM_FLY_BAR_PATRON_SIT = 0x317,
++    ANIM_BAR_PATRON_SIT_EMOTE_TALK = 0x318,
++    ANIM_FLY_BAR_PATRON_SIT_EMOTE_TALK = 0x319,
++    ANIM_BAR_PATRON_STAND = 0x31A,
++    ANIM_FLY_BAR_PATRON_STAND = 0x31B,
++    ANIM_BAR_PATRON_STAND_EMOTE_TALK = 0x31C,
++    ANIM_FLY_BAR_PATRON_STAND_EMOTE_TALK = 0x31D,
++    ANIM_BAR_PATRON_STAND_EMOTE_POINT = 0x31E,
++    ANIM_FLY_BAR_PATRON_STAND_EMOTE_POINT = 0x31F,
++    ANIM_CARRION_SWARM = 0x320,
++    ANIM_FLY_CARRION_SWARM = 0x321,
++    ANIM_WHEEL_LOOP = 0x322,
++    ANIM_FLY_WHEEL_LOOP = 0x323,
++    ANIM_STAND_CHARACTER_CREATE = 0x324,
++    ANIM_FLY_STAND_CHARACTER_CREATE = 0x325,
++    ANIM_MOUNT_CHOPPER = 0x326,
++    ANIM_FLY_MOUNT_CHOPPER = 0x327,
++    ANIM_FACE_POSE = 0x328,
++    ANIM_FLY_FACE_POSE = 0x329,
++    ANIM_COMBAT_ABILITY_2H_BIG_01 = 0x32A,
++    ANIM_FLY_COMBAT_ABILITY_2H_BIG_01 = 0x32B,
++    ANIM_COMBAT_ABILITY_2H_01 = 0x32C,
++    ANIM_FLY_COMBAT_ABILITY_2H_01 = 0x32D,
++    ANIM_COMBAT_WHIRLWIND = 0x32E,
++    ANIM_FLY_COMBAT_WHIRLWIND = 0x32F,
++    ANIM_COMBAT_CHARGE_LOOP = 0x330,
++    ANIM_FLY_COMBAT_CHARGE_LOOP = 0x331,
++    ANIM_COMBAT_ABILITY_1H_01 = 0x332,
++    ANIM_FLY_COMBAT_ABILITY_1H_01 = 0x333,
++    ANIM_COMBAT_CHARGE_END = 0x334,
++    ANIM_FLY_COMBAT_CHARGE_END = 0x335,
++    ANIM_COMBAT_ABILITY_1H_02 = 0x336,
++    ANIM_FLY_COMBAT_ABILITY_1H_02 = 0x337,
++    ANIM_COMBAT_ABILITY_1H_BIG_01 = 0x338,
++    ANIM_FLY_COMBAT_ABILITY_1H_BIG_01 = 0x339,
++    ANIM_COMBAT_ABILITY_2H_02 = 0x33A,
++    ANIM_FLY_COMBAT_ABILITY_2H_02 = 0x33B,
++    ANIM_SHA_SPELL_PRECAST_BOTH = 0x33C,
++    ANIM_FLY_SHA_SPELL_PRECAST_BOTH = 0x33D,
++    ANIM_SHA_SPELL_CAST_BOTH_FRONT = 0x33E,
++    ANIM_FLY_SHA_SPELL_CAST_BOTH_FRONT = 0x33F,
++    ANIM_SHA_SPELL_CAST_LEFT_FRONT = 0x340,
++    ANIM_FLY_SHA_SPELL_CAST_LEFT_FRONT = 0x341,
++    ANIM_SHA_SPELL_CAST_RIGHT_FRONT = 0x342,
++    ANIM_FLY_SHA_SPELL_CAST_RIGHT_FRONT = 0x343,
++    ANIM_READY_CROSSBOW = 0x344,
++    ANIM_FLY_READY_CROSSBOW = 0x345,
++    ANIM_LOAD_CROSSBOW = 0x346,
++    ANIM_FLY_LOAD_CROSSBOW = 0x347,
++    ANIM_ATTACK_CROSSBOW = 0x348,
++    ANIM_FLY_ATTACK_CROSSBOW = 0x349,
++    ANIM_HOLD_CROSSBOW = 0x34A,
++    ANIM_FLY_HOLD_CROSSBOW = 0x34B,
++    ANIM_COMBAT_ABILITY_2HL_01 = 0x34C,
++    ANIM_FLY_COMBAT_ABILITY_2HL_01 = 0x34D,
++    ANIM_COMBAT_ABILITY_2HL_02 = 0x34E,
++    ANIM_FLY_COMBAT_ABILITY_2HL_02 = 0x34F,
++    ANIM_COMBAT_ABILITY_2HL_BIG_01 = 0x350,
++    ANIM_FLY_COMBAT_ABILITY_2HL_BIG_01 = 0x351,
++    ANIM_COMBAT_UNARMED_01 = 0x352,
++    ANIM_FLY_COMBAT_UNARMED_01 = 0x353,
++    ANIM_COMBAT_STOMP_LEFT = 0x354,
++    ANIM_FLY_COMBAT_STOMP_LEFT = 0x355,
++    ANIM_COMBAT_STOMP_RIGHT = 0x356,
++    ANIM_FLY_COMBAT_STOMP_RIGHT = 0x357,
++    ANIM_COMBAT_LEAP_LOOP = 0x358,
++    ANIM_FLY_COMBAT_LEAP_LOOP = 0x359,
++    ANIM_COMBAT_LEAP_END = 0x35A,
++    ANIM_FLY_COMBAT_LEAP_END = 0x35B,
++    ANIM_SHA_READY_SPELL_CAST = 0x35C,
++    ANIM_FLY_SHA_READY_SPELL_CAST = 0x35D,
++    ANIM_SHA_SPELL_PRECAST_BOTH_CHANNEL = 0x35E,
++    ANIM_FLY_SHA_SPELL_PRECAST_BOTH_CHANNEL = 0x35F,
++    ANIM_SHA_SPELL_CAST_BOTH_UP = 0x360,
++    ANIM_FLY_SHA_SPELL_CAST_BOTH_UP = 0x361,
++    ANIM_SHA_SPELL_CAST_BOTH_UP_CHANNEL = 0x362,
++    ANIM_FLY_SHA_SPELL_CAST_BOTH_UP_CHANNEL = 0x363,
++    ANIM_SHA_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x364,
++    ANIM_FLY_SHA_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x365,
++    ANIM_SHA_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x366,
++    ANIM_FLY_SHA_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x367,
++    ANIM_SHA_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x368,
++    ANIM_FLY_SHA_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x369,
++    ANIM_PRI_READY_SPELL_CAST = 0x36A,
++    ANIM_FLY_PRI_READY_SPELL_CAST = 0x36B,
++    ANIM_PRI_SPELL_PRECAST_BOTH = 0x36C,
++    ANIM_FLY_PRI_SPELL_PRECAST_BOTH = 0x36D,
++    ANIM_PRI_SPELL_PRECAST_BOTH_CHANNEL = 0x36E,
++    ANIM_FLY_PRI_SPELL_PRECAST_BOTH_CHANNEL = 0x36F,
++    ANIM_PRI_SPELL_CAST_BOTH_UP = 0x370,
++    ANIM_FLY_PRI_SPELL_CAST_BOTH_UP = 0x371,
++    ANIM_PRI_SPELL_CAST_BOTH_FRONT = 0x372,
++    ANIM_FLY_PRI_SPELL_CAST_BOTH_FRONT = 0x373,
++    ANIM_PRI_SPELL_CAST_LEFT_FRONT = 0x374,
++    ANIM_FLY_PRI_SPELL_CAST_LEFT_FRONT = 0x375,
++    ANIM_PRI_SPELL_CAST_RIGHT_FRONT = 0x376,
++    ANIM_FLY_PRI_SPELL_CAST_RIGHT_FRONT = 0x377,
++    ANIM_PRI_SPELL_CAST_BOTH_UP_CHANNEL = 0x378,
++    ANIM_FLY_PRI_SPELL_CAST_BOTH_UP_CHANNEL = 0x379,
++    ANIM_PRI_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x37A,
++    ANIM_FLY_PRI_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x37B,
++    ANIM_PRI_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x37C,
++    ANIM_FLY_PRI_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x37D,
++    ANIM_PRI_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x37E,
++    ANIM_FLY_PRI_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x37F,
++    ANIM_MAG_READY_SPELL_CAST = 0x380,
++    ANIM_FLY_MAG_READY_SPELL_CAST = 0x381,
++    ANIM_MAG_SPELL_PRECAST_BOTH = 0x382,
++    ANIM_FLY_MAG_SPELL_PRECAST_BOTH = 0x383,
++    ANIM_MAG_SPELL_PRECAST_BOTH_CHANNEL = 0x384,
++    ANIM_FLY_MAG_SPELL_PRECAST_BOTH_CHANNEL = 0x385,
++    ANIM_MAG_SPELL_CAST_BOTH_UP = 0x386,
++    ANIM_FLY_MAG_SPELL_CAST_BOTH_UP = 0x387,
++    ANIM_MAG_SPELL_CAST_BOTH_FRONT = 0x388,
++    ANIM_FLY_MAG_SPELL_CAST_BOTH_FRONT = 0x389,
++    ANIM_MAG_SPELL_CAST_LEFT_FRONT = 0x38A,
++    ANIM_FLY_MAG_SPELL_CAST_LEFT_FRONT = 0x38B,
++    ANIM_MAG_SPELL_CAST_RIGHT_FRONT = 0x38C,
++    ANIM_FLY_MAG_SPELL_CAST_RIGHT_FRONT = 0x38D,
++    ANIM_MAG_SPELL_CAST_BOTH_UP_CHANNEL = 0x38E,
++    ANIM_FLY_MAG_SPELL_CAST_BOTH_UP_CHANNEL = 0x38F,
++    ANIM_MAG_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x390,
++    ANIM_FLY_MAG_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x391,
++    ANIM_MAG_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x392,
++    ANIM_FLY_MAG_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x393,
++    ANIM_MAG_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x394,
++    ANIM_FLY_MAG_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x395,
++    ANIM_LOC_READY_SPELL_CAST = 0x396,
++    ANIM_FLY_LOC_READY_SPELL_CAST = 0x397,
++    ANIM_LOC_SPELL_PRECAST_BOTH = 0x398,
++    ANIM_FLY_LOC_SPELL_PRECAST_BOTH = 0x399,
++    ANIM_LOC_SPELL_PRECAST_BOTH_CHANNEL = 0x39A,
++    ANIM_FLY_LOC_SPELL_PRECAST_BOTH_CHANNEL = 0x39B,
++    ANIM_LOC_SPELL_CAST_BOTH_UP = 0x39C,
++    ANIM_FLY_LOC_SPELL_CAST_BOTH_UP = 0x39D,
++    ANIM_LOC_SPELL_CAST_BOTH_FRONT = 0x39E,
++    ANIM_FLY_LOC_SPELL_CAST_BOTH_FRONT = 0x39F,
++    ANIM_LOC_SPELL_CAST_LEFT_FRONT = 0x3A0,
++    ANIM_FLY_LOC_SPELL_CAST_LEFT_FRONT = 0x3A1,
++    ANIM_LOC_SPELL_CAST_RIGHT_FRONT = 0x3A2,
++    ANIM_FLY_LOC_SPELL_CAST_RIGHT_FRONT = 0x3A3,
++    ANIM_LOC_SPELL_CAST_BOTH_UP_CHANNEL = 0x3A4,
++    ANIM_FLY_LOC_SPELL_CAST_BOTH_UP_CHANNEL = 0x3A5,
++    ANIM_LOC_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x3A6,
++    ANIM_FLY_LOC_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x3A7,
++    ANIM_LOC_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x3A8,
++    ANIM_FLY_LOC_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x3A9,
++    ANIM_LOC_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x3AA,
++    ANIM_FLY_LOC_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x3AB,
++    ANIM_DRU_READY_SPELL_CAST = 0x3AC,
++    ANIM_FLY_DRU_READY_SPELL_CAST = 0x3AD,
++    ANIM_DRU_SPELL_PRECAST_BOTH = 0x3AE,
++    ANIM_FLY_DRU_SPELL_PRECAST_BOTH = 0x3AF,
++    ANIM_DRU_SPELL_PRECAST_BOTH_CHANNEL = 0x3B0,
++    ANIM_FLY_DRU_SPELL_PRECAST_BOTH_CHANNEL = 0x3B1,
++    ANIM_DRU_SPELL_CAST_BOTH_UP = 0x3B2,
++    ANIM_FLY_DRU_SPELL_CAST_BOTH_UP = 0x3B3,
++    ANIM_DRU_SPELL_CAST_BOTH_FRONT = 0x3B4,
++    ANIM_FLY_DRU_SPELL_CAST_BOTH_FRONT = 0x3B5,
++    ANIM_DRU_SPELL_CAST_LEFT_FRONT = 0x3B6,
++    ANIM_FLY_DRU_SPELL_CAST_LEFT_FRONT = 0x3B7,
++    ANIM_DRU_SPELL_CAST_RIGHT_FRONT = 0x3B8,
++    ANIM_FLY_DRU_SPELL_CAST_RIGHT_FRONT = 0x3B9,
++    ANIM_DRU_SPELL_CAST_BOTH_UP_CHANNEL = 0x3BA,
++    ANIM_FLY_DRU_SPELL_CAST_BOTH_UP_CHANNEL = 0x3BB,
++    ANIM_DRU_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x3BC,
++    ANIM_FLY_DRU_SPELL_CAST_BOTH_FRONT_CHANNEL = 0x3BD,
++    ANIM_DRU_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x3BE,
++    ANIM_FLY_DRU_SPELL_CAST_LEFT_FRONT_CHANNEL = 0x3BF,
++    ANIM_DRU_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x3C0,
++    ANIM_FLY_DRU_SPELL_CAST_RIGHT_FRONT_CHANNEL = 0x3C1,
++    ANIM_ART_MAIN_LOOP = 0x3C2,
++    ANIM_FLY_ART_MAIN_LOOP = 0x3C3,
++    ANIM_ART_DUAL_LOOP = 0x3C4,
++    ANIM_FLY_ART_DUAL_LOOP = 0x3C5,
++    ANIM_ART_FISTS_LOOP = 0x3C6,
++    ANIM_FLY_ART_FISTS_LOOP = 0x3C7,
++    ANIM_ART_BOW_LOOP = 0x3C8,
++    ANIM_FLY_ART_BOW_LOOP = 0x3C9,
++    ANIM_COMBAT_ABILITY_1H_01_OFF = 0x3CA,
++    ANIM_FLY_COMBAT_ABILITY_1H_01_OFF = 0x3CB,
++    ANIM_COMBAT_ABILITY_1H_02_OFF = 0x3CC,
++    ANIM_FLY_COMBAT_ABILITY_1H_02_OFF = 0x3CD,
++    ANIM_COMBAT_FURIOUS_STRIKE_01 = 0x3CE,
++    ANIM_FLY_COMBAT_FURIOUS_STRIKE_01 = 0x3CF,
++    ANIM_COMBAT_FURIOUS_STRIKE_02 = 0x3D0,
++    ANIM_FLY_COMBAT_FURIOUS_STRIKE_02 = 0x3D1,
++    ANIM_COMBAT_FURIOUS_STRIKES = 0x3D2,
++    ANIM_FLY_COMBAT_FURIOUS_STRIKES = 0x3D3,
++    ANIM_COMBAT_READY_SPELL_CAST = 0x3D4,
++    ANIM_FLY_COMBAT_READY_SPELL_CAST = 0x3D5,
++    ANIM_COMBAT_SHIELD_THROW = 0x3D6,
++    ANIM_FLY_COMBAT_SHIELD_THROW = 0x3D7,
++    ANIM_PAL_SPELL_CAST_1H_UP = 0x3D8,
++    ANIM_FLY_PAL_SPELL_CAST_1H_UP = 0x3D9,
++    ANIM_COMBAT_READY_POST_SPELL_CAST = 0x3DA,
++    ANIM_FLY_COMBAT_READY_POST_SPELL_CAST = 0x3DB,
++    ANIM_PRI_READY_POST_SPELL_CAST = 0x3DC,
++    ANIM_FLY_PRI_READY_POST_SPELL_CAST = 0x3DD,
++    ANIM_DH_COMBAT_RUN = 0x3DE,
++    ANIM_FLY_DH_COMBAT_RUN = 0x3DF,
++    ANIM_COMBAT_SHIELD_BASH = 0x3E0,
++    ANIM_FLY_COMBAT_SHIELD_BASH = 0x3E1,
++    ANIM_COMBAT_THROW = 0x3E2,
++    ANIM_FLY_COMBAT_THROW = 0x3E3,
++    ANIM_COMBAT_ABILITY_1H_PIERCE = 0x3E4,
++    ANIM_FLY_COMBAT_ABILITY_1H_PIERCE = 0x3E5,
++    ANIM_COMBAT_ABILITY_1H_OFF_PIERCE = 0x3E6,
++    ANIM_FLY_COMBAT_ABILITY_1H_OFF_PIERCE = 0x3E7,
++    ANIM_COMBAT_MUTILATE = 0x3E8,
++    ANIM_FLY_COMBAT_MUTILATE = 0x3E9,
++    ANIM_COMBAT_BLADE_STORM = 0x3EA,
++    ANIM_FLY_COMBAT_BLADE_STORM = 0x3EB,
++    ANIM_COMBAT_FINISHING_MOVE = 0x3EC,
++    ANIM_FLY_COMBAT_FINISHING_MOVE = 0x3ED,
++    ANIM_COMBAT_LEAP_START = 0x3EE,
++    ANIM_FLY_COMBAT_LEAP_START = 0x3EF,
++    ANIM_GLV_THROW_MAIN = 0x3F0,
++    ANIM_FLY_GLV_THROW_MAIN = 0x3F1,
++    ANIM_GLV_THROWN_OFF = 0x3F2,
++    ANIM_FLY_GLV_THROWN_OFF = 0x3F3,
++    ANIM_DH_COMBAT_SPRINT = 0x3F4,
++    ANIM_FLY_DH_COMBAT_SPRINT = 0x3F5,
++    ANIM_COMBAT_ABILITY_GLV_01 = 0x3F6,
++    ANIM_FLY_COMBAT_ABILITY_GLV_01 = 0x3F7,
++    ANIM_COMBAT_ABILITY_GLV_02 = 0x3F8,
++    ANIM_FLY_COMBAT_ABILITY_GLV_02 = 0x3F9,
++    ANIM_COMBAT_ABILITY_GLV_OFF_01 = 0x3FA,
++    ANIM_FLY_COMBAT_ABILITY_GLV_OFF_01 = 0x3FB,
++    ANIM_COMBAT_ABILITY_GLV_OFF_02 = 0x3FC,
++    ANIM_FLY_COMBAT_ABILITY_GLV_OFF_02 = 0x3FD,
++    ANIM_COMBAT_ABILITY_GLV_BIG_01 = 0x3FE,
++    ANIM_FLY_COMBAT_ABILITY_GLV_BIG_01 = 0x3FF,
++    ANIM_COMBAT_ABILITY_GLV_BIG_02 = 0x400,
++    ANIM_FLY_COMBAT_ABILITY_GLV_BIG_02 = 0x401,
++    ANIM_READY_GLV = 0x402,
++    ANIM_FLY_READY_GLV = 0x403,
++    ANIM_COMBAT_ABILITY_GLV_BIG_03 = 0x404,
++    ANIM_FLY_COMBAT_ABILITY_GLV_BIG_03 = 0x405,
++    ANIM_DOUBLE_JUMP_START = 0x406,
++    ANIM_FLY_DOUBLE_JUMP_START = 0x407,
++    ANIM_DOUBLE_JUMP = 0x408,
++    ANIM_FLY_DOUBLE_JUMP = 0x409,
++    ANIM_COMBAT_EVISCERATE = 0x40A,
++    ANIM_FLY_COMBAT_EVISCERATE = 0x40B,
++    ANIM_DOUBLE_JUMP_LAND_RUN = 0x40C,
++    ANIM_FLY_DOUBLE_JUMP_LAND_RUN = 0x40D,
++    ANIM_BACK_FLIP_START = 0x40E,
++    ANIM_FLY_BACK_FLIP_START = 0x40F,
++    ANIM_BACK_FLIP_LOOP = 0x410,
++    ANIM_FLY_BACK_FLIP_LOOP = 0x411,
++    ANIM_FEL_RUSH_LOOP = 0x412,
++    ANIM_FLY_FEL_RUSH_LOOP = 0x413,
++    ANIM_FEL_RUSH_END = 0x414,
++    ANIM_FLY_FEL_RUSH_END = 0x415,
++    ANIM_DH_TO_ALTERED_START = 0x416,
++    ANIM_FLY_DH_TO_ALTERED_START = 0x417,
++    ANIM_DH_TO_ALTERED_END = 0x418,
++    ANIM_FLY_DH_TO_ALTERED_END = 0x419,
++    ANIM_DH_GLIDE = 0x41A,
++    ANIM_FLY_DH_GLIDE = 0x41B,
++    ANIM_FAN_OF_KNIVES = 0x41C,
++    ANIM_FLY_FAN_OF_KNIVES = 0x41D,
++    ANIM_SINGLE_JUMP_START = 0x41E,
++    ANIM_FLY_SINGLE_JUMP_START = 0x41F,
++    ANIM_DH_BLADE_DANCE_1 = 0x420,
++    ANIM_FLY_DH_BLADE_DANCE_1 = 0x421,
++    ANIM_DH_BLADE_DANCE_2 = 0x422,
++    ANIM_FLY_DH_BLADE_DANCE_2 = 0x423,
++    ANIM_DH_BLADE_DANCE_3 = 0x424,
++    ANIM_FLY_DH_BLADE_DANCE_3 = 0x425,
++    ANIM_DH_METEOR_STRIKE = 0x426,
++    ANIM_FLY_DH_METEOR_STRIKE = 0x427,
++    ANIM_COMBAT_EXECUTE = 0x428,
++    ANIM_FLY_COMBAT_EXECUTE = 0x429,
++    ANIM_ART_LOOP = 0x42A,
++    ANIM_FLY_ART_LOOP = 0x42B,
++    ANIM_PARRY_GLV = 0x42C,
++    ANIM_FLY_PARRY_GLV = 0x42D,
++    ANIM_COMBAT_UNARMED_02 = 0x42E,
++    ANIM_FLY_COMBAT_UNARMED_02 = 0x42F,
++    ANIM_COMBAT_PISTOL_SHOT = 0x430,
++    ANIM_FLY_COMBAT_PISTOL_SHOT = 0x431,
++    ANIM_COMBAT_PISTOL_SHOT_OFF = 0x432,
++    ANIM_FLY_COMBAT_PISTOL_SHOT_OFF = 0x433,
++    ANIM_MONK_2HL_IDLE = 0x434,
++    ANIM_FLY_MONK_2HL_IDLE = 0x435,
++    ANIM_ART_SHIELD_LOOP = 0x436,
++    ANIM_FLY_ART_SHIELD_LOOP = 0x437,
++    ANIM_COMBAT_ABILITY_2H_03 = 0x438,
++    ANIM_FLY_COMBAT_ABILITY_2H_03 = 0x439,
++    ANIM_COMBAT_STOMP = 0x43A,
++    ANIM_FLY_COMBAT_STOMP = 0x43B,
++    ANIM_COMBAT_ROAR = 0x43C,
++    ANIM_FLY_COMBAT_ROAR = 0x43D,
++    ANIM_PAL_READY_SPELL_CAST = 0x43E,
++    ANIM_FLY_PAL_READY_SPELL_CAST = 0x43F,
++    ANIM_PAL_SPELL_PRECAST_RIGHT = 0x440,
++    ANIM_FLY_PAL_SPELL_PRECAST_RIGHT = 0x441,
++    ANIM_PAL_SPELL_PRECAST_RIGHT_CHANNEL = 0x442,
++    ANIM_FLY_PAL_SPELL_PRECAST_RIGHT_CHANNEL = 0x443,
++    ANIM_PAL_SPELL_CAST_RIGHT_FRONT = 0x444,
++    ANIM_FLY_PAL_SPELL_CAST_RIGHT_FRONT = 0x445,
++    ANIM_SHA_SPELL_CAST_BOTH_OUT = 0x446,
++    ANIM_FLY_SHA_SPELL_CAST_BOTH_OUT = 0x447,
++    ANIM_ATTACK_WEAPON = 0x448,
++    ANIM_FLY_ATTACK_WEAPON = 0x449,
++    ANIM_READY_WEAPON = 0x44A,
++    ANIM_FLY_READY_WEAPON = 0x44B,
++    ANIM_ATTACK_WEAPON_OFF = 0x44C,
++    ANIM_FLY_ATTACK_WEAPON_OFF = 0x44D,
++    ANIM_SPECIAL_DUAL = 0x44E,
++    ANIM_FLY_SPECIAL_DUAL = 0x44F,
++    ANIM_DK_CAST_1H_FRONT = 0x450,
++    ANIM_FLY_DK_CAST_1H_FRONT = 0x451,
++    ANIM_CAST_STRONG_RIGHT = 0x452,
++    ANIM_FLY_CAST_STRONG_RIGHT = 0x453,
++    ANIM_CAST_STRONG_LEFT = 0x454,
++    ANIM_FLY_CAST_STRONG_LEFT = 0x455,
++    ANIM_CAST_CURSE_RIGHT = 0x456,
++    ANIM_FLY_CAST_CURSE_RIGHT = 0x457,
++    ANIM_CAST_CURSE_LEFT = 0x458,
++    ANIM_FLY_CAST_CURSE_LEFT = 0x459,
++    ANIM_CAST_SWEEP_RIGHT = 0x45A,
++    ANIM_FLY_CAST_SWEEP_RIGHT = 0x45B,
++    ANIM_CAST_SWEEP_LEFT = 0x45C,
++    ANIM_FLY_CAST_SWEEP_LEFT = 0x45D,
++    ANIM_CAST_STRONG_UP_LEFT = 0x45E,
++    ANIM_FLY_CAST_STRONG_UP_LEFT = 0x45F,
++    ANIM_CAST_TWIST_UP_BOTH = 0x460,
++    ANIM_FLY_CAST_TWIST_UP_BOTH = 0x461,
++    ANIM_CAST_OUT_STRONG = 0x462,
++    ANIM_FLY_CAST_OUT_STRONG = 0x463,
++    ANIM_DRUM_LOOP = 0x464,
++    ANIM_FLY_DRUM_LOOP = 0x465,
++    ANIM_PARRY_WEAPON = 0x466,
++    ANIM_FLY_PARRY_WEAPON = 0x467,
++    ANIM_READY_FL = 0x468,
++    ANIM_FLY_READY_FL = 0x469,
++    ANIM_ATTACK_FL = 0x46A,
++    ANIM_FLY_ATTACK_FL = 0x46B,
++    ANIM_ATTACK_FL_OFF = 0x46C,
++    ANIM_FLY_ATTACK_FL_OFF = 0x46D,
++    ANIM_PARRY_FL = 0x46E,
++    ANIM_FLY_PARRY_FL = 0x46F,
++    ANIM_SPECIAL_FL = 0x470,
++    ANIM_FLY_SPECIAL_FL = 0x471,
++    ANIM_PRI_HOVER_FORWARD = 0x472,
++    ANIM_FLY_PRI_HOVER_FORWARD = 0x473,
++    ANIM_PRI_HOVER_BACKWARD = 0x474,
++    ANIM_FLY_PRI_HOVER_BACKWARD = 0x475,
++    ANIM_PRI_HOVER_RIGHT = 0x476,
++    ANIM_FLY_PRI_HOVER_RIGHT = 0x477,
++    ANIM_PRI_HOVER_LEFT = 0x478,
++    ANIM_FLY_PRI_HOVER_LEFT = 0x479,
++    ANIM_RUN_BACKWARDS = 0x47A,
++    ANIM_FLY_RUN_BACKWARDS = 0x47B,
++    ANIM_CAST_STRONG_UP_RIGHT = 0x47C,
++    ANIM_FLY_CAST_STRONG_UP_RIGHT = 0x47D,
++    ANIM_WA_WALK = 0x47E,
++    ANIM_FLY_WA_WALK = 0x47F,
++    ANIM_WA_RUN = 0x480,
++    ANIM_FLY_WA_RUN = 0x481,
++    ANIM_WA_DRUNK_STAND = 0x482,
++    ANIM_FLY_WA_DRUNK_STAND = 0x483,
++    ANIM_WA_DRUNK_SHUFFLE_LEFT = 0x484,
++    ANIM_FLY_WA_DRUNK_SHUFFLE_LEFT = 0x485,
++    ANIM_WA_DRUNK_SHUFFLE_RIGHT = 0x486,
++    ANIM_FLY_WA_DRUNK_SHUFFLE_RIGHT = 0x487,
++    ANIM_WA_DRUNK_WALK = 0x488,
++    ANIM_FLY_WA_DRUNK_WALK = 0x489,
++    ANIM_WA_DRUNK_WALK_BACKWARDS = 0x48A,
++    ANIM_FLY_WA_DRUNK_WALK_BACKWARDS = 0x48B,
++    ANIM_WA_DRUNK_WOUND = 0x48C,
++    ANIM_FLY_WA_DRUNK_WOUND = 0x48D,
++    ANIM_WA_DRUNK_TALK = 0x48E,
++    ANIM_FLY_WA_DRUNK_TALK = 0x48F,
++    ANIM_WA_TRANCE_01 = 0x490,
++    ANIM_FLY_WA_TRANCE_01 = 0x491,
++    ANIM_WA_TRANCE_02 = 0x492,
++    ANIM_FLY_WA_TRANCE_02 = 0x493,
++    ANIM_WA_CHANT_01 = 0x494,
++    ANIM_FLY_WA_CHANT_01 = 0x495,
++    ANIM_WA_CHANT_02 = 0x496,
++    ANIM_FLY_WA_CHANT_02 = 0x497,
++    ANIM_WA_CHANT_03 = 0x498,
++    ANIM_FLY_WA_CHANT_03 = 0x499,
++    ANIM_WA_HANG_01 = 0x49A,
++    ANIM_FLY_WA_HANG_01 = 0x49B,
++    ANIM_WA_HANG_02 = 0x49C,
++    ANIM_FLY_WA_HANG_02 = 0x49D,
++    ANIM_WA_SUMMON_01 = 0x49E,
++    ANIM_FLY_WA_SUMMON_01 = 0x49F,
++    ANIM_WA_SUMMON_02 = 0x4A0,
++    ANIM_FLY_WA_SUMMON_02 = 0x4A1,
++    ANIM_WA_BEGGAR_TALK = 0x4A2,
++    ANIM_FLY_WA_BEGGAR_TALK = 0x4A3,
++    ANIM_WA_BEGGAR_STAND = 0x4A4,
++    ANIM_FLY_WA_BEGGAR_STAND = 0x4A5,
++    ANIM_WA_BEGGAR_POINT = 0x4A6,
++    ANIM_FLY_WA_BEGGAR_POINT = 0x4A7,
++    ANIM_WA_BEGGAR_BEG = 0x4A8,
++    ANIM_FLY_WA_BEGGAR_BEG = 0x4A9,
++    ANIM_WA_SIT_01 = 0x4AA,
++    ANIM_FLY_WA_SIT_01 = 0x4AB,
++    ANIM_WA_SIT_02 = 0x4AC,
++    ANIM_FLY_WA_SIT_02 = 0x4AD,
++    ANIM_WA_SIT_03 = 0x4AE,
++    ANIM_FLY_WA_SIT_03 = 0x4AF,
++    ANIM_WA_CRIER_STAND_01 = 0x4B0,
++    ANIM_FLY_WA_CRIER_STAND_01 = 0x4B1,
++    ANIM_WA_CRIER_STAND_02 = 0x4B2,
++    ANIM_FLY_WA_CRIER_STAND_02 = 0x4B3,
++    ANIM_WA_CRIER_STAND_03 = 0x4B4,
++    ANIM_FLY_WA_CRIER_STAND_03 = 0x4B5,
++    ANIM_WA_CRIER_TALK = 0x4B6,
++    ANIM_FLY_WA_CRIER_TALK = 0x4B7,
++    ANIM_WA_CRATE_HOLD = 0x4B8,
++    ANIM_FLY_WA_CRATE_HOLD = 0x4B9,
++    ANIM_WA_BARREL_HOLD = 0x4BA,
++    ANIM_FLY_WA_BARREL_HOLD = 0x4BB,
++    ANIM_WA_SACK_HOLD = 0x4BC,
++    ANIM_FLY_WA_SACK_HOLD = 0x4BD,
++    ANIM_WA_WHEEL_BARROW_STAND = 0x4BE,
++    ANIM_FLY_WA_WHEEL_BARROW_STAND = 0x4BF,
++    ANIM_WA_WHEEL_BARROW_WALK = 0x4C0,
++    ANIM_FLY_WA_WHEEL_BARROW_WALK = 0x4C1,
++    ANIM_WA_WHEEL_BARROW_RUN = 0x4C2,
++    ANIM_FLY_WA_WHEEL_BARROW_RUN = 0x4C3,
++    ANIM_WA_HAMMER_LOOP = 0x4C4,
++    ANIM_FLY_WA_HAMMER_LOOP = 0x4C5,
++    ANIM_WA_CRANK_LOOP = 0x4C6,
++    ANIM_FLY_WA_CRANK_LOOP = 0x4C7,
++    ANIM_WA_POUR_START = 0x4C8,
++    ANIM_FLY_WA_POUR_START = 0x4C9,
++    ANIM_WA_POUR_LOOP = 0x4CA,
++    ANIM_FLY_WA_POUR_LOOP = 0x4CB,
++    ANIM_WA_POUR_END = 0x4CC,
++    ANIM_FLY_WA_POUR_END = 0x4CD,
++    ANIM_WA_EMOTE_POUR = 0x4CE,
++    ANIM_FLY_WA_EMOTE_POUR = 0x4CF,
++    ANIM_WA_ROWING_STAND_RIGHT = 0x4D0,
++    ANIM_FLY_WA_ROWING_STAND_RIGHT = 0x4D1,
++    ANIM_WA_ROWING_STAND_LEFT = 0x4D2,
++    ANIM_FLY_WA_ROWING_STAND_LEFT = 0x4D3,
++    ANIM_WA_ROWING_RIGHT = 0x4D4,
++    ANIM_FLY_WA_ROWING_RIGHT = 0x4D5,
++    ANIM_WA_ROWING_LEFT = 0x4D6,
++    ANIM_FLY_WA_ROWING_LEFT = 0x4D7,
++    ANIM_WA_GUARD_STAND_01 = 0x4D8,
++    ANIM_FLY_WA_GUARD_STAND_01 = 0x4D9,
++    ANIM_WA_GUARD_STAND_02 = 0x4DA,
++    ANIM_FLY_WA_GUARD_STAND_02 = 0x4DB,
++    ANIM_WA_GUARD_STAND_03 = 0x4DC,
++    ANIM_FLY_WA_GUARD_STAND_03 = 0x4DD,
++    ANIM_WA_GUARD_STAND_04 = 0x4DE,
++    ANIM_FLY_WA_GUARD_STAND_04 = 0x4DF,
++    ANIM_WA_FREEZING_01 = 0x4E0,
++    ANIM_FLY_WA_FREEZING_01 = 0x4E1,
++    ANIM_WA_FREEZING_02 = 0x4E2,
++    ANIM_FLY_WA_FREEZING_02 = 0x4E3,
++    ANIM_WA_VENDOR_STAND_01 = 0x4E4,
++    ANIM_FLY_WA_VENDOR_STAND_01 = 0x4E5,
++    ANIM_WA_VENDOR_STAND_02 = 0x4E6,
++    ANIM_FLY_WA_VENDOR_STAND_02 = 0x4E7,
++    ANIM_WA_VENDOR_STAND_03 = 0x4E8,
++    ANIM_FLY_WA_VENDOR_STAND_03 = 0x4E9,
++    ANIM_WA_VENDOR_TALK = 0x4EA,
++    ANIM_FLY_WA_VENDOR_TALK = 0x4EB,
++    ANIM_WA_LEAN_01 = 0x4EC,
++    ANIM_FLY_WA_LEAN_01 = 0x4ED,
++    ANIM_WA_LEAN_02 = 0x4EE,
++    ANIM_FLY_WA_LEAN_02 = 0x4EF,
++    ANIM_WA_LEAN_03 = 0x4F0,
++    ANIM_FLY_WA_LEAN_03 = 0x4F1,
++    ANIM_WA_LEAN_TALK = 0x4F2,
++    ANIM_FLY_WA_LEAN_TALK = 0x4F3,
++    ANIM_WA_BOAT_WHEEL = 0x4F4,
++    ANIM_FLY_WA_BOAT_WHEEL = 0x4F5,
++    ANIM_WA_SMITH_LOOP = 0x4F6,
++    ANIM_FLY_WA_SMITH_LOOP = 0x4F7,
++    ANIM_WA_SCRUBBING = 0x4F8,
++    ANIM_FLY_WA_SCRUBBING = 0x4F9,
++    ANIM_WA_WEAPON_SHARPEN = 0x4FA,
++    ANIM_FLY_WA_WEAPON_SHARPEN = 0x4FB,
++    ANIM_WA_STIRRING = 0x4FC,
++    ANIM_FLY_WA_STIRRING = 0x4FD,
++    ANIM_WA_PERCH_01 = 0x4FE,
++    ANIM_FLY_WA_PERCH_01 = 0x4FF,
++    ANIM_WA_PERCH_02 = 0x500,
++    ANIM_FLY_WA_PERCH_02 = 0x501,
++    ANIM_HOLD_WEAPON = 0x502,
++    ANIM_FLY_HOLD_WEAPON = 0x503,
++    ANIM_WA_BARREL_WALK = 0x504,
++    ANIM_FLY_WA_BARREL_WALK = 0x505,
++    ANIM_WA_POUR_HOLD = 0x506,
++    ANIM_FLY_WA_POUR_HOLD = 0x507,
++    ANIM_CAST_STRONG = 0x508,
++    ANIM_FLY_CAST_STRONG = 0x509,
++    ANIM_CAST_CURSE = 0x50A,
++    ANIM_FLY_CAST_CURSE = 0x50B,
++    ANIM_CAST_SWEEP = 0x50C,
++    ANIM_FLY_CAST_SWEEP = 0x50D,
++    ANIM_CAST_STRONG_UP = 0x50E,
++    ANIM_FLY_CAST_STRONG_UP = 0x50F,
++    ANIM_WA_BOAT_WHEEL_STAND = 0x510,
++    ANIM_FLY_WA_BOAT_WHEEL_STAND = 0x511,
++    ANIM_WA_SMITH_STAND = 0x512,
++    ANIM_FLY_WA_SMITH_STAND = 0x513,
++    ANIM_WA_CRANK_STAND = 0x514,
++    ANIM_FLY_WA_CRANK_STAND = 0x515,
++    ANIM_WA_POUR_WALK = 0x516,
++    ANIM_FLY_WA_POUR_WALK = 0x517,
++    ANIM_FALCONEER_START = 0x518,
++    ANIM_FLY_FALCONEER_START = 0x519,
++    ANIM_FALCONEER_LOOP = 0x51A,
++    ANIM_FLY_FALCONEER_LOOP = 0x51B,
++    ANIM_FALCONEER_END = 0x51C,
++    ANIM_FLY_FALCONEER_END = 0x51D,
++    ANIM_WA_DRUNK_DRINK = 0x51E,
++    ANIM_FLY_WA_DRUNK_DRINK = 0x51F,
++    ANIM_WA_STAND_EAT = 0x520,
++    ANIM_FLY_WA_STAND_EAT = 0x521,
++    ANIM_WA_STAND_DRINK = 0x522,
++    ANIM_FLY_WA_STAND_DRINK = 0x523,
++    ANIM_WA_BOUND_01 = 0x524,
++    ANIM_FLY_WA_BOUND_01 = 0x525,
++    ANIM_WA_BOUND_02 = 0x526,
++    ANIM_FLY_WA_BOUND_02 = 0x527,
++    ANIM_COMBAT_ABILITY_1H_03_OFF = 0x528,
++    ANIM_FLY_COMBAT_ABILITY_1H_03_OFF = 0x529,
++    ANIM_COMBAT_ABILITY_DUAL_WIELD_01 = 0x52A,
++    ANIM_FLY_COMBAT_ABILITY_DUAL_WIELD_01 = 0x52B,
++    ANIM_WA_CRADLE_01 = 0x52C,
++    ANIM_FLY_WA_CRADLE_01 = 0x52D,
++    ANIM_LOC_SUMMON = 0x52E,
++    ANIM_FLY_LOC_SUMMON = 0x52F,
++    ANIM_LOAD_WEAPON = 0x530,
++    ANIM_FLY_LOAD_WEAPON = 0x531,
++    ANIM_ART_OFF_LOOP = 0x532,
++    ANIM_FLY_ART_OFF_LOOP = 0x533,
++    ANIM_WA_DEAD_01 = 0x534,
++    ANIM_FLY_WA_DEAD_01 = 0x535,
++    ANIM_WA_DEAD_02 = 0x536,
++    ANIM_FLY_WA_DEAD_02 = 0x537,
++    ANIM_WA_DEAD_03 = 0x538,
++    ANIM_FLY_WA_DEAD_03 = 0x539,
++    ANIM_WA_DEAD_04 = 0x53A,
++    ANIM_FLY_WA_DEAD_04 = 0x53B,
++    ANIM_WA_DEAD_05 = 0x53C,
++    ANIM_FLY_WA_DEAD_05 = 0x53D,
++    ANIM_WA_DEAD_06 = 0x53E,
++    ANIM_FLY_WA_DEAD_06 = 0x53F,
++    ANIM_WA_DEAD_07 = 0x540,
++    ANIM_FLY_WA_DEAD_07 = 0x541,
++    ANIM_GIANT_RUN = 0x542,
++    ANIM_FLY_GIANT_RUN = 0x543,
++    ANIM_BAR_TEND_EMOTE_CHEER = 0x544,
++    ANIM_FLY_BAR_TEND_EMOTE_CHEER = 0x545,
++    ANIM_BAR_TEND_EMOTE_TALK_QUESTION = 0x546,
++    ANIM_FLY_BAR_TEND_EMOTE_TALK_QUESTION = 0x547,
++    ANIM_BAR_TEND_EMOTE_TALK_EXCLAMATION = 0x548,
++    ANIM_FLY_BAR_TEND_EMOTE_TALK_EXCLAMATION = 0x549,
++    ANIM_BAR_TEND_WALK = 0x54A,
++    ANIM_FLY_BAR_TEND_WALK = 0x54B,
++    ANIM_BARTEND_SHUFFLE_LEFT = 0x54C,
++    ANIM_FLY_BARTEND_SHUFFLE_LEFT = 0x54D,
++    ANIM_BAR_TEND_SHUFFLE_RIGHT = 0x54E,
++    ANIM_FLY_BAR_TEND_SHUFFLE_RIGHT = 0x54F,
++    ANIM_BAR_TEND_CUSTOM_SPELL_01 = 0x550,
++    ANIM_FLY_BAR_TEND_CUSTOM_SPELL_01 = 0x551,
++    ANIM_BAR_TEND_CUSTOM_SPELL_02 = 0x552,
++    ANIM_FLY_BAR_TEND_CUSTOM_SPELL_02 = 0x553,
++    ANIM_BAR_TEND_CUSTOM_SPELL_03 = 0x554,
++    ANIM_FLY_BAR_TEND_CUSTOM_SPELL_03 = 0x555,
++    ANIM_BAR_SERVER_EMOTE_CHEER = 0x556,
++    ANIM_FLY_BAR_SERVER_EMOTE_CHEER = 0x557,
++    ANIM_BAR_SERVER_EMOTE_TALK_QUESTION = 0x558,
++    ANIM_FLY_BAR_SERVER_EMOTE_TALK_QUESTION = 0x559,
++    ANIM_BAR_SERVER_EMOTE_TALK_EXCLAMATION = 0x55A,
++    ANIM_FLY_BAR_SERVER_EMOTE_TALK_EXCLAMATION = 0x55B,
++    ANIM_BAR_SERVER_CUSTOM_SPELL_01 = 0x55C,
++    ANIM_FLY_BAR_SERVER_CUSTOM_SPELL_01 = 0x55D,
++    ANIM_BAR_SERVER_CUSTOM_SPELL_02 = 0x55E,
++    ANIM_FLY_BAR_SERVER_CUSTOM_SPELL_02 = 0x55F,
++    ANIM_BAR_SERVER_CUSTOM_SPELL_03 = 0x560,
++    ANIM_FLY_BAR_SERVER_CUSTOM_SPELL_03 = 0x561,
++    ANIM_BAR_PATRON_EMOTE_DRINK = 0x562,
++    ANIM_FLY_BAR_PATRON_EMOTE_DRINK = 0x563,
++    ANIM_BAR_PATRON_EMOTE_CHEER = 0x564,
++    ANIM_FLY_BAR_PATRON_EMOTE_CHEER = 0x565,
++    ANIM_BAR_PATRON_CUSTOM_SPELL_01 = 0x566,
++    ANIM_FLY_BAR_PATRON_CUSTOM_SPELL_01 = 0x567,
++    ANIM_BAR_PATRON_CUSTOM_SPELL_02 = 0x568,
++    ANIM_FLY_BAR_PATRON_CUSTOM_SPELL_02 = 0x569,
++    ANIM_BAR_PATRON_CUSTOM_SPELL_03 = 0x56A,
++    ANIM_FLY_BAR_PATRON_CUSTOM_SPELL_03 = 0x56B,
++    ANIM_HOLD_DART = 0x56C,
++    ANIM_FLY_HOLD_DART = 0x56D,
++    ANIM_READY_DART = 0x56E,
++    ANIM_FLY_READY_DART = 0x56F,
++    ANIM_ATTACK_DART = 0x570,
++    ANIM_FLY_ATTACK_DART = 0x571,
++    ANIM_LOAD_DART = 0x572,
++    ANIM_FLY_LOAD_DART = 0x573,
++    ANIM_WA_DART_TARGET_STAND = 0x574,
++    ANIM_FLY_WA_DART_TARGET_STAND = 0x575,
++    ANIM_WA_DART_TARGET_EMOTE_TALK = 0x576,
++    ANIM_FLY_WA_DART_TARGET_EMOTE_TALK = 0x577,
++    ANIM_BAR_PATRON_SIT_EMOTE_CHEER = 0x578,
++    ANIM_FLY_BAR_PATRON_SIT_EMOTE_CHEER = 0x579,
++    ANIM_BAR_PATRON_SIT_CUSTOM_SPELL_01 = 0x57A,
++    ANIM_FLY_BAR_PATRON_SIT_CUSTOM_SPELL_01 = 0x57B,
++    ANIM_BAR_PATRON_SIT_CUSTOM_SPELL_02 = 0x57C,
++    ANIM_FLY_BAR_PATRON_SIT_CUSTOM_SPELL_02 = 0x57D,
++    ANIM_BAR_PATRON_SIT_CUSTOM_SPELL_03 = 0x57E,
++    ANIM_FLY_BAR_PATRON_SIT_CUSTOM_SPELL_03 = 0x57F,
++    ANIM_BAR_PIANO_STAND = 0x580,
++    ANIM_FLY_BAR_PIANO_STAND = 0x581,
++    ANIM_BAR_PIANO_EMOTE_TALK = 0x582,
++    ANIM_FLY_BAR_PIANO_EMOTE_TALK = 0x583,
++    ANIM_WA_HEARTH_SIT = 0x584,
++    ANIM_FLY_WA_HEARTH_SIT = 0x585,
++    ANIM_WA_HEARTH_SIT_EMOTE_CRY = 0x586,
++    ANIM_FLY_WA_HEARTH_SIT_EMOTE_CRY = 0x587,
++    ANIM_WA_HEARTH_SIT_EMOTE_CHEER = 0x588,
++    ANIM_FLY_WA_HEARTH_SIT_EMOTE_CHEER = 0x589,
++    ANIM_WA_HEARTH_SIT_CUSTOM_SPELL_01 = 0x58A,
++    ANIM_FLY_WA_HEARTH_SIT_CUSTOM_SPELL_01 = 0x58B,
++    ANIM_WA_HEARTH_SIT_CUSTOM_SPELL_02 = 0x58C,
++    ANIM_FLY_WA_HEARTH_SIT_CUSTOM_SPELL_02 = 0x58D,
++    ANIM_WA_HEARTH_SIT_CUSTOM_SPELL_03 = 0x58E,
++    ANIM_FLY_WA_HEARTH_SIT_CUSTOM_SPELL_03 = 0x58F,
++    ANIM_WA_HEARTH_STAND = 0x590,
++    ANIM_FLY_WA_HEARTH_STAND = 0x591,
++    ANIM_WA_HEARTH_STAND_EMOTE_CHEER = 0x592,
++    ANIM_FLY_WA_HEARTH_STAND_EMOTE_CHEER = 0x593,
++    ANIM_WA_HEARTH_STAND_EMOTE_TALK = 0x594,
++    ANIM_FLY_WA_HEARTH_STAND_EMOTE_TALK = 0x595,
++    ANIM_WA_HEARTH_STAND_CUSTOM_SPELL_01 = 0x596,
++    ANIM_FLY_WA_HEARTH_STAND_CUSTOM_SPELL_01 = 0x597,
++    ANIM_WA_HEARTH_STAND_CUSTOM_SPELL_02 = 0x598,
++    ANIM_FLY_WA_HEARTH_STAND_CUSTOM_SPELL_02 = 0x599,
++    ANIM_WA_HEARTH_STAND_CUSTOM_SPELL_03 = 0x59A,
++    ANIM_FLY_WA_HEARTH_STAND_CUSTOM_SPELL_03 = 0x59B,
++    ANIM_WA_SCRIBE_START = 0x59C,
++    ANIM_FLY_WA_SCRIBE_START = 0x59D,
++    ANIM_WA_SCRIBE_LOOP = 0x59E,
++    ANIM_FLY_WA_SCRIBE_LOOP = 0x59F,
++    ANIM_WA_SCRIBE_END = 0x5A0,
++    ANIM_FLY_WA_SCRIBE_END = 0x5A1,
++    ANIM_WA_EMOTE_SCRIBE = 0x5A2,
++    ANIM_FLY_WA_EMOTE_SCRIBE = 0x5A3,
++    ANIM_HAYMAKER = 0x5A4,
++    ANIM_FLY_HAYMAKER = 0x5A5,
++    ANIM_HAYMAKER_PRECAST = 0x5A6,
++    ANIM_FLY_HAYMAKER_PRECAST = 0x5A7,
++    ANIM_CHANNEL_CAST_OMNI_UP = 0x5A8,
++    ANIM_FLY_CHANNEL_CAST_OMNI_UP = 0x5A9,
++    ANIM_DH_JUMP_LAND_RUN = 0x5AA,
++    ANIM_FLY_DH_JUMP_LAND_RUN = 0x5AB,
++    ANIM_CINEMATIC_01 = 0x5AC,
++    ANIM_FLY_CINEMATIC_01 = 0x5AD,
++    ANIM_CINEMATIC_02 = 0x5AE,
++    ANIM_FLY_CINEMATIC_02 = 0x5AF,
++    ANIM_CINEMATIC_03 = 0x5B0,
++    ANIM_FLY_CINEMATIC_03 = 0x5B1,
++    ANIM_CINEMATIC_04 = 0x5B2,
++    ANIM_FLY_CINEMATIC_04 = 0x5B3,
++    ANIM_CINEMATIC_05 = 0x5B4,
++    ANIM_FLY_CINEMATIC_05 = 0x5B5,
++    ANIM_CINEMATIC_06 = 0x5B6,
++    ANIM_FLY_CINEMATIC_06 = 0x5B7,
++    ANIM_CINEMATIC_07 = 0x5B8,
++    ANIM_FLY_CINEMATIC_07 = 0x5B9,
++    ANIM_CINEMATIC_08 = 0x5BA,
++    ANIM_FLY_CINEMATIC_08 = 0x5BB,
++    ANIM_CINEMATIC_09 = 0x5BC,
++    ANIM_FLY_CINEMATIC_09 = 0x5BD,
++    ANIM_CINEMATIC_10 = 0x5BE,
++    ANIM_FLY_CINEMATIC_10 = 0x5BF,
++    ANIM_TAKE_OFF_START = 0x5C0,
++    ANIM_FLY_TAKE_OFF_START = 0x5C1,
++    ANIM_TAKE_OFF_FINISH = 0x5C2,
++    ANIM_FLY_TAKE_OFF_FINISH = 0x5C3,
++    ANIM_LAND_START = 0x5C4,
++    ANIM_FLY_LAND_START = 0x5C5,
++    ANIM_LAND_FINISH = 0x5C6,
++    ANIM_FLY_LAND_FINISH = 0x5C7,
++    ANIM_WA_WALK_TALK = 0x5C8,
++    ANIM_FLY_WA_WALK_TALK = 0x5C9,
++    ANIM_WA_PERCH_03 = 0x5CA,
++    ANIM_FLY_WA_PERCH_03 = 0x5CB,
++    ANIM_CARRIAGE_MOUNT_MOVING = 0x5CC,
++    ANIM_FLY_CARRIAGE_MOUNT_MOVING = 0x5CD,
++    ANIM_TAKE_OFF_FINISH_FLY = 0x5CE,
++    ANIM_FLY_TAKE_OFF_FINISH_FLY = 0x5CF,
++    ANIM_COMBAT_ABILITY_2H_BIG_02 = 0x5D0,
++    ANIM_FLY_COMBAT_ABILITY_2H_BIG_02 = 0x5D1,
++    ANIM_MOUNT_WIDE = 0x5D2,
++    ANIM_FLY_MOUNT_WIDE = 0x5D3,
++    ANIM_UNNAMED_1492 = 0x5D4,
++    ANIM_UNNAMED_1493 = 0x5D5,
++    ANIM_UNNAMED_1494 = 0x5D6,
++    ANIM_UNNAMED_1495 = 0x5D7,
++    ANIM_UNNAMED_1496 = 0x5D8,
++    ANIM_UNNAMED_1497 = 0x5D9,
++    ANIM_UNNAMED_1498 = 0x5DA,
++    ANIM_UNNAMED_1499 = 0x5DB,
++    ANIM_UNNAMED_1500 = 0x5DC,
++    ANIM_UNNAMED_1501 = 0x5DD,
++    ANIM_UNNAMED_1502 = 0x5DE,
++    ANIM_UNNAMED_1503 = 0x5DF,
++    ANIM_UNNAMED_1504 = 0x5E0,
++    ANIM_UNNAMED_1505 = 0x5E1,
++    ANIM_UNNAMED_1506 = 0x5E2,
++    ANIM_UNNAMED_1507 = 0x5E3,
++    ANIM_UNNAMED_1508 = 0x5E4,
++    ANIM_UNNAMED_1509 = 0x5E5,
++    ANIM_UNNAMED_1510 = 0x5E6,
++    ANIM_UNNAMED_1511 = 0x5E7,
++    ANIM_UNNAMED_1512 = 0x5E8,
++    ANIM_UNNAMED_1513 = 0x5E9,
++    ANIM_UNNAMED_1514 = 0x5EA,
++    ANIM_UNNAMED_1515 = 0x5EB,
++    ANIM_UNNAMED_1516 = 0x5EC,
++    ANIM_UNNAMED_1517 = 0x5ED,
++    ANIM_UNNAMED_1518 = 0x5EE,
++    ANIM_UNNAMED_1519 = 0x5EF,
++    ANIM_UNNAMED_1520 = 0x5F0,
++    ANIM_UNNAMED_1521 = 0x5F1,
++    ANIM_UNNAMED_1522 = 0x5F2,
++    ANIM_UNNAMED_1523 = 0x5F3,
++    ANIM_UNNAMED_1524 = 0x5F4,
++    ANIM_UNNAMED_1525 = 0x5F5,
++    ANIM_UNNAMED_1526 = 0x5F6,
++    ANIM_UNNAMED_1527 = 0x5F7,
++    ANIM_UNNAMED_1528 = 0x5F8,
++    ANIM_UNNAMED_1529 = 0x5F9,
++    ANIM_UNNAMED_1530 = 0x5FA,
++    ANIM_UNNAMED_1531 = 0x5FB,
++    ANIM_UNNAMED_1532 = 0x5FC,
++    ANIM_UNNAMED_1533 = 0x5FD,
++    ANIM_UNNAMED_1534 = 0x5FE,
++    ANIM_UNNAMED_1535 = 0x5FF,
++    ANIM_UNNAMED_1536 = 0x600,
++    ANIM_UNNAMED_1537 = 0x601,
++    ANIM_UNNAMED_1538 = 0x602,
++    ANIM_UNNAMED_1539 = 0x603,
++    ANIM_UNNAMED_1540 = 0x604,
++    ANIM_UNNAMED_1541 = 0x605,
++    ANIM_UNNAMED_1542 = 0x606,
++    ANIM_UNNAMED_1543 = 0x607,
++    ANIM_UNNAMED_1544 = 0x608,
++    ANIM_UNNAMED_1545 = 0x609,
++    ANIM_UNNAMED_1546 = 0x60A,
++    ANIM_UNNAMED_1547 = 0x60B,
++    ANIM_UNNAMED_1548 = 0x60C,
++    ANIM_UNNAMED_1549 = 0x60D,
++    ANIM_UNNAMED_1550 = 0x60E,
++    ANIM_UNNAMED_1551 = 0x60F,
++    ANIM_UNNAMED_1552 = 0x610,
++    ANIM_UNNAMED_1553 = 0x611,
++    ANIM_UNNAMED_1554 = 0x612,
++    ANIM_UNNAMED_1555 = 0x613,
++    ANIM_UNNAMED_1556 = 0x614,
++    ANIM_UNNAMED_1557 = 0x615,
++    ANIM_UNNAMED_1558 = 0x616,
++    ANIM_UNNAMED_1559 = 0x617,
++    ANIM_UNNAMED_1560 = 0x618,
++    ANIM_UNNAMED_1561 = 0x619,
++    ANIM_UNNAMED_1562 = 0x61A,
++    ANIM_UNNAMED_1563 = 0x61B,
++    ANIM_UNNAMED_1564 = 0x61C,
++    ANIM_UNNAMED_1565 = 0x61D,
++    ANIM_UNNAMED_1566 = 0x61E,
++    ANIM_UNNAMED_1567 = 0x61F,
++    ANIM_UNNAMED_1568 = 0x620,
++    ANIM_UNNAMED_1569 = 0x621,
++    ANIM_UNNAMED_1570 = 0x622,
++    ANIM_UNNAMED_1571 = 0x623,
++    ANIM_UNNAMED_1572 = 0x624,
++    ANIM_UNNAMED_1573 = 0x625,
++    ANIM_UNNAMED_1574 = 0x626,
++    ANIM_UNNAMED_1575 = 0x627,
++    ANIM_UNNAMED_1576 = 0x628,
++    ANIM_UNNAMED_1577 = 0x629,
++    ANIM_UNNAMED_1578 = 0x62A,
++    ANIM_UNNAMED_1579 = 0x62B,
++    ANIM_UNNAMED_1580 = 0x62C,
++    ANIM_UNNAMED_1581 = 0x62D,
++    ANIM_UNNAMED_1582 = 0x62E,
++    ANIM_UNNAMED_1583 = 0x62F,
++    ANIM_UNNAMED_1584 = 0x630,
++    ANIM_UNNAMED_1585 = 0x631,
++    ANIM_UNNAMED_1586 = 0x632,
++    ANIM_UNNAMED_1587 = 0x633,
++    ANIM_UNNAMED_1588 = 0x634,
++    ANIM_UNNAMED_1589 = 0x635,
++    ANIM_UNNAMED_1590 = 0x636,
++    ANIM_UNNAMED_1591 = 0x637,
++    ANIM_UNNAMED_1592 = 0x638,
++    ANIM_UNNAMED_1593 = 0x639,
++    ANIM_UNNAMED_1594 = 0x63A,
++    ANIM_UNNAMED_1595 = 0x63B,
++    ANIM_UNNAMED_1596 = 0x63C,
++    ANIM_UNNAMED_1597 = 0x63D,
++    ANIM_UNNAMED_1598 = 0x63E,
++    ANIM_UNNAMED_1599 = 0x63F,
++    ANIM_UNNAMED_1600 = 0x640,
++    ANIM_UNNAMED_1601 = 0x641,
++    ANIM_UNNAMED_1602 = 0x642,
++    ANIM_UNNAMED_1603 = 0x643,
++    ANIM_UNNAMED_1604 = 0x644,
++    ANIM_UNNAMED_1605 = 0x645,
++    ANIM_UNNAMED_1606 = 0x646,
++    ANIM_UNNAMED_1607 = 0x647,
++    ANIM_UNNAMED_1608 = 0x648,
++    ANIM_UNNAMED_1609 = 0x649,
++    ANIM_UNNAMED_1610 = 0x64A,
++    ANIM_UNNAMED_1611 = 0x64B,
++    ANIM_UNNAMED_1612 = 0x64C,
++    ANIM_UNNAMED_1613 = 0x64D,
++    ANIM_UNNAMED_1614 = 0x64E,
++    ANIM_UNNAMED_1615 = 0x64F,
++    ANIM_UNNAMED_1616 = 0x650,
++    ANIM_UNNAMED_1617 = 0x651,
++    ANIM_UNNAMED_1618 = 0x652,
++    ANIM_UNNAMED_1619 = 0x653,
++    ANIM_UNNAMED_1620 = 0x654,
++    ANIM_UNNAMED_1621 = 0x655,
++    ANIM_UNNAMED_1622 = 0x656,
++    ANIM_UNNAMED_1623 = 0x657,
++    ANIM_UNNAMED_1624 = 0x658,
++    ANIM_UNNAMED_1625 = 0x659,
++    ANIM_UNNAMED_1626 = 0x65A,
++    ANIM_UNNAMED_1627 = 0x65B,
++    ANIM_UNNAMED_1628 = 0x65C,
++    ANIM_UNNAMED_1629 = 0x65D,
++    ANIM_UNNAMED_1630 = 0x65E,
++    ANIM_UNNAMED_1631 = 0x65F,
++    ANIM_UNNAMED_1632 = 0x660,
++    ANIM_UNNAMED_1633 = 0x661,
++    ANIM_UNNAMED_1634 = 0x662,
++    ANIM_UNNAMED_1635 = 0x663,
++    ANIM_UNNAMED_1636 = 0x664,
++    ANIM_UNNAMED_1637 = 0x665,
++    ANIM_UNNAMED_1638 = 0x666,
++    ANIM_UNNAMED_1639 = 0x667,
++    ANIM_UNNAMED_1640 = 0x668,
++    ANIM_UNNAMED_1641 = 0x669,
++    ANIM_UNNAMED_1642 = 0x66A,
++    ANIM_UNNAMED_1643 = 0x66B,
++    ANIM_UNNAMED_1644 = 0x66C,
++    ANIM_UNNAMED_1645 = 0x66D,
++    ANIM_UNNAMED_1646 = 0x66E,
++    ANIM_UNNAMED_1647 = 0x66F,
++    ANIM_UNNAMED_1648 = 0x670,
++    ANIM_UNNAMED_1649 = 0x671,
++    ANIM_UNNAMED_1650 = 0x672,
++    ANIM_UNNAMED_1651 = 0x673,
++    ANIM_UNNAMED_1652 = 0x674,
++    ANIM_UNNAMED_1653 = 0x675,
++    ANIM_UNNAMED_1654 = 0x676,
++    ANIM_UNNAMED_1655 = 0x677,
++    ANIM_UNNAMED_1656 = 0x678,
++    ANIM_UNNAMED_1657 = 0x679,
++    ANIM_UNNAMED_1658 = 0x67A,
++    ANIM_UNNAMED_1659 = 0x67B,
++    ANIM_UNNAMED_1660 = 0x67C,
++    ANIM_UNNAMED_1661 = 0x67D,
++    ANIM_UNNAMED_1662 = 0x67E,
++    ANIM_UNNAMED_1663 = 0x67F,
++    ANIM_UNNAMED_1664 = 0x680,
++    ANIM_UNNAMED_1665 = 0x681,
++    ANIM_UNNAMED_1666 = 0x682,
++    ANIM_UNNAMED_1667 = 0x683,
++    ANIM_UNNAMED_1668 = 0x684,
++    ANIM_UNNAMED_1669 = 0x685,
++    ANIM_UNNAMED_1670 = 0x686,
++    ANIM_UNNAMED_1671 = 0x687,
++    ANIM_UNNAMED_1672 = 0x688,
++    ANIM_UNNAMED_1673 = 0x689,
++    ANIM_UNNAMED_1674 = 0x68A,
++    ANIM_UNNAMED_1675 = 0x68B,
++    ANIM_UNNAMED_1676 = 0x68C,
++    ANIM_UNNAMED_1677 = 0x68D,
++    ANIM_UNNAMED_1678 = 0x68E,
++    ANIM_UNNAMED_1679 = 0x68F,
++    ANIM_UNNAMED_1680 = 0x690,
++    ANIM_UNNAMED_1681 = 0x691,
++    ANIM_UNNAMED_1682 = 0x692,
++    ANIM_UNNAMED_1683 = 0x693,
++    ANIM_UNNAMED_1684 = 0x694,
++    ANIM_UNNAMED_1685 = 0x695,
++    ANIM_UNNAMED_1686 = 0x696,
++    ANIM_UNNAMED_1687 = 0x697,
++    ANIM_UNNAMED_1688 = 0x698,
++    ANIM_UNNAMED_1689 = 0x699,
++    ANIM_UNNAMED_1690 = 0x69A,
++    ANIM_UNNAMED_1691 = 0x69B,
++    ANIM_UNNAMED_1692 = 0x69C,
++    ANIM_UNNAMED_1693 = 0x69D,
++    ANIM_UNNAMED_1694 = 0x69E,
++    ANIM_UNNAMED_1695 = 0x69F,
++    ANIM_UNNAMED_1696 = 0x6A0,
++    ANIM_UNNAMED_1697 = 0x6A1,
++    ANIM_UNNAMED_1698 = 0x6A2,
++    ANIM_UNNAMED_1699 = 0x6A3,
++    ANIM_UNNAMED_1700 = 0x6A4,
++    ANIM_UNNAMED_1701 = 0x6A5,
++    ANIM_UNNAMED_1702 = 0x6A6,
++    ANIM_UNNAMED_1703 = 0x6A7,
++    ANIM_UNNAMED_1704 = 0x6A8,
++    ANIM_UNNAMED_1705 = 0x6A9,
++    ANIM_UNNAMED_1706 = 0x6AA,
++    ANIM_UNNAMED_1707 = 0x6AB,
++    ANIM_UNNAMED_1708 = 0x6AC,
++    ANIM_UNNAMED_1709 = 0x6AD,
++    ANIM_UNNAMED_1710 = 0x6AE,
++    ANIM_UNNAMED_1711 = 0x6AF,
++    ANIM_UNNAMED_1712 = 0x6B0,
++    ANIM_UNNAMED_1713 = 0x6B1,
++    ANIM_UNNAMED_1714 = 0x6B2,
++    ANIM_UNNAMED_1715 = 0x6B3,
++    ANIM_UNNAMED_1716 = 0x6B4,
++    ANIM_UNNAMED_1717 = 0x6B5,
++    ANIM_UNNAMED_1718 = 0x6B6,
++    ANIM_UNNAMED_1719 = 0x6B7,
++    ANIM_UNNAMED_1720 = 0x6B8,
++    ANIM_UNNAMED_1721 = 0x6B9,
++    ANIM_UNNAMED_1722 = 0x6BA,
++    ANIM_UNNAMED_1723 = 0x6BB,
++    ANIM_UNNAMED_1724 = 0x6BC,
++    ANIM_UNNAMED_1725 = 0x6BD,
++    ANIM_UNNAMED_1726 = 0x6BE,
++    ANIM_UNNAMED_1727 = 0x6BF,
++    ANIM_UNNAMED_1728 = 0x6C0,
++    ANIM_UNNAMED_1729 = 0x6C1,
++    ANIM_UNNAMED_1730 = 0x6C2,
++    ANIM_FLY_FLOAT_WALK = 0x6C3,
++    ANIM_CINEMATIC_TALK = 0x6C4,
++    ANIM_FLY_CINEMATIC_TALK = 0x6C5,
++    ANIM_CINEMATIC_WA_GUARD_EMOTE_SLAM_01 = 0x6C6,
++    ANIM_FLY_CINEMATIC_WA_GUARD_EMOTE_SLAM_01 = 0x6C7,
++    ANIM_WA_BLOW_HORN = 0x6C8,
++    ANIM_FLY_WA_BLOW_HORN = 0x6C9,
++    ANIM_MOUNT_EXTRA_WIDE = 0x6CA,
++    ANIM_FLY_MOUNT_EXTRA_WIDE = 0x6CB,
++    ANIM_WA_2H_IDLE = 0x6CC,
++    ANIM_FLY_WA_2H_IDLE = 0x6CD,
++    ANIM_HERBALISM_LOOP = 0x6CE,
++    ANIM_FLY_HERBALISM_LOOP = 0x6CF,
++    ANIM_COOKING_LOOP = 0x6D0,
++    ANIM_FLY_COOKING_LOOP = 0x6D1,
++    ANIM_WA_WEAPON_SHARPEN_NO_SHEATHE = 0x6D2,
++    ANIM_FLY_WA_WEAPON_SHARPEN_NO_SHEATHE = 0x6D3,
++    ANIM_CINEMATIC_DEATH = 0x6D4,
++    ANIM_FLY_CINEMATIC_DEATH = 0x6D5,
++    ANIM_CINEMATIC_DEATH_POSE = 0x6D6,
++    ANIM_FLY_CINEMATIC_DEATH_POSE = 0x6D7,
++    ANIM_EMP_SLAM_PRECAST = 0x6D8,
++    ANIM_FLY_EMP_SLAM_PRECAST = 0x6D9,
++    ANIM_EMP_SLAM_PRECAST_CHANNEL = 0x6DA,
++    ANIM_FLY_EMP_SLAM_PRECAST_CHANNEL = 0x6DB,
++    ANIM_EMP_SLAM_SPELL_CAST = 0x6DC,
++    ANIM_FLY_EMP_SLAM_SPELL_CAST = 0x6DD,
++    ANIM_CLIMB = 0x6DE,
++    ANIM_FLY_CLIMB = 0x6DF,
++    ANIM_CLIMB_START = 0x6E0,
++    ANIM_FLY_CLIMB_START = 0x6E1,
++    ANIM_CLIMB_END = 0x6E2,
++    ANIM_FLY_CLIMB_END = 0x6E3,
++    ANIM_MOUNT_LEAN_LEFT = 0x6E4,
++    ANIM_FLY_MOUNT_LEAN_LEFT = 0x6E5,
++    ANIM_MOUNT_LEAN_RIGHT = 0x6E6,
++    ANIM_FLY_MOUNT_LEAN_RIGHT = 0x6E7,
++    ANIM_MOUNT_DIVE = 0x6E8,
++    ANIM_FLY_MOUNT_DIVE = 0x6E9,
++    ANIM_MOUNT_CROUCH = 0x6EA,
++    ANIM_FLY_MOUNT_CROUCH = 0x6EB,
++    ANIM_WA_SHOVEL_LOOP = 0x6EC,
++    ANIM_FLY_WA_SHOVEL_LOOP = 0x6ED,
++    ANIM_EMOTE_TALK_FRUSTRATED = 0x6EE,
++    ANIM_FLY_EMOTE_TALK_FRUSTRATED = 0x6EF,
++    ANIM_MOUNT_MEDIUM = 0x6F0,
++    ANIM_FLY_MOUNT_MEDIUM = 0x6F1,
++    // END GENERATED ANIMATION IDS
++    ANIM_COUNT = 0x6F2,
+ };
+ 
+ enum OBJECT_EFFECT_STATE_COUNT {
+diff --git a/WoW/Source/Object/ObjectClient/UnitVehicle_C.cpp b/WoW/Source/Object/ObjectClient/UnitVehicle_C.cpp
+index 71e9cbb..e5282f0 100644
+--- a/WoW/Source/Object/ObjectClient/UnitVehicle_C.cpp
++++ b/WoW/Source/Object/ObjectClient/UnitVehicle_C.cpp
+@@ -1,3 +1,4 @@
++#include "WoW/Source/Object/ObjectClient/Types.h"
+ #include "UnitVehicle_C.h"
+ #include "Engine/Source/Base/CDataStore.h"
+ #include "Engine/Source/FrameScript/FrameScript.h"
+@@ -237,7 +238,7 @@ int32_t CGUnit_C::VehiclePassengerShouldWaitForVehicleTransitionAnim(uint64_t tr
+ 
+         uint32_t anim = seatRec->m_vehicleEnterAnim;
+ 
+-        if (anim > 0x1F9) {
++        if (anim >= ANIM_COUNT) {
+             return 0;
+         }
+ 
+@@ -249,7 +250,7 @@ int32_t CGUnit_C::VehiclePassengerShouldWaitForVehicleTransitionAnim(uint64_t tr
+     }
+ 
+     uint32_t anim = seatRec->m_vehicleExitAnim;
+-    return anim <= 0x1F9 && animVehicle->CanPlayBoneAnim(anim);
++    return anim < ANIM_COUNT && animVehicle->CanPlayBoneAnim(anim);
+ }
+ 
+ // VERIFY: 0d563d24 manual
+@@ -294,7 +295,7 @@ int32_t CGUnit_C::VehiclePassengerStartWaitingForVehicleTransitionAnim(uint64_t
+     CVehicle_C* animVehicle = vehicle->FindVehicleToPlayBoneAnim();
+ 
+     if (entering) {
+-        if (!(seatRec->m_flags & 0x400000) || static_cast<uint32_t>(seatRec->m_vehicleEnterAnim) > 0x1F9 || !animVehicle->PlayBoneAnim(seatRec->m_field33512213034, seatRec->m_vehicleEnterAnim)) {
++        if (!(seatRec->m_flags & 0x400000) || static_cast<uint32_t>(seatRec->m_vehicleEnterAnim) >= ANIM_COUNT || !animVehicle->PlayBoneAnim(seatRec->m_field33512213034, seatRec->m_vehicleEnterAnim)) {
+             return 0;
+         }
+ 
+@@ -304,7 +305,7 @@ int32_t CGUnit_C::VehiclePassengerStartWaitingForVehicleTransitionAnim(uint64_t
+             animVehicle->SetBoneAnimForceFacing(this->m_obj->m_guid, seatRec->m_field33512213034);
+         }
+     } else {
+-        if (!(seatRec->m_flags & ((this->m_movementData.m_flags2 & 0x40) ? 0x40000 : 0x80000)) || static_cast<uint32_t>(seatRec->m_vehicleExitAnim) > 0x1F9 || !animVehicle->PlayBoneAnim(seatRec->m_vehicleExitAnimBone, seatRec->m_vehicleExitAnim)) {
++        if (!(seatRec->m_flags & ((this->m_movementData.m_flags2 & 0x40) ? 0x40000 : 0x80000)) || static_cast<uint32_t>(seatRec->m_vehicleExitAnim) >= ANIM_COUNT || !animVehicle->PlayBoneAnim(seatRec->m_vehicleExitAnimBone, seatRec->m_vehicleExitAnim)) {
+             return 0;
+         }
+ 
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 546690a..53e4bb9 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -1612,7 +1612,7 @@ void CGUnit_C::PreAnimate(CGWorldFrame* frame) {
+ // OFFSET: 0x0071D940
+ int32_t IsEmoteAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 60:
+@@ -1656,7 +1656,7 @@ int32_t IsEmoteAnim(uint32_t animId) {
+ // OFFSET: 0x0071D380
+ int32_t IsSpellCastAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 2:
+@@ -2349,7 +2349,7 @@ void CGUnit_C::SendSplineDone(uint32_t time, uint32_t splineId) {
+ // OFFSET: 0x0071D590
+ int32_t IsMeleeAttackAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 10:
+@@ -3698,7 +3698,7 @@ int32_t IsSpellPrecastAnim(uint32_t animId) {
+ // OFFSET: 0x0071D800
+ int32_t IsUpperBodyAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 2:
+@@ -3901,7 +3901,7 @@ int32_t IsFishingAnim(uint32_t animId) {
+ // OFFSET: 0x0071D2E0
+ int32_t IsRangedWeaponAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 46:
+@@ -7772,7 +7772,7 @@ int32_t GetAnimBehaviorId(uint32_t animId) {
+         return rec->m_behaviorID;
+     }
+ 
+-    return 506;
++    return ANIM_COUNT;
+ }
+ 
+ // VERIFY: 211bd0bd auto
+@@ -8016,11 +8016,13 @@ bool CGUnit_C::AnimSuppressesMovement() const {
+         anim = this->m_worldModel->GetBoneSequenceId(0xFFFFFFFF);
+     }
+ 
+-    if (anim > 505) {
++    if (anim >= ANIM_COUNT) {
+         return false;
+     }
+ 
+-    return (g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId())->m_bodyflags >> 7) & 1;
++    // WXL: the table can be longer than the DBC the client was given; a missing row is not a torso animation.
++    const AnimationDataRec* torsoRec = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
++    return torsoRec ? ((torsoRec->m_bodyflags >> 7) & 1) : 0;
+ }
+ 
+ // VERIFY: 75c2d34b manual
+@@ -8378,7 +8380,7 @@ float CGUnit_C::GetSmoothFacing() const {
+ void CGUnit_C::ChooseDefaultAnim(uint32_t& anim, int32_t force) const {
+     CVehiclePassenger_C* passenger = this->m_vehiclePassenger;
+ 
+-    if (passenger && passenger->m_state == 3 && passenger->GetLowerAnim(passenger->m_seatRec) != 506) {
++    if (passenger && passenger->m_state == 3 && passenger->GetLowerAnim(passenger->m_seatRec) != ANIM_COUNT) {
+         return;
+     }
+ 
+@@ -8721,7 +8723,7 @@ void CGUnit_C::UpdateObjectEffectAnimationStates() {
+             return;
+         }
+ 
+-        if (sequences[0].m_sequenceId < 506) {
++        if (sequences[0].m_sequenceId < ANIM_COUNT) {
+             sequences[0].m_sequenceId = this->m_mountModel->ResolveSequenceFallback(sequences[0].m_sequenceId);
+         }
+     }
+@@ -8731,11 +8733,11 @@ void CGUnit_C::UpdateObjectEffectAnimationStates() {
+             return;
+         }
+ 
+-        if (sequences[1].m_sequenceId < 506) {
++        if (sequences[1].m_sequenceId < ANIM_COUNT) {
+             sequences[1].m_sequenceId = this->m_worldModel->ResolveSequenceFallback(sequences[1].m_sequenceId);
+         }
+ 
+-        if (sequences[2].m_sequenceId < 506) {
++        if (sequences[2].m_sequenceId < ANIM_COUNT) {
+             sequences[2].m_sequenceId = this->m_worldModel->ResolveSequenceFallback(sequences[2].m_sequenceId);
+         }
+     }
+@@ -14468,7 +14470,7 @@ void CGUnit_C::AnimEndHandler(CM2Model* model, uint32_t boneId, uint32_t sequenc
+     }
+ 
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
+-    int32_t behavior = anim ? anim->m_behaviorID : 506;
++    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
+ 
+     if (behavior == 1 || behavior == 131 || behavior == 468) {
+         if (!this->m_lootableTime) {
+@@ -14590,7 +14592,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         if (seat) {
+             bool ride;
+ 
+-            if (passenger->GetLowerAnim(seat) != 506) {
++            if (passenger->GetLowerAnim(seat) != ANIM_COUNT) {
+                 ride = (seat->m_flags & 0x2) && (static_cast<int32_t>(sequenceId) == seat->m_rideAnimStart || static_cast<int32_t>(sequenceId) == seat->m_rideAnimLoop);
+             } else {
+                 ride = (seat->m_flags & 0x4) && (static_cast<int32_t>(sequenceId) == seat->m_rideUpperAnimStart || static_cast<int32_t>(sequenceId) == seat->m_rideUpperAnimLoop);
+@@ -14603,9 +14605,9 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         }
+     }
+ 
+-    uint32_t next = 506;
++    uint32_t next = ANIM_COUNT;
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
+-    int32_t behavior = anim ? anim->m_behaviorID : 506;
++    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
+ 
+     if (behavior >= 458 && behavior <= 460) {
+         this->PlayBaseAnimation(464, 16);
+@@ -14674,7 +14676,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         case 97: {
+             next = (this->GetClientStandState() != 1) + 97;
+ 
+-            if (next == 506) {
++            if (next == ANIM_COUNT) {
+                 break;
+             }
+ 
+@@ -14686,7 +14688,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         case 100: {
+             next = (this->GetClientStandState() != 3) + 100;
+ 
+-            if (next == 506) {
++            if (next == ANIM_COUNT) {
+                 break;
+             }
+ 
+@@ -14775,7 +14777,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         case 115: {
+             next = (this->GetClientStandState() != 8) + 115;
+ 
+-            if (next == 506) {
++            if (next == ANIM_COUNT) {
+                 break;
+             }
+ 
+@@ -14824,7 +14826,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+         case 464: {
+             this->ChooseDefaultAnim(next, 1);
+ 
+-            if (next == 506) {
++            if (next == ANIM_COUNT) {
+                 break;
+             }
+ 
+@@ -14901,16 +14903,16 @@ void CGUnit_C::OnKeyBoneAnimEnd(CM2Model* model, uint32_t boneId, uint32_t seque
+         torso.m_sequenceId = anim;
+         CVehiclePassenger_C* passenger = this->m_vehiclePassenger;
+         const VehicleSeatRec* seat = passenger ? passenger->m_seatRec : nullptr;
+-        int32_t ridingLower = passenger && passenger->m_state == 3 && passenger->GetLowerAnim(seat) != 506;
++        int32_t ridingLower = passenger && passenger->m_state == 3 && passenger->GetLowerAnim(seat) != ANIM_COUNT;
+ 
+         if (static_cast<int32_t>(boneId) == this->m_torsoKeyBone) {
+-            if (!usedDefault && chosen == 506 && ridingLower) {
++            if (!usedDefault && chosen == ANIM_COUNT && ridingLower) {
+                 this->UpdateObjectEffectAnimationStates();
+                 return;
+             }
+         }
+ 
+-        if (static_cast<int32_t>(boneId) != this->m_torsoKeyBone || !ridingLower || this->m_vehiclePassenger->GetUpperAnim(seat) == 506) {
++        if (static_cast<int32_t>(boneId) != this->m_torsoKeyBone || !ridingLower || this->m_vehiclePassenger->GetUpperAnim(seat) == ANIM_COUNT) {
+             uint32_t current = this->m_worldModel->GetBoneSequenceId(0xFFFFFFFF);
+ 
+             if (!IsUpperBodyAnim(anim) || !this->ShouldSplitTorsoAnimation(anim, current) || anim == current) {
+@@ -15562,7 +15564,7 @@ void CGUnit_C::PlayEmoteAnimation(uint32_t emote) {
+ 
+     int32_t anim = rec->m_animID;
+ 
+-    if (anim < 0 || anim >= 506) {
++    if (anim < 0 || anim >= ANIM_COUNT) {
+         return;
+     }
+ 
+@@ -19618,7 +19620,7 @@ bool CGUnit_C::IsTracked() const {
+ // OFFSET: 0x0071D450
+ int32_t IsUnarmedAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : 506;
++    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 16:
+@@ -21213,7 +21215,7 @@ void CGUnit_C::UpdateCritterDisplay() {
+ // OFFSET: 0x0071D450
+ static int32_t IsWeaponAnimBehavior(uint32_t animId) {
+     AnimationDataRec* animation = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = animation ? animation->m_behaviorID : 506;
++    int32_t behavior = animation ? animation->m_behaviorID : ANIM_COUNT;
+ 
+     switch (behavior) {
+         case 16:
+diff --git a/WoW/Source/Object/ObjectClient/VehiclePassenger_C.cpp b/WoW/Source/Object/ObjectClient/VehiclePassenger_C.cpp
+index 823178a..d3c4aba 100644
+--- a/WoW/Source/Object/ObjectClient/VehiclePassenger_C.cpp
++++ b/WoW/Source/Object/ObjectClient/VehiclePassenger_C.cpp
+@@ -405,7 +405,7 @@ int32_t CVehiclePassenger_C::ChooseSeatExitAnim(uint32_t flags, uint32_t* anim)
+         exitAnim = seat->m_rideUpperAnimStart;
+     }
+ 
+-    if (exitAnim != 506) {
++    if (exitAnim != ANIM_COUNT) {
+         *anim = exitAnim;
+         return 1;
+     }
+@@ -417,7 +417,7 @@ int32_t CVehiclePassenger_C::ChooseSeatExitAnim(uint32_t flags, uint32_t* anim)
+ // OFFSET: 0x00747B20
+ int32_t CVehiclePassenger_C::GetLowerAnim(const VehicleSeatRec* seat) const {
+     if (!seat) {
+-        return 506;
++        return ANIM_COUNT;
+     }
+ 
+     int32_t anim;
+@@ -426,14 +426,14 @@ int32_t CVehiclePassenger_C::GetLowerAnim(const VehicleSeatRec* seat) const {
+         case 1:
+         case 2: {
+             if (!(seat->m_flags & 0x1)) {
+-                return 506;
++                return ANIM_COUNT;
+             }
+ 
+             if ((this->m_flags & 0x2) || (anim = seat->m_enterAnimStart) == -1) {
+                 anim = seat->m_enterAnimLoop;
+ 
+                 if (anim == -1) {
+-                    return 506;
++                    return ANIM_COUNT;
+                 }
+             }
+ 
+@@ -442,14 +442,14 @@ int32_t CVehiclePassenger_C::GetLowerAnim(const VehicleSeatRec* seat) const {
+ 
+         case 3: {
+             if (!(seat->m_flags & 0x2)) {
+-                return 506;
++                return ANIM_COUNT;
+             }
+ 
+             if ((this->m_flags & 0x2) || (anim = seat->m_rideAnimStart) == -1) {
+                 anim = seat->m_rideAnimLoop;
+ 
+                 if (anim == -1) {
+-                    return 506;
++                    return ANIM_COUNT;
+                 }
+             }
+ 
+@@ -459,14 +459,14 @@ int32_t CVehiclePassenger_C::GetLowerAnim(const VehicleSeatRec* seat) const {
+         case 4:
+         case 5: {
+             if (!this->m_unit->ShouldUseVehicleSeatExitAnimation(seat)) {
+-                return 506;
++                return ANIM_COUNT;
+             }
+ 
+             if ((this->m_flags & 0x2) || (anim = seat->m_exitAnimStart) == -1) {
+                 anim = seat->m_exitAnimLoop;
+ 
+                 if (anim == -1) {
+-                    return 506;
++                    return ANIM_COUNT;
+                 }
+             }
+ 
+@@ -474,7 +474,7 @@ int32_t CVehiclePassenger_C::GetLowerAnim(const VehicleSeatRec* seat) const {
+         }
+ 
+         default: {
+-            return 506;
++            return ANIM_COUNT;
+         }
+     }
+ 
+@@ -521,7 +521,7 @@ void CVehiclePassenger_C::StartMirroringVehicleAnims() {
+     M2BoneSequenceInfo info;
+     vehicleModel->GetBoneSequenceInfo(0xFFFFFFFF, info);
+ 
+-    if (info.m_sequenceId >= 506) {
++    if (info.m_sequenceId >= ANIM_COUNT) {
+         model->SetBoneSequence(0xFFFFFFFF, 0, 0xFFFFFFFF, 0, 1.0f, 1, 1);
+     } else {
+         model->SetBoneSequence(0xFFFFFFFF, info.m_sequenceId, info.m_variationIndex, info.m_time, info.m_speed, 1, 1);
+@@ -538,7 +538,7 @@ void CVehiclePassenger_C::StartMirroringVehicleAnims() {
+ 
+             vehicleModel->GetBoneSequenceInfo(bone, info);
+ 
+-            if (info.m_sequenceId < 506) {
++            if (info.m_sequenceId < ANIM_COUNT) {
+                 model->SetBoneSequence(bone, info.m_sequenceId, info.m_variationIndex, info.m_time, info.m_speed, 1, 1);
+                 continue;
+             }
+@@ -677,7 +677,7 @@ C3Vector CVehiclePassenger_C::ComputeStartWorldPosition(const C3Vector& offset,
+ void CVehiclePassenger_C::OnAnimEnd(uint32_t anim) {
+     const VehicleSeatRec* seat = this->m_seatRec;
+ 
+-    if (this->GetLowerAnim(seat) != 506 && seat && this->m_state == 3 && (seat->m_flags & 0x4)) {
++    if (this->GetLowerAnim(seat) != ANIM_COUNT && seat && this->m_state == 3 && (seat->m_flags & 0x4)) {
+         int32_t upper;
+ 
+         if ((this->m_flags & 0x4) || (upper = seat->m_rideUpperAnimStart) == -1) {
+@@ -689,7 +689,7 @@ void CVehiclePassenger_C::OnAnimEnd(uint32_t anim) {
+             }
+         }
+ 
+-        if (upper != 506) {
++        if (upper != ANIM_COUNT) {
+             if (anim == 0xFFFFFFFF || anim == 26) {
+                 this->m_flags |= 0x2;
+             } else {
+@@ -716,7 +716,7 @@ int32_t CVehiclePassenger_C::PickHighPriorityAnimation(int32_t unused_a2, uint32
+ 
+     int32_t lower = this->GetLowerAnim(this->m_seatRec);
+ 
+-    if (lower == 506) {
++    if (lower == ANIM_COUNT) {
+         return 0;
+     }
+ 
+@@ -1238,7 +1238,7 @@ void CVehiclePassenger_C::SetState(uint32_t state, CGUnit_C* vehicle, uint8_t se
+     this->m_flags &= ~0x1;
+     CVehicle_C* vehicleObject = vehicle ? vehicle->m_vehicle : nullptr;
+ 
+-    if (this->m_state == 3 && vehicleObject && seatRec && (seatRec->m_flags & 0x20000) && seatRec->m_vehicleRideAnimLoop < 506) {
++    if (this->m_state == 3 && vehicleObject && seatRec && (seatRec->m_flags & 0x20000) && seatRec->m_vehicleRideAnimLoop < ANIM_COUNT) {
+         CVehicle_C* boneVehicle = vehicleObject->FindVehicleToPlayBoneAnim();
+ 
+         if (boneVehicle->PlayBoneAnim(seatRec->m_vehicleEnterAnimBone, seatRec->m_vehicleRideAnimLoop)) {
+diff --git a/WoW/Source/Object/ObjectClient/Vehicle_C.cpp b/WoW/Source/Object/ObjectClient/Vehicle_C.cpp
+index a578cdd..edd705a 100644
+--- a/WoW/Source/Object/ObjectClient/Vehicle_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Vehicle_C.cpp
+@@ -1,3 +1,4 @@
++#include "WoW/Source/Object/ObjectClient/Types.h"
+ #include "Vehicle_C.h"
+ #include "Engine/Source/Base/CDataStore.h"
+ #include "Engine/Source/Base/ObjectAlloc.h"
+@@ -608,7 +609,7 @@ void CVehicle_C::StartMirroringAnimsToPassengers() {
+ int32_t CVehicle_C::PlayBoneAnim(uint32_t boneId, uint32_t animId) {
+     CM2Model* model = this->m_unit->GetObjectModel();
+ 
+-    if (!model || animId > 505) {
++    if (!model || animId >= ANIM_COUNT) {
+         return 0;
+     }
+ 
+@@ -626,7 +627,7 @@ int32_t CVehicle_C::CanPlayBoneAnim(uint32_t animId) const {
+         return 0;
+     }
+ 
+-    return animId <= 0x1F9;
++    return animId < ANIM_COUNT;
+ }
+ 
+ // VERIFY: 86ddcfee manual

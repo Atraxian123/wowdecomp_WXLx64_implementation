@@ -158,6 +158,24 @@ void InitObjectEffectStateMap() {
     s_objectEffectAnimStateMap[ANIM_SWIM_BACKWARDS].m_animID = ANIM_SWIM_BACKWARDS;
     s_objectEffectAnimStateMap[ANIM_SWIM_BACKWARDS].m_stateID = 30;
     s_objectEffectAnimStateMap[ANIM_SWIM_BACKWARDS].m_altStateID = 0;
+
+    // WXL: a unit in flight now plays the flight twins of the swim set when the model has them; they keep the swim
+    // states, so effects keyed to those states behave as they did while the swim set played.
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_IDLE].m_animID = ANIM_FLY_SWIM_IDLE;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_IDLE].m_stateID = 26;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_IDLE].m_altStateID = 42;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM].m_animID = ANIM_FLY_SWIM;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM].m_stateID = 27;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM].m_altStateID = 0;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_LEFT].m_animID = ANIM_FLY_SWIM_LEFT;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_LEFT].m_stateID = 28;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_LEFT].m_altStateID = 0;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_RIGHT].m_animID = ANIM_FLY_SWIM_RIGHT;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_RIGHT].m_stateID = 29;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_RIGHT].m_altStateID = 0;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_BACKWARDS].m_animID = ANIM_FLY_SWIM_BACKWARDS;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_BACKWARDS].m_stateID = 30;
+    s_objectEffectAnimStateMap[ANIM_FLY_SWIM_BACKWARDS].m_altStateID = 0;
     s_objectEffectAnimStateMap[ANIM_RUN_LEFT].m_animID = ANIM_RUN_LEFT;
     s_objectEffectAnimStateMap[ANIM_RUN_LEFT].m_stateID = 31;
     s_objectEffectAnimStateMap[ANIM_RUN_LEFT].m_altStateID = 0;

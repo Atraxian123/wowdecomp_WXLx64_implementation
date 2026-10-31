@@ -7,6 +7,7 @@
 // stock one.
 
 #include "Engine/Source/Model2/ModernM2/ModernM2.h"
+#include "Engine/Source/Model2/ModernM2/FlightAnim.h"
 
 #include <atomic>
 #include <cmath>
@@ -119,12 +120,13 @@ namespace wxl::modernm2
 
         // --------------------------------------------------------------------- in-place field deltas
         /// Sequence deltas: masks the split u16 in|out blendTime to the client's single value (read whole it
-        /// would be a huge blend, so transitions never complete) and remaps the curated set of source ids
-        /// above the client's id table onto client ids, patching the lookup. Counts the sequences whose data
+        /// would be a huge blend, so transitions never complete) and remaps the curated set of source ids that
+        /// have a client counterpart onto client ids (the flight set onto its own FLY_SWIM twins, the takeoff /
+        /// landing set onto the jump ids), patching the lookup. Every other id keeps its own number: the client's
+        /// table (ANIM_COUNT) now covers the modern one. Counts the sequences whose data
         /// streams from a .anim file (flags bit 0x20 clear).
         uint32_t FixSequences(uint8_t* base, uint32_t size, M2Data* h)
         {
-            constexpr uint16_t kClientMaxAnimId = 505;
             uint32_t external = 0;
             if (!h->m_sequences.m_count || !h->m_sequences.m_offset) return 0;
             if (!FitsInBody(size, h->m_sequences.m_offset, h->m_sequences.m_count, sizeof(M2Sequence))) return 0;
@@ -156,25 +158,28 @@ namespace wxl::modernm2
             for (uint32_t i = 0; i < h->m_sequences.m_count; ++i)
             {
                 const uint16_t id = seqs[i].m_id;
-                if (id > kClientMaxAnimId)
+                uint16_t anim = id;
+
+                // The flight set is filed under its own twin ids (the client's FLY_SWIM family), NOT on top of
+                // the swim ids: a model with both keeps both, and the game layer asks for the flight twin
+                // first and falls back to swim (see FlightAnim.h).
+                if (const uint32_t flight = wxl::flightanim::FlightIdForSource(id))
                 {
-                    uint16_t anim = id;
+                    anim = static_cast<uint16_t>(flight);
+                }
+                else
+                {
                     switch (id)
                     {
                     case 564: anim = 37;  break;
-                    case 548: anim = 41;  break;
-                    case 556: anim = 42;  break;
-                    case 552: anim = 43;  break;
-                    case 554: anim = 44;  break;
-                    case 562: anim = 45;  break;
                     case 572: anim = 39;  break;
                     case 574: anim = 187; break;
                     }
-                    if (anim != id)
-                    {
-                        patchLookup(indexById(anim), anim, static_cast<int16_t>(i));
-                        seqs[i].m_id = anim;
-                    }
+                }
+                if (anim != id)
+                {
+                    patchLookup(indexById(anim), anim, static_cast<int16_t>(i));
+                    seqs[i].m_id = anim;
                 }
                 seqs[i].m_blendTime &= 0xFFFFu;
                 if (!(seqs[i].m_flags & 0x20u)) ++external;
