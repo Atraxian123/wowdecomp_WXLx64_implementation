@@ -1,0 +1,417 @@
+# Animation behavior aliases for the extended AnimationData rows (ground ids 506, 508, ... 1776).
+#
+# Why: every classifier in Unit_C.cpp (IsEmoteAnim, IsUpperBodyAnim, IsMeleeAttackAnim, IsSpellCastAnim, ...) looks the
+# animation up in AnimationData.dbc and switches on its BehaviorID. An extended animation has to keep BehaviorID == its
+# own id (AnimationData::FindIdByBehaviorAndTier finds a ground row, and its FLY twin, by that value), so it would fall
+# outside every classifier set. This table says "classify this animation as that native one" without touching the DBC:
+# the classifiers read the behavior through AnimClassBehavior() (AnimBehaviorAlias.h), which maps it here.
+#
+# Format, one animation per line (ids that are not listed keep their own behavior, i.e. stay plain whole-body animations):
+#     <ground animation id>  <native animation it counts as>      # <this animation's name>  [<roles it gains>]  <confidence>
+# The base is named like the enumerators in Types.h (EmoteTalk -> ANIM_EMOTE_TALK) and must be a native id (< 506); the
+# generator checks both. The name after '#' is checked against AnimationNames.txt where that file knows the id. FLY twins
+# need no line: their BehaviorID is the ground id, so they follow it. 'low' marks rows whose analog was a stand-in guess.
+#
+# Never alias onto a behavior that does more than classify: 1/6/131/132/466-472 (death), 37-40/187 (jump/airborne),
+# 39/121/127/192/200/201/458-460/464 (they set animation-state bits). The generator refuses them.
+#
+# Regenerate AnimBehaviorAlias.h with:  python3 Tools/AnimIds/gen_behavior_alias.py
+
+506   EmoteTalk                  # EmoteSniff                           [UB EM] med
+508   AttackUnarmed              # AttackFist1H                         [UB MA UN] high
+510   AttackUnarmedOff           # AttackFist1HOff                      [UB MA UN] high
+512   Parry1H                    # ParryFist1H                          [UB MA] high
+514   ReadyUnarmed               # ReadyFist1H                          [UB RD UN] high
+516   SpecialUnarmed             # SpecialFist1H                        [UB MA WS UN] high
+524   Swim                       # SwimRun                              [FB] med
+526   Swim                       # SwimWalk                             [FB] med
+528   SwimBackwards              # SwimWalkBackwards                    [FB] med
+530   Swim                       # SwimSprint                           [FB] med
+532   Stand                      # MountSwimIdle                        [FB] med
+534   Walkbackwards              # MountSwimBackwards                   [FB] med
+536   RunLeft                    # MountSwimLeft                        [FB] med
+538   RunRight                   # MountSwimRight                       [FB] med
+540   Run                        # MountSwimRun                         [FB] med
+542   Sprint                     # MountSwimSprint                      [FB] med
+544   Walk                       # MountSwimWalk                        [FB] med
+546   Walkbackwards              # MountSwimWalkBackwards               [FB] med
+548   Stand                      # MountFlightIdle                      [FB] med
+550   Walkbackwards              # MountFlightBackwards                 [FB] med
+552   RunLeft                    # MountFlightLeft                      [FB] med
+554   RunRight                   # MountFlightRight                     [FB] med
+556   Run                        # MountFlightRun                       [FB] med
+558   Sprint                     # MountFlightSprint                    [FB] med
+560   Walk                       # MountFlightWalk                      [FB] med
+562   Walkbackwards              # MountFlightWalkBackwards             [FB] med
+576   ReadyRifle                 # ReadyBlowDart                        [UB] med
+578   LoadRifle                  # LoadBlowDart                         [UB RW RF] med
+580   HoldRifle                  # HoldBlowDart                         [UB RW RF] med
+582   AttackRifle                # AttackBlowDart                       [UB RW RF SI] med
+590   Stand                      # BarTendStand                         [FB] med
+592   Walk                       # BarServerWalk                        [FB] med
+594   Run                        # BarServerRun                         [FB] med
+596   ShuffleLeft                # BarServerShuffleLeft                 [FB] med
+598   ShuffleRight               # BarServerShuffleRight                [FB] med
+604   Stand                      # BarServerStand                       [FB] med
+606   Walk                       # BarSweepWalk                         [FB] med
+608   Run                        # BarSweepRun                          [FB] med
+610   ShuffleLeft                # BarSweepShuffleLeft                  [FB] med
+612   ShuffleRight               # BarSweepShuffleRight                 [FB] med
+618   Stand                      # MountSelfIdle                        [FB] med
+620   Walk                       # MountSelfWalk                        [FB] med
+622   Run                        # MountSelfRun                         [FB] med
+624   Sprint                     # MountSelfSprint                      [FB] med
+626   RunLeft                    # MountSelfRunLeft                     [FB] med
+628   RunRight                   # MountSelfRunRight                    [FB] med
+630   ShuffleLeft                # MountSelfShuffleLeft                 [FB] med
+632   ShuffleRight               # MountSelfShuffleRight                [FB] med
+634   Walkbackwards              # MountSelfWalkBackwards               [FB] med
+636   MountSpecial               # MountSelfSpecial                     [FB] med
+650   Special1H                  # Stormstrike                          [UB MA WS] med
+654   Special1H                  # Slam                                 [UB MA WS] med
+656   Special1H                  # DeathStrike                          [UB MA WS] med
+658   AttackUnarmed              # SwimAttackUnarmed                    [UB MA UN] high
+660   Kick                       # SpinningKick                         [FB MA] med
+662   Kick                       # RoundHouseKick                       [FB MA] med
+670   AttackUnarmed              # PalmStrike                           [UB MA UN] med
+672   AttackUnarmed              # MonkOffenseAttackUnarmed             [UB MA UN] high
+674   AttackUnarmedOff           # MonkOffenseAttackUnarmedOff          [UB MA UN] high
+676   Parry1H                    # MonkOffenseParryUnarmed              [UB MA] high
+678   ReadyUnarmed               # MonkOffenseReadyUnarmed              [UB RD UN] high
+680   SpecialUnarmed             # MonkOffenseSpecialUnarmed            [UB MA WS UN] high
+682   AttackUnarmed              # MonkDefenseAttackUnarmed             [UB MA UN] high
+684   AttackUnarmedOff           # MonkDefenseAttackUnarmedOff          [UB MA UN] high
+686   Parry1H                    # MonkDefenseParryUnarmed              [UB MA] high
+688   ReadyUnarmed               # MonkDefenseReadyUnarmed              [UB RD UN] high
+690   SpecialUnarmed             # MonkDefenseSpecialUnarmed            [UB MA WS UN] high
+692   AttackUnarmed              # MonkHealAttackUnarmed                [UB MA UN] high
+694   AttackUnarmedOff           # MonkHealAttackUnarmedOff             [UB MA UN] high
+696   Parry1H                    # MonkHealParryUnarmed                 [UB MA] high
+698   ReadyUnarmed               # MonkHealReadyUnarmed                 [UB RD UN] high
+700   SpecialUnarmed             # MonkHealSpecialUnarmed               [UB MA WS UN] high
+702   Kick                       # FlyingKick                           [FB MA] med
+704   Kick                       # FlyingKickStart                      [FB MA] med
+706   Kick                       # FlyingKickEnd                        [FB MA] med
+716   Kick                       # ThousandFists                        [FB MA] med
+718   ReadySpellDirected         # MonkHealReadySpellDirected           [UB SP] high
+720   ReadySpellOmni             # MonkHealReadySpellOmni               [UB SP] high
+722   SpellCastDirected          # MonkHealSpellCastDirected            [UB SC SI] high
+724   SpellCastOmni              # MonkHealSpellCastOmni                [UB SC SI] high
+726   ChannelCastDirected        # MonkHealChannelCastDirected          [UB] high
+728   ChannelCastOmni            # MonkHealChannelCastOmni              [UB] high
+730   Kick                       # Torpedo                              [FB MA] med
+732   EmoteSitGround             # Meditate                             [UB EM] low
+736   Kick                       # RisingSunKick                        [FB MA] med
+738   Kick                       # GroundKick                           [FB MA] med
+740   Kick                       # KickBack                             [FB MA] med
+742   Stand                      # PetBattleStand                       [FB] med
+746   Run                        # PetBattleRun                         [FB] med
+748   CombatWound                # PetBattleWound                       [UB FB WD] med
+750   AttackUnarmed              # PetBattleAttack                      [UB MA UN] med
+752   ReadySpellOmni             # PetBattleReadySpell                  [UB SP] med
+754   SpellCastOmni              # PetBattleSpellCast                   [UB SC SI] med
+756   Custom0                    # PetBattleCustom0                     [UB] high
+758   Custom0                    # PetBattleCustom1                     [UB] high
+760   Custom0                    # PetBattleCustom2                     [UB] high
+762   Custom0                    # PetBattleCustom3                     [UB] high
+764   EmoteCheer                 # PetBattleVictory                     [UB EM] med
+766   EmoteCry                   # PetBattleLoss                        [UB EM] med
+768   Stun                       # PetBattleStun                        [UB] med
+772   Stun                       # PetBattleFreeze                      [UB] med
+774   Attack1H                   # MonkOffenseAttackWeapon              [UB MA] high
+788   Stand                      # BarSweepStand                        [FB] med
+794   Stand                      # BarPatronStand                       [FB] med
+804   Stand                      # StandCharacterCreate                 [FB] med
+810   Special1H                  # CombatAbility2HBig01                 [UB MA WS] med
+812   Special1H                  # CombatAbility2H01                    [UB MA WS] med
+816   Run                        # CombatChargeLoop                     [FB] low
+818   Special1H                  # CombatAbility1H01                    [UB MA WS] med
+820   Special1H                  # CombatChargeEnd                      [UB MA WS] med
+822   Special1H                  # CombatAbility1H02                    [UB MA WS] med
+824   Special1H                  # CombatAbility1HBig01                 [UB MA WS] med
+826   Special1H                  # CombatAbility2H02                    [UB MA WS] med
+828   SpellPrecast               # ShaSpellPrecastBoth                  [UB] med
+830   SpellCastDirected          # ShaSpellCastBothFront                [UB SC SI] med
+832   SpellCastDirected          # ShaSpellCastLeftFront                [UB SC SI] med
+834   SpellCastDirected          # ShaSpellCastRightFront               [UB SC SI] med
+836   ReadyRifle                 # ReadyCrossbow                        [UB] med
+838   LoadRifle                  # LoadCrossbow                         [UB RW RF] med
+840   AttackRifle                # AttackCrossbow                       [UB RW RF SI] med
+842   HoldRifle                  # HoldCrossbow                         [UB RW RF] med
+844   Special1H                  # CombatAbility2HL01                   [UB MA WS] med
+846   Special1H                  # CombatAbility2HL02                   [UB MA WS] med
+848   Special1H                  # CombatAbility2HLBig01                [UB MA WS] med
+850   AttackUnarmed              # CombatUnarmed01                      [UB MA UN] high
+852   Kick                       # CombatStompLeft                      [FB MA] med
+854   Kick                       # CombatStompRight                     [FB MA] med
+860   ReadySpellOmni             # ShaReadySpellCast                    [UB SP] med
+862   ChannelCastOmni            # ShaSpellPrecastBothChannel           [UB] med
+864   SpellCastOmni              # ShaSpellCastBothUp                   [UB SC SI] med
+866   ChannelCastOmni            # ShaSpellCastBothUpChannel            [UB] med
+868   ChannelCastDirected        # ShaSpellCastBothFrontChannel         [UB] med
+870   ChannelCastDirected        # ShaSpellCastLeftFrontChannel         [UB] med
+872   ChannelCastDirected        # ShaSpellCastRightFrontChannel        [UB] med
+874   ReadySpellOmni             # PriReadySpellCast                    [UB SP] med
+876   SpellPrecast               # PriSpellPrecastBoth                  [UB] med
+878   ChannelCastOmni            # PriSpellPrecastBothChannel           [UB] med
+880   SpellCastOmni              # PriSpellCastBothUp                   [UB SC SI] med
+882   SpellCastDirected          # PriSpellCastBothFront                [UB SC SI] med
+884   SpellCastDirected          # PriSpellCastLeftFront                [UB SC SI] med
+886   SpellCastDirected          # PriSpellCastRightFront               [UB SC SI] med
+888   ChannelCastOmni            # PriSpellCastBothUpChannel            [UB] med
+890   ChannelCastDirected        # PriSpellCastBothFrontChannel         [UB] med
+892   ChannelCastDirected        # PriSpellCastLeftFrontChannel         [UB] med
+894   ChannelCastDirected        # PriSpellCastRightFrontChannel        [UB] med
+896   ReadySpellOmni             # MagReadySpellCast                    [UB SP] med
+898   SpellPrecast               # MagSpellPrecastBoth                  [UB] med
+900   ChannelCastOmni            # MagSpellPrecastBothChannel           [UB] med
+902   SpellCastOmni              # MagSpellCastBothUp                   [UB SC SI] med
+904   SpellCastDirected          # MagSpellCastBothFront                [UB SC SI] med
+906   SpellCastDirected          # MagSpellCastLeftFront                [UB SC SI] med
+908   SpellCastDirected          # MagSpellCastRightFront               [UB SC SI] med
+910   ChannelCastOmni            # MagSpellCastBothUpChannel            [UB] med
+912   ChannelCastDirected        # MagSpellCastBothFrontChannel         [UB] med
+914   ChannelCastDirected        # MagSpellCastLeftFrontChannel         [UB] med
+916   ChannelCastDirected        # MagSpellCastRightFrontChannel        [UB] med
+918   ReadySpellOmni             # LocReadySpellCast                    [UB SP] med
+920   SpellPrecast               # LocSpellPrecastBoth                  [UB] med
+922   ChannelCastOmni            # LocSpellPrecastBothChannel           [UB] med
+924   SpellCastOmni              # LocSpellCastBothUp                   [UB SC SI] med
+926   SpellCastDirected          # LocSpellCastBothFront                [UB SC SI] med
+928   SpellCastDirected          # LocSpellCastLeftFront                [UB SC SI] med
+930   SpellCastDirected          # LocSpellCastRightFront               [UB SC SI] med
+932   ChannelCastOmni            # LocSpellCastBothUpChannel            [UB] med
+934   ChannelCastDirected        # LocSpellCastBothFrontChannel         [UB] med
+936   ChannelCastDirected        # LocSpellCastLeftFrontChannel         [UB] med
+938   ChannelCastDirected        # LocSpellCastRightFrontChannel        [UB] med
+940   ReadySpellOmni             # DruReadySpellCast                    [UB SP] med
+942   SpellPrecast               # DruSpellPrecastBoth                  [UB] med
+944   ChannelCastOmni            # DruSpellPrecastBothChannel           [UB] med
+946   SpellCastOmni              # DruSpellCastBothUp                   [UB SC SI] med
+948   SpellCastDirected          # DruSpellCastBothFront                [UB SC SI] med
+950   SpellCastDirected          # DruSpellCastLeftFront                [UB SC SI] med
+952   SpellCastDirected          # DruSpellCastRightFront               [UB SC SI] med
+954   ChannelCastOmni            # DruSpellCastBothUpChannel            [UB] med
+956   ChannelCastDirected        # DruSpellCastBothFrontChannel         [UB] med
+958   ChannelCastDirected        # DruSpellCastLeftFrontChannel         [UB] med
+960   ChannelCastDirected        # DruSpellCastRightFrontChannel        [UB] med
+970   Special1H                  # CombatAbility1H01Off                 [UB MA WS] med
+972   Special1H                  # CombatAbility1H02Off                 [UB MA WS] med
+974   Special1H                  # CombatFuriousStrike01                [UB MA WS] med
+976   Special1H                  # CombatFuriousStrike02                [UB MA WS] med
+978   Special1H                  # CombatFuriousStrikes                 [UB MA WS] med
+980   ReadySpellOmni             # CombatReadySpellCast                 [UB SP] med
+982   ShieldBash                 # CombatShieldThrow                    [UB MA] med
+984   SpellCastOmni              # PalSpellCast1HUp                     [UB SC SI] med
+986   ReadySpellOmni             # CombatReadyPostSpellCast             [UB SP] low
+988   ReadySpellOmni             # PriReadyPostSpellCast                [UB SP] low
+990   Run                        # DHCombatRun                          [FB] low
+992   ShieldBash                 # CombatShieldBash                     [UB MA] med
+994   AttackThrown               # CombatThrow                          [UB RW TH SI] high
+996   Attack1HPierce             # CombatAbility1HPierce                [UB MA] high
+998   Attack1HPierce             # CombatAbility1HOffPierce             [UB MA] med
+1000  Mutilate                   # CombatMutilate                       [MA] high
+1004  Special1H                  # CombatFinishingMove                  [UB MA WS] med
+1008  Attack1H                   # GlvThrowMain                         [UB MA] med
+1010  AttackOff                  # GlvThrownOff                         [UB MA] med
+1012  Sprint                     # DHCombatSprint                       [FB] low
+1014  Special1H                  # CombatAbilityGlv01                   [UB MA WS] med
+1016  Special1H                  # CombatAbilityGlv02                   [UB MA WS] med
+1018  Special1H                  # CombatAbilityGlvOff01                [UB MA WS] med
+1020  Special1H                  # CombatAbilityGlvOff02                [UB MA WS] med
+1022  Special2H                  # CombatAbilityGlvBig01                [UB MA WS] med
+1024  Special2H                  # CombatAbilityGlvBig02                [UB MA WS] med
+1026  Ready1H                    # ReadyGlv                             [UB RD] high
+1028  Special2H                  # CombatAbilityGlvBig03                [UB MA WS] med
+1034  Special1H                  # CombatEviscerate                     [UB MA WS] med
+1038  Special1H                  # BackFlipStart                        [UB MA WS] low
+1040  Special1H                  # BackFlipLoop                         [UB MA WS] low
+1042  Run                        # FelRushLoop                          [FB] low
+1044  Special1H                  # FelRushEnd                           [UB MA WS] med
+1056  Special1H                  # DHBladeDance1                        [UB MA WS] med
+1058  Special1H                  # DHBladeDance2                        [UB MA WS] med
+1060  Special1H                  # DHBladeDance3                        [UB MA WS] med
+1062  Special1H                  # DHMeteorStrike                       [UB MA WS] med
+1064  Special1H                  # CombatExecute                        [UB MA WS] med
+1068  Parry1H                    # ParryGlv                             [UB MA] high
+1070  AttackUnarmed              # CombatUnarmed02                      [UB MA UN] high
+1072  AttackRifle                # CombatPistolShot                     [UB RW RF SI] med
+1074  AttackRifle                # CombatPistolShotOff                  [UB RW RF SI] med
+1080  Special1H                  # CombatAbility2H03                    [UB MA WS] med
+1082  Kick                       # CombatStomp                          [FB MA] med
+1084  BattleRoar                 # CombatRoar                           [UB] med
+1086  ReadySpellOmni             # PalReadySpellCast                    [UB SP] med
+1088  SpellPrecast               # PalSpellPrecastRight                 [UB] med
+1090  ChannelCastOmni            # PalSpellPrecastRightChannel          [UB] med
+1092  SpellCastDirected          # PalSpellCastRightFront               [UB SC SI] med
+1094  SpellCastOmni              # ShaSpellCastBothOut                  [UB SC SI] med
+1096  Attack1H                   # AttackWeapon                         [UB MA] high
+1098  Ready1H                    # ReadyWeapon                          [UB RD] high
+1100  AttackOff                  # AttackWeaponOff                      [UB MA] high
+1102  Special1H                  # SpecialDual                          [UB MA WS] med
+1104  SpellCastDirected          # DkCast1HFront                        [UB SC SI] med
+1106  SpellCastDirected          # CastStrongRight                      [UB SC SI] low
+1108  SpellCastDirected          # CastStrongLeft                       [UB SC SI] low
+1110  SpellCastDirected          # CastCurseRight                       [UB SC SI] low
+1112  SpellCastDirected          # CastCurseLeft                        [UB SC SI] low
+1114  SpellCastDirected          # CastSweepRight                       [UB SC SI] low
+1116  SpellCastDirected          # CastSweepLeft                        [UB SC SI] low
+1118  SpellCastOmni              # CastStrongUpLeft                     [UB SC SI] low
+1120  SpellCastOmni              # CastTwistUpBoth                      [UB SC SI] low
+1122  SpellCastOmni              # CastOutStrong                        [UB SC SI] low
+1126  Parry1H                    # ParryWeapon                          [UB MA] high
+1128  Ready1H                    # ReadyFL                              [UB RD] high
+1130  Attack1H                   # AttackFL                             [UB MA] high
+1132  AttackOff                  # AttackFLOff                          [UB MA] high
+1134  Parry1H                    # ParryFL                              [UB MA] high
+1136  Special1H                  # SpecialFL                            [UB MA WS] med
+1138  Run                        # PriHoverForward                      [FB] low
+1140  Walkbackwards              # PriHoverBackward                     [FB] low
+1142  RunLeft                    # PriHoverRight                        [FB] low
+1144  RunLeft                    # PriHoverLeft                         [FB] low
+1146  Walkbackwards              # RunBackwards                         [FB] med
+1148  SpellCastOmni              # CastStrongUpRight                    [UB SC SI] low
+1150  Walk                       # WAWalk                               [FB] med
+1152  Run                        # WARun                                [FB] med
+1154  Stand                      # WADrunkStand                         [FB] med
+1156  ShuffleLeft                # WADrunkShuffleLeft                   [FB] med
+1158  ShuffleRight               # WADrunkShuffleRight                  [FB] med
+1160  Walk                       # WADrunkWalk                          [FB] med
+1162  Walkbackwards              # WADrunkWalkBackwards                 [FB] med
+1164  StandWound                 # WADrunkWound                         [UB FB WD] med
+1188  Stand                      # WABeggarStand                        [FB] med
+1200  Stand                      # WACrierStand01                       [FB] med
+1202  Stand                      # WACrierStand02                       [FB] med
+1204  Stand                      # WACrierStand03                       [FB] med
+1214  Stand                      # WAWheelBarrowStand                   [FB] med
+1216  Walk                       # WAWheelBarrowWalk                    [FB] med
+1218  Run                        # WAWheelBarrowRun                     [FB] med
+1232  Stand                      # WARowingStandRight                   [FB] med
+1234  Stand                      # WARowingStandLeft                    [FB] med
+1240  Stand                      # WAGuardStand01                       [FB] med
+1242  Stand                      # WAGuardStand02                       [FB] med
+1244  Stand                      # WAGuardStand03                       [FB] med
+1246  Stand                      # WAGuardStand04                       [FB] med
+1252  Stand                      # WAVendorStand01                      [FB] med
+1254  Stand                      # WAVendorStand02                      [FB] med
+1256  Stand                      # WAVendorStand03                      [FB] med
+1282  HoldBow                    # HoldWeapon                           [UB RW BW] high
+1284  Walk                       # WABarrelWalk                         [FB] med
+1288  SpellCastDirected          # CastStrong                           [UB SC SI] low
+1290  SpellCastDirected          # CastCurse                            [UB SC SI] low
+1292  SpellCastDirected          # CastSweep                            [UB SC SI] low
+1294  SpellCastOmni              # CastStrongUp                         [UB SC SI] low
+1296  Stand                      # WABoatWheelStand                     [FB] med
+1298  Stand                      # WASmithStand                         [FB] med
+1300  Stand                      # WACrankStand                         [FB] med
+1302  Walk                       # WAPourWalk                           [FB] med
+1320  Special1H                  # CombatAbility1H03Off                 [UB MA WS] med
+1322  Special1H                  # CombatAbilityDualWield01             [UB MA WS] med
+1326  SpellCastOmni              # LocSummon                            [UB SC SI] low
+1328  LoadBow                    # LoadWeapon                           [UB RW BW] high
+1346  Run                        # GiantRun                             [FB] med
+1354  Walk                       # BarTendWalk                          [FB] med
+1356  ShuffleLeft                # BartendShuffleLeft                   [FB] med
+1358  ShuffleRight               # BarTendShuffleRight                  [FB] med
+1360  CustomSpell02              # BarTendCustomSpell01                 [UB] high
+1362  CustomSpell02              # BarTendCustomSpell02                 [UB] high
+1364  CustomSpell02              # BarTendCustomSpell03                 [UB] high
+1372  CustomSpell02              # BarServerCustomSpell01               [UB] high
+1374  CustomSpell02              # BarServerCustomSpell02               [UB] high
+1376  CustomSpell02              # BarServerCustomSpell03               [UB] high
+1382  CustomSpell02              # BarPatronCustomSpell01               [UB] high
+1384  CustomSpell02              # BarPatronCustomSpell02               [UB] high
+1386  CustomSpell02              # BarPatronCustomSpell03               [UB] high
+1388  HoldThrown                 # HoldDart                             [UB RW TH] high
+1390  ReadyThrown                # ReadyDart                            [UB RW] high
+1392  AttackThrown               # AttackDart                           [UB RW TH SI] high
+1394  LoadThrown                 # LoadDart                             [UB RW TH] high
+1396  Stand                      # WADartTargetStand                    [FB] med
+1402  CustomSpell02              # BarPatronSitCustomSpell01            [UB] high
+1404  CustomSpell02              # BarPatronSitCustomSpell02            [UB] high
+1406  CustomSpell02              # BarPatronSitCustomSpell03            [UB] high
+1408  Stand                      # BarPianoStand                        [FB] med
+1418  CustomSpell02              # WAHearthSitCustomSpell01             [UB] high
+1420  CustomSpell02              # WAHearthSitCustomSpell02             [UB] high
+1422  CustomSpell02              # WAHearthSitCustomSpell03             [UB] high
+1424  Stand                      # WAHearthStand                        [FB] med
+1430  CustomSpell02              # WAHearthStandCustomSpell01           [UB] high
+1432  CustomSpell02              # WAHearthStandCustomSpell02           [UB] high
+1434  CustomSpell02              # WAHearthStandCustomSpell03           [UB] high
+1444  Kick                       # Haymaker                             [FB MA] med
+1446  SpellPrecast               # HaymakerPrecast                      [UB] low
+1448  ChannelCastOmni            # ChannelCastOmniUp                    [UB] high
+1480  Walk                       # WAWalkTalk                           [FB] med
+1488  Special1H                  # CombatAbility2HBig02                 [UB MA WS] med
+1492  EmoteTalk                  # EmoteTalkSubdued                     [UB EM] med
+1498  EmoteTalk                  # EmoteSelfie                          [UB EM] med
+1500  CustomSpell02              # CustomSpell11                        [UB] high
+1502  CustomSpell02              # CustomSpell12                        [UB] high
+1504  CustomSpell02              # CustomSpell13                        [UB] high
+1506  CustomSpell02              # CustomSpell14                        [UB] high
+1508  CustomSpell02              # CustomSpell15                        [UB] high
+1510  CustomSpell02              # CustomSpell16                        [UB] high
+1512  CustomSpell02              # CustomSpell17                        [UB] high
+1514  CustomSpell02              # CustomSpell18                        [UB] high
+1516  CustomSpell02              # CustomSpell19                        [UB] high
+1518  CustomSpell02              # CustomSpell20                        [UB] high
+1520  RunLeft                    # AdvFlyLeft                           [FB] low
+1522  RunLeft                    # AdvFlyRight                          [FB] low
+1524  Run                        # AdvFlyForward                        [FB] low
+1526  Walkbackwards              # AdvFlyBackward                       [FB] low
+1528  Run                        # AdvFlyUp                             [FB] low
+1530  Walkbackwards              # AdvFlyDown                           [FB] low
+1560  SpellPrecast               # EmpBreathPrecast                     [UB] med
+1562  ChannelCastOmni            # EmpBreathPrecastChannel              [UB] med
+1564  SpellCastOmni              # EmpBreathSpellCast                   [UB SC SI] med
+1566  ChannelCastOmni            # EmpBreathSpellCastChannel            [UB] med
+1594  SpellPrecast               # EmpAirBarragePrecast                 [UB] med
+1596  ChannelCastOmni            # EmpAirBarragePrecastChannel          [UB] med
+1598  SpellCastOmni              # EmpAirBarrageSpellCast               [UB SC SI] med
+1600  AttackUnarmed              # DracClawSwipeLeft                    [UB MA UN] low
+1602  AttackUnarmed              # DracClawSwipeRight                   [UB MA UN] low
+1604  Stand                      # DracHoverIdle                        [FB] med
+1606  RunLeft                    # DracHoverLeft                        [FB] low
+1608  RunLeft                    # DracHoverRight                       [FB] low
+1610  Walkbackwards              # DracHoverBackward                    [FB] low
+1612  Run                        # DracHoverForward                     [FB] low
+1614  AttackUnarmed              # DracAttackWings                      [UB MA UN] low
+1616  AttackUnarmed              # DracAttackTail                       [UB MA UN] low
+1624  RunLeft                    # AdvFlyStrafeLeft                     [FB] low
+1626  RunLeft                    # AdvFlyStrafeRight                    [FB] low
+1628  Stand                      # AdvFlyIdle                           [FB] med
+1640  AttackUnarmed              # DracHoverDracClawSwipeLeft           [UB MA UN] low
+1642  AttackUnarmed              # DracHoverDracClawSwipeRight          [UB MA UN] low
+1644  AttackUnarmed              # DracHoverDracAttackWings             [UB MA UN] low
+1646  ReadySpellOmni             # DracHoverReadySpellOmni              [UB SP] med
+1648  SpellCastOmni              # DracHoverSpellCastOmni               [UB SC SI] med
+1650  ChannelCastOmni            # DracHoverChannelSpellOmni            [UB] med
+1652  ReadySpellDirected         # DracHoverReadySpellDirected          [UB SP] med
+1654  ChannelCastDirected        # DracHoverChannelSpellDirected        [UB] med
+1656  SpellCastDirected          # DracHoverSpellCastDirected           [UB SC SI] med
+1658  SpellCastOmni              # DracHoverCastOutStrong               [UB SC SI] med
+1660  BattleRoar                 # DracHoverBattleRoar                  [UB] med
+1662  SpellCastOmni              # DracHoverEmpBreathSpellCast          [UB SC SI] med
+1664  ChannelCastOmni            # DracHoverEmpBreathSpellCastChannel   [UB] med
+1682  ReadyUnarmed               # DracHoverReadyUnarmed                [UB RD UN] high
+1684  AttackUnarmed              # DracHoverAttackUnarmed               [UB MA UN] med
+1686  Parry1H                    # DracHoverParryUnarmed                [UB MA] high
+1688  CombatWound                # DracHoverCombatWound                 [UB FB WD] high
+1690  CombatCritical             # DracHoverCombatCritical              [UB FB MA WD] high
+1692  AttackUnarmed              # DracHoverAttackTail                  [UB MA UN] low
+1698  AttackUnarmed              # DracClawSwipe                        [UB MA UN] low
+1700  AttackUnarmed              # DracHoverDracClawSwipe               [UB MA UN] low
+1708  SpellCastOmni              # DracSpellCastWings                   [UB SC SI] med
+1710  SpellCastOmni              # DracHoverDracSpellCastWings          [UB SC SI] med
+1728  Stand                      # FloatIdle                            [FB] med
+1730  Walk                       # FloatWalk                            [FB] low
+1746  EmoteWorkNoSheathe         # WAWeaponSharpenNoSheathe             [UB EM] med
+1752  SpellPrecast               # EmpSlamPrecast                       [UB] med
+1754  ChannelCastOmni            # EmpSlamPrecastChannel                [UB] med
+1756  SpellCastOmni              # EmpSlamSpellCast                     [UB SC SI] med
+1758  Walk                       # Climb                                [FB] low
+1764  MountSpecial               # MountLeanLeft                        [FB] low
+1766  MountSpecial               # MountLeanRight                       [FB] low
+1768  MountSpecial               # MountDive                            [FB] low
+1770  MountSpecial               # MountCrouch                          [FB] low
+1774  EmoteTalk                  # EmoteTalkFrustrated                  [UB EM] med

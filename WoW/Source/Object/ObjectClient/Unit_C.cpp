@@ -48,6 +48,7 @@
 #include "WoW/Source/Object/CMoveSpline.h"
 #include "WoW/Source/Object/CreatureStats.h"
 #include "WoW/Source/Object/Object.h"
+#include "WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h"
 #include "WoW/Source/Object/ObjectClient/Corpse_C.h"
 #include "WoW/Source/Object/ObjectClient/Effect_C.h"
 #include "WoW/Source/Object/ObjectClient/GameObject_C.h"
@@ -1329,7 +1330,7 @@ void CGUnit_C::ModelLoaded(CM2Model* model) {
 
         AnimationDataRec* animRec = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
 
-        if (animRec && animRec->m_behaviorID == 127) {
+        if (animRec && AnimClassBehavior(animRec->m_behaviorID) == 127) {
             this->m_fadeDuration = 0;
             this->m_alpha = this->m_fadeEndAlpha;
         }
@@ -1612,7 +1613,7 @@ void CGUnit_C::PreAnimate(CGWorldFrame* frame) {
 // OFFSET: 0x0071D940
 int32_t IsEmoteAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 60:
@@ -1656,7 +1657,7 @@ int32_t IsEmoteAnim(uint32_t animId) {
 // OFFSET: 0x0071D380
 int32_t IsSpellCastAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 2:
@@ -1676,7 +1677,7 @@ int32_t IsThrownWeaponAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior == 107 || (behavior > 110 && behavior <= 112)) {
             return 1;
@@ -1692,7 +1693,7 @@ int32_t IsBowAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior == 46 || behavior == 105 || behavior == 109) {
             return 1;
@@ -1708,7 +1709,7 @@ int32_t IsRifleAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior == 49 || behavior == 106 || behavior == 110) {
             return 1;
@@ -2349,7 +2350,7 @@ void CGUnit_C::SendSplineDone(uint32_t time, uint32_t splineId) {
 // OFFSET: 0x0071D590
 int32_t IsMeleeAttackAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 10:
@@ -3562,7 +3563,7 @@ int32_t IsFullBodyAnim(uint32_t animId) {
         return 0;
     }
 
-    switch (rec->m_behaviorID) {
+    switch (AnimClassBehavior(rec->m_behaviorID)) {
         case 0:
         case 1:
         case 3:
@@ -3647,7 +3648,7 @@ int32_t IsMeleeOrReadyAnim(uint32_t animId) {
         return 0;
     }
 
-    int32_t behavior = rec->m_behaviorID;
+    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
     if (behavior < 25 || behavior > 29) {
         return 0;
@@ -3669,7 +3670,7 @@ int32_t IsSpellCastOrPrecastAnim(uint32_t animId) {
         return 0;
     }
 
-    int32_t behavior = rec->m_behaviorID;
+    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
     if (behavior < 51 || behavior > 52) {
         return 0;
@@ -3684,7 +3685,7 @@ int32_t IsSpellPrecastAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 51 && behavior <= 52) {
             return 1;
@@ -3698,7 +3699,7 @@ int32_t IsSpellPrecastAnim(uint32_t animId) {
 // OFFSET: 0x0071D800
 int32_t IsUpperBodyAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 2:
@@ -3823,7 +3824,7 @@ int32_t IsWeaponReadyAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 25 && behavior <= 29) {
             return 1;
@@ -3839,7 +3840,7 @@ int32_t IsWeaponSpecialAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 57 && (behavior <= 58 || behavior == 118)) {
             return 1;
@@ -3855,7 +3856,7 @@ int32_t IsJumpAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 37 && (behavior <= 39 || behavior == 187)) {
             return 1;
@@ -3871,7 +3872,7 @@ int32_t IsJumpLandAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior == 39 || behavior == 187) {
             return 1;
@@ -3887,7 +3888,7 @@ int32_t IsFishingAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 133 && behavior <= 134) {
             return 1;
@@ -3901,7 +3902,7 @@ int32_t IsFishingAnim(uint32_t animId) {
 // OFFSET: 0x0071D2E0
 int32_t IsRangedWeaponAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 46:
@@ -4137,7 +4138,7 @@ void CGUnit_C::ProcessAnimationEvent(M2BoneSequenceInfo* slot, uint32_t currentA
     if (this->m_combat.m_attacking.m_guid || casting || IsSpellCastOrPrecastAnim(previousAnim) || IsMeleeOrReadyAnim(previousAnim)) {
         AnimationDataRec* rec = g_animationDataDB.GetRecord(anim);
 
-        if ((rec && rec->m_behaviorID >= 25 && rec->m_behaviorID <= 29) || !anim) {
+        if ((rec && AnimClassBehavior(rec->m_behaviorID) >= 25 && AnimClassBehavior(rec->m_behaviorID) <= 29) || !anim) {
             slot->m_variationIndex = 0;
         }
     }
@@ -4177,7 +4178,7 @@ void CGUnit_C::ProcessAnimationEvent(M2BoneSequenceInfo* slot, uint32_t currentA
 
     this->SetKeyBoneSequence(this->m_worldModel, bone, playing, slot->m_variationIndex, slot->m_time, slot->m_speed, blend, 1, 0);
 
-    switch (GetAnimBehaviorId(anim)) {
+    switch (AnimClassBehavior(GetAnimBehaviorId(anim))) {
         case 39:
             this->m_animationState |= 0x4;
             break;
@@ -7655,7 +7656,7 @@ int32_t IsBirthAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior == 127 || (behavior > 200 && behavior <= 202)) {
             return 1;
@@ -7671,7 +7672,7 @@ int32_t IsSubmergedDeathAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 466 && (behavior <= 468 || behavior == 472)) {
             return 1;
@@ -7690,7 +7691,7 @@ int32_t IsCorpseAnim(uint32_t animId) {
         return 0;
     }
 
-    int32_t behavior = rec->m_behaviorID;
+    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
     if (behavior > 468) {
         return behavior == 472;
@@ -7709,7 +7710,7 @@ int32_t IsAirborneAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
     if (rec) {
-        int32_t behavior = rec->m_behaviorID;
+        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
         if (behavior >= 37 && (behavior <= 40 || behavior == 467)) {
             return 1;
@@ -7728,7 +7729,7 @@ int32_t IsDyingAnim(uint32_t animId) {
         return 0;
     }
 
-    int32_t behavior = rec->m_behaviorID;
+    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
     if (behavior > 131) {
         if (behavior < 466 || behavior > 467) {
@@ -7750,7 +7751,7 @@ int32_t IsDeadOrDyingAnim(uint32_t animId) {
         return 0;
     }
 
-    int32_t behavior = rec->m_behaviorID;
+    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
 
     if (behavior > 132) {
         if (behavior < 466 || (behavior > 468 && behavior != 472)) {
@@ -8390,7 +8391,7 @@ void CGUnit_C::ChooseDefaultAnim(uint32_t& anim, int32_t force) const {
 
     uint32_t torso = this->GetCurrentTorsoAnimId();
 
-    if (!force && GetAnimBehaviorId(torso) == 464) {
+    if (!force && AnimClassBehavior(GetAnimBehaviorId(torso)) == 464) {
         anim = torso;
         return;
     }
@@ -9943,7 +9944,7 @@ void CGUnit_C::PostInit(uint32_t time, const CClientObjCreate& create, bool reen
 
     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
 
-    if (anim && anim->m_behaviorID == 127) {
+    if (anim && AnimClassBehavior(anim->m_behaviorID) == 127) {
         this->m_fadeDuration = 0;
         this->m_alpha = this->m_fadeEndAlpha;
     }
@@ -14470,7 +14471,7 @@ void CGUnit_C::AnimEndHandler(CM2Model* model, uint32_t boneId, uint32_t sequenc
     }
 
     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
-    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(anim ? anim->m_behaviorID : ANIM_COUNT);
 
     if (behavior == 1 || behavior == 131 || behavior == 468) {
         if (!this->m_lootableTime) {
@@ -14516,7 +14517,7 @@ void CGUnit_C::AnimEndHandler(CM2Model* model, uint32_t boneId, uint32_t sequenc
 
     AnimationDataRec* ended = g_animationDataDB.GetRecord(sequenceId);
 
-    if (ended && ended->m_behaviorID >= 458 && ended->m_behaviorID <= 460) {
+    if (ended && AnimClassBehavior(ended->m_behaviorID) >= 458 && AnimClassBehavior(ended->m_behaviorID) <= 460) {
         this->m_animationState &= ~0x2000000;
     }
 
@@ -14607,7 +14608,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
 
     uint32_t next = ANIM_COUNT;
     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
-    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(anim ? anim->m_behaviorID : ANIM_COUNT);
 
     if (behavior >= 458 && behavior <= 460) {
         this->PlayBaseAnimation(464, 16);
@@ -16980,7 +16981,7 @@ void CGUnit_C::PlaySpellVisualKit_HandleWeapons(const SpellRec* spell, const Spe
 // OFFSET: 0x0071D510
 static int32_t IsWoundAnim(int32_t animId) {
     AnimationDataRec* anim = g_animationDataDB.GetRecord(animId);
-    return anim && anim->m_behaviorID >= 8 && anim->m_behaviorID <= 10;
+    return anim && AnimClassBehavior(anim->m_behaviorID) >= 8 && AnimClassBehavior(anim->m_behaviorID) <= 10;
 }
 
 // VERIFY: 810cddf4 manual
@@ -17130,7 +17131,7 @@ void CGUnit_C::PlayWoundAnimKit(int32_t crit) {
     } else {
         animId = 8;
 
-        if (!this->m_mountModel && !(this->m_movement->m_flags & 0x2E0100F) && !this->m_movementData.IsSplineFlyerOrHovering() && !this->IsSitting() && GetAnimBehaviorId(this->GetCurrentTorsoAnimId()) != 98) {
+        if (!this->m_mountModel && !(this->m_movement->m_flags & 0x2E0100F) && !this->m_movementData.IsSplineFlyerOrHovering() && !this->IsSitting() && AnimClassBehavior(GetAnimBehaviorId(this->GetCurrentTorsoAnimId())) != 98) {
             keyBone = 0xFFFFFFFF;
         }
     }
@@ -18983,7 +18984,7 @@ void CGUnit_C::CreateMissile(const WOWGUID* target, PendingSpellCastData* data, 
 
     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
 
-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
+    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
         model->m_fadeAlpha = 0.0f;
     }
 
@@ -19243,7 +19244,7 @@ void CGUnit_C::CreateMissile(const SpellCastTargetPoint* point, PendingSpellCast
 
     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
 
-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
+    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
         model->m_fadeAlpha = 0.0f;
     }
 
@@ -19432,7 +19433,7 @@ void CGUnit_C::CreateMissile(const TSStackArray<SpellCastTargetPoint>* points, P
 
     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
 
-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
+    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
         model->m_fadeAlpha = 0.0f;
     }
 
@@ -19620,7 +19621,7 @@ bool CGUnit_C::IsTracked() const {
 // OFFSET: 0x0071D450
 int32_t IsUnarmedAnim(uint32_t animId) {
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 16:
@@ -21215,7 +21216,7 @@ void CGUnit_C::UpdateCritterDisplay() {
 // OFFSET: 0x0071D450
 static int32_t IsWeaponAnimBehavior(uint32_t animId) {
     AnimationDataRec* animation = g_animationDataDB.GetRecord(animId);
-    int32_t behavior = animation ? animation->m_behaviorID : ANIM_COUNT;
+    int32_t behavior = AnimClassBehavior(animation ? animation->m_behaviorID : ANIM_COUNT);
 
     switch (behavior) {
         case 16:
@@ -21627,17 +21628,17 @@ int32_t IsSpecialIdleAnim(uint32_t animId) {
 
     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
 
-    if (rec && rec->m_behaviorID == 107) {
+    if (rec && AnimClassBehavior(rec->m_behaviorID) == 107) {
         return 1;
     }
 
     rec = g_animationDataDB.GetRecord(animId);
 
-    if (rec && rec->m_behaviorID == 46) {
+    if (rec && AnimClassBehavior(rec->m_behaviorID) == 46) {
         return 1;
     }
 
-    return GetAnimBehaviorId(animId) == 49;
+    return AnimClassBehavior(GetAnimBehaviorId(animId)) == 49;
 }
 
 // VERIFY: 597f8f44 manual

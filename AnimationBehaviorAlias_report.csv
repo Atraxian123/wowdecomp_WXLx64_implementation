@@ -1,0 +1,637 @@
+﻿ID,Name,Analog,AnalogBehavior,AnalogRoles,Decision,Reason,FlagConfidence
+506,EmoteSniff,EmoteTalk,60,UB EM,alias,,med
+508,AttackFist1H,AttackUnarmed,16,UB MA UN,alias,,high
+510,AttackFist1HOff,AttackUnarmedOff,117,UB MA UN,alias,,high
+512,ParryFist1H,Parry1H,21,UB MA,alias,,high
+514,ReadyFist1H,ReadyUnarmed,25,UB RD UN,alias,,high
+516,SpecialFist1H,SpecialUnarmed,118,UB MA WS UN,alias,,high
+518,EmoteReadStart,,,,own,"analog is a flag tuple, not a native animation",med
+520,EmoteReadLoop,,,,own,"analog is a flag tuple, not a native animation",med
+522,EmoteReadEnd,,,,own,"analog is a flag tuple, not a native animation",med
+524,SwimRun,Swim,42,FB,alias,,med
+526,SwimWalk,Swim,42,FB,alias,,med
+528,SwimWalkBackwards,SwimBackwards,45,FB,alias,,med
+530,SwimSprint,Swim,42,FB,alias,,med
+532,MountSwimIdle,Stand,0,FB,alias,,med
+534,MountSwimBackwards,Walkbackwards,13,FB,alias,,med
+536,MountSwimLeft,RunLeft,93,FB,alias,,med
+538,MountSwimRight,RunRight,92,FB,alias,,med
+540,MountSwimRun,Run,5,FB,alias,,med
+542,MountSwimSprint,Sprint,143,FB,alias,,med
+544,MountSwimWalk,Walk,4,FB,alias,,med
+546,MountSwimWalkBackwards,Walkbackwards,13,FB,alias,,med
+548,MountFlightIdle,Stand,0,FB,alias,,med
+550,MountFlightBackwards,Walkbackwards,13,FB,alias,,med
+552,MountFlightLeft,RunLeft,93,FB,alias,,med
+554,MountFlightRight,RunRight,92,FB,alias,,med
+556,MountFlightRun,Run,5,FB,alias,,med
+558,MountFlightSprint,Sprint,143,FB,alias,,med
+560,MountFlightWalk,Walk,4,FB,alias,,med
+562,MountFlightWalkBackwards,Walkbackwards,13,FB,alias,,med
+564,MountFlightStart,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,med
+566,MountSwimStart,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,med
+568,MountSwimLand,Land,200,,own,analog behavior has state-bit/death/jump handling,med
+570,MountSwimLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,med
+572,MountFlightLand,Land,200,,own,analog behavior has state-bit/death/jump handling,med
+574,MountFlightLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,med
+576,ReadyBlowDart,ReadyRifle,48,UB,alias,,med
+578,LoadBlowDart,LoadRifle,106,UB RW RF,alias,,med
+580,HoldBlowDart,HoldRifle,110,UB RW RF,alias,,med
+582,AttackBlowDart,AttackRifle,49,UB RW RF SI,alias,,med
+584,CarriageMount,ReclinedMount,484,,own,analog behavior is not in any classifier set,med
+586,CarriagePassengerMount,ReclinedMount,484,,own,analog behavior is not in any classifier set,med
+588,CarriageMountAttack,ReclinedMount,484,,own,analog behavior is not in any classifier set,med
+590,BarTendStand,Stand,0,FB,alias,,med
+592,BarServerWalk,Walk,4,FB,alias,,med
+594,BarServerRun,Run,5,FB,alias,,med
+596,BarServerShuffleLeft,ShuffleLeft,11,FB,alias,,med
+598,BarServerShuffleRight,ShuffleRight,12,FB,alias,,med
+600,BarTendEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+602,BarTendEmotePoint,EmotePointNoSheathe,209,,own,analog behavior is not in any classifier set,med
+604,BarServerStand,Stand,0,FB,alias,,med
+606,BarSweepWalk,Walk,4,FB,alias,,med
+608,BarSweepRun,Run,5,FB,alias,,med
+610,BarSweepShuffleLeft,ShuffleLeft,11,FB,alias,,med
+612,BarSweepShuffleRight,ShuffleRight,12,FB,alias,,med
+614,BarSweepEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+616,BarPatronSitEmotePoint,EmotePointNoSheathe,209,,own,analog behavior is not in any classifier set,med
+618,MountSelfIdle,Stand,0,FB,alias,,med
+620,MountSelfWalk,Walk,4,FB,alias,,med
+622,MountSelfRun,Run,5,FB,alias,,med
+624,MountSelfSprint,Sprint,143,FB,alias,,med
+626,MountSelfRunLeft,RunLeft,93,FB,alias,,med
+628,MountSelfRunRight,RunRight,92,FB,alias,,med
+630,MountSelfShuffleLeft,ShuffleLeft,11,FB,alias,,med
+632,MountSelfShuffleRight,ShuffleRight,12,FB,alias,,med
+634,MountSelfWalkBackwards,Walkbackwards,13,FB,alias,,med
+636,MountSelfSpecial,MountSpecial,94,FB,alias,,med
+638,MountSelfJump,Jump,38,FB JP AB,own,analog behavior has state-bit/death/jump handling,med
+640,MountSelfJumpStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,med
+642,MountSelfJumpEnd,JumpEnd,39,FB JP JL AB,own,analog behavior has state-bit/death/jump handling,med
+644,MountSelfJumpLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,med
+646,MountSelfStart,Mount,91,,own,analog behavior is not in any classifier set,med
+648,MountSelfFall,Fall,40,FB AB,own,analog behavior has state-bit/death/jump handling,med
+650,Stormstrike,Special1H,57,UB MA WS,alias,,med
+652,ReadyJoustNoSheathe,ReadyJoust,476,,own,analog behavior is not in any classifier set,high
+654,Slam,Special1H,57,UB MA WS,alias,,med
+656,DeathStrike,Special1H,57,UB MA WS,alias,,med
+658,SwimAttackUnarmed,AttackUnarmed,16,UB MA UN,alias,,high
+660,SpinningKick,Kick,95,FB MA,alias,,med
+662,RoundHouseKick,Kick,95,FB MA,alias,,med
+664,RollStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+666,Roll,Jump,38,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+668,RollEnd,JumpEnd,39,FB JP JL AB,own,analog behavior has state-bit/death/jump handling,low
+670,PalmStrike,AttackUnarmed,16,UB MA UN,alias,,med
+672,MonkOffenseAttackUnarmed,AttackUnarmed,16,UB MA UN,alias,,high
+674,MonkOffenseAttackUnarmedOff,AttackUnarmedOff,117,UB MA UN,alias,,high
+676,MonkOffenseParryUnarmed,Parry1H,21,UB MA,alias,,high
+678,MonkOffenseReadyUnarmed,ReadyUnarmed,25,UB RD UN,alias,,high
+680,MonkOffenseSpecialUnarmed,SpecialUnarmed,118,UB MA WS UN,alias,,high
+682,MonkDefenseAttackUnarmed,AttackUnarmed,16,UB MA UN,alias,,high
+684,MonkDefenseAttackUnarmedOff,AttackUnarmedOff,117,UB MA UN,alias,,high
+686,MonkDefenseParryUnarmed,Parry1H,21,UB MA,alias,,high
+688,MonkDefenseReadyUnarmed,ReadyUnarmed,25,UB RD UN,alias,,high
+690,MonkDefenseSpecialUnarmed,SpecialUnarmed,118,UB MA WS UN,alias,,high
+692,MonkHealAttackUnarmed,AttackUnarmed,16,UB MA UN,alias,,high
+694,MonkHealAttackUnarmedOff,AttackUnarmedOff,117,UB MA UN,alias,,high
+696,MonkHealParryUnarmed,Parry1H,21,UB MA,alias,,high
+698,MonkHealReadyUnarmed,ReadyUnarmed,25,UB RD UN,alias,,high
+700,MonkHealSpecialUnarmed,SpecialUnarmed,118,UB MA WS UN,alias,,high
+702,FlyingKick,Kick,95,FB MA,alias,,med
+704,FlyingKickStart,Kick,95,FB MA,alias,,med
+706,FlyingKickEnd,Kick,95,FB MA,alias,,med
+708,CraneStart,Loot,50,,own,analog behavior is not in any classifier set,low
+710,CraneLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+712,CraneEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+714,Despawned,Despawn,157,,own,analog behavior is not in any classifier set,high
+716,ThousandFists,Kick,95,FB MA,alias,,med
+718,MonkHealReadySpellDirected,ReadySpellDirected,51,UB SP,alias,,high
+720,MonkHealReadySpellOmni,ReadySpellOmni,52,UB SP,alias,,high
+722,MonkHealSpellCastDirected,SpellCastDirected,53,UB SC SI,alias,,high
+724,MonkHealSpellCastOmni,SpellCastOmni,54,UB SC SI,alias,,high
+726,MonkHealChannelCastDirected,ChannelCastDirected,124,UB,alias,,high
+728,MonkHealChannelCastOmni,ChannelCastOmni,125,UB,alias,,high
+730,Torpedo,Kick,95,FB MA,alias,,med
+732,Meditate,EmoteSitGround,72,UB EM,alias,,low
+734,BreathOfFire,DragonSpit,182,,own,analog behavior is not in any classifier set,low
+736,RisingSunKick,Kick,95,FB MA,alias,,med
+738,GroundKick,Kick,95,FB MA,alias,,med
+740,KickBack,Kick,95,FB MA,alias,,med
+742,PetBattleStand,Stand,0,FB,alias,,med
+744,PetBattleDeath,Death,1,FB DY DD,own,analog behavior has state-bit/death/jump handling,med
+746,PetBattleRun,Run,5,FB,alias,,med
+748,PetBattleWound,CombatWound,9,UB FB WD,alias,,med
+750,PetBattleAttack,AttackUnarmed,16,UB MA UN,alias,,med
+752,PetBattleReadySpell,ReadySpellOmni,52,UB SP,alias,,med
+754,PetBattleSpellCast,SpellCastOmni,54,UB SC SI,alias,,med
+756,PetBattleCustom0,Custom0,153,UB,alias,,high
+758,PetBattleCustom1,Custom0,153,UB,alias,,high
+760,PetBattleCustom2,Custom0,153,UB,alias,,high
+762,PetBattleCustom3,Custom0,153,UB,alias,,high
+764,PetBattleVictory,EmoteCheer,68,UB EM,alias,,med
+766,PetBattleLoss,EmoteCry,77,UB EM,alias,,med
+768,PetBattleStun,Stun,14,UB,alias,,med
+770,PetBattleDead,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,med
+772,PetBattleFreeze,Stun,14,UB,alias,,med
+774,MonkOffenseAttackWeapon,Attack1H,17,UB MA,alias,,high
+776,BarTendEmoteWave,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+778,BarServerEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+780,BarServerEmoteWave,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+782,BarServerPourDrinks,,,,own,"analog is a flag tuple, not a native animation",low
+784,BarServerPickup,,,,own,"analog is a flag tuple, not a native animation",low
+786,BarServerPutDown,,,,own,"analog is a flag tuple, not a native animation",low
+788,BarSweepStand,Stand,0,FB,alias,,med
+790,BarPatronSit,SitChairLow,102,,own,analog behavior is not in any classifier set,low
+792,BarPatronSitEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+794,BarPatronStand,Stand,0,FB,alias,,med
+796,BarPatronStandEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+798,BarPatronStandEmotePoint,EmotePointNoSheathe,209,,own,analog behavior is not in any classifier set,med
+800,CarrionSwarm,DragonSpit,182,,own,analog behavior is not in any classifier set,low
+802,WheelLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+804,StandCharacterCreate,Stand,0,FB,alias,,med
+806,MountChopper,Mount,91,,own,analog behavior is not in any classifier set,med
+808,FacePose,,,,own,"analog is a flag tuple, not a native animation",low
+810,CombatAbility2HBig01,Special1H,57,UB MA WS,alias,,med
+812,CombatAbility2H01,Special1H,57,UB MA WS,alias,,med
+814,CombatWhirlwind,Whirlwind,126,,own,analog behavior is not in any classifier set,high
+816,CombatChargeLoop,Run,5,FB,alias,,low
+818,CombatAbility1H01,Special1H,57,UB MA WS,alias,,med
+820,CombatChargeEnd,Special1H,57,UB MA WS,alias,,med
+822,CombatAbility1H02,Special1H,57,UB MA WS,alias,,med
+824,CombatAbility1HBig01,Special1H,57,UB MA WS,alias,,med
+826,CombatAbility2H02,Special1H,57,UB MA WS,alias,,med
+828,ShaSpellPrecastBoth,SpellPrecast,31,UB,alias,,med
+830,ShaSpellCastBothFront,SpellCastDirected,53,UB SC SI,alias,,med
+832,ShaSpellCastLeftFront,SpellCastDirected,53,UB SC SI,alias,,med
+834,ShaSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+836,ReadyCrossbow,ReadyRifle,48,UB,alias,,med
+838,LoadCrossbow,LoadRifle,106,UB RW RF,alias,,med
+840,AttackCrossbow,AttackRifle,49,UB RW RF SI,alias,,med
+842,HoldCrossbow,HoldRifle,110,UB RW RF,alias,,med
+844,CombatAbility2HL01,Special1H,57,UB MA WS,alias,,med
+846,CombatAbility2HL02,Special1H,57,UB MA WS,alias,,med
+848,CombatAbility2HLBig01,Special1H,57,UB MA WS,alias,,med
+850,CombatUnarmed01,AttackUnarmed,16,UB MA UN,alias,,high
+852,CombatStompLeft,Kick,95,FB MA,alias,,med
+854,CombatStompRight,Kick,95,FB MA,alias,,med
+856,CombatLeapLoop,Jump,38,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+858,CombatLeapEnd,JumpEnd,39,FB JP JL AB,own,analog behavior has state-bit/death/jump handling,low
+860,ShaReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+862,ShaSpellPrecastBothChannel,ChannelCastOmni,125,UB,alias,,med
+864,ShaSpellCastBothUp,SpellCastOmni,54,UB SC SI,alias,,med
+866,ShaSpellCastBothUpChannel,ChannelCastOmni,125,UB,alias,,med
+868,ShaSpellCastBothFrontChannel,ChannelCastDirected,124,UB,alias,,med
+870,ShaSpellCastLeftFrontChannel,ChannelCastDirected,124,UB,alias,,med
+872,ShaSpellCastRightFrontChannel,ChannelCastDirected,124,UB,alias,,med
+874,PriReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+876,PriSpellPrecastBoth,SpellPrecast,31,UB,alias,,med
+878,PriSpellPrecastBothChannel,ChannelCastOmni,125,UB,alias,,med
+880,PriSpellCastBothUp,SpellCastOmni,54,UB SC SI,alias,,med
+882,PriSpellCastBothFront,SpellCastDirected,53,UB SC SI,alias,,med
+884,PriSpellCastLeftFront,SpellCastDirected,53,UB SC SI,alias,,med
+886,PriSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+888,PriSpellCastBothUpChannel,ChannelCastOmni,125,UB,alias,,med
+890,PriSpellCastBothFrontChannel,ChannelCastDirected,124,UB,alias,,med
+892,PriSpellCastLeftFrontChannel,ChannelCastDirected,124,UB,alias,,med
+894,PriSpellCastRightFrontChannel,ChannelCastDirected,124,UB,alias,,med
+896,MagReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+898,MagSpellPrecastBoth,SpellPrecast,31,UB,alias,,med
+900,MagSpellPrecastBothChannel,ChannelCastOmni,125,UB,alias,,med
+902,MagSpellCastBothUp,SpellCastOmni,54,UB SC SI,alias,,med
+904,MagSpellCastBothFront,SpellCastDirected,53,UB SC SI,alias,,med
+906,MagSpellCastLeftFront,SpellCastDirected,53,UB SC SI,alias,,med
+908,MagSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+910,MagSpellCastBothUpChannel,ChannelCastOmni,125,UB,alias,,med
+912,MagSpellCastBothFrontChannel,ChannelCastDirected,124,UB,alias,,med
+914,MagSpellCastLeftFrontChannel,ChannelCastDirected,124,UB,alias,,med
+916,MagSpellCastRightFrontChannel,ChannelCastDirected,124,UB,alias,,med
+918,LocReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+920,LocSpellPrecastBoth,SpellPrecast,31,UB,alias,,med
+922,LocSpellPrecastBothChannel,ChannelCastOmni,125,UB,alias,,med
+924,LocSpellCastBothUp,SpellCastOmni,54,UB SC SI,alias,,med
+926,LocSpellCastBothFront,SpellCastDirected,53,UB SC SI,alias,,med
+928,LocSpellCastLeftFront,SpellCastDirected,53,UB SC SI,alias,,med
+930,LocSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+932,LocSpellCastBothUpChannel,ChannelCastOmni,125,UB,alias,,med
+934,LocSpellCastBothFrontChannel,ChannelCastDirected,124,UB,alias,,med
+936,LocSpellCastLeftFrontChannel,ChannelCastDirected,124,UB,alias,,med
+938,LocSpellCastRightFrontChannel,ChannelCastDirected,124,UB,alias,,med
+940,DruReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+942,DruSpellPrecastBoth,SpellPrecast,31,UB,alias,,med
+944,DruSpellPrecastBothChannel,ChannelCastOmni,125,UB,alias,,med
+946,DruSpellCastBothUp,SpellCastOmni,54,UB SC SI,alias,,med
+948,DruSpellCastBothFront,SpellCastDirected,53,UB SC SI,alias,,med
+950,DruSpellCastLeftFront,SpellCastDirected,53,UB SC SI,alias,,med
+952,DruSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+954,DruSpellCastBothUpChannel,ChannelCastOmni,125,UB,alias,,med
+956,DruSpellCastBothFrontChannel,ChannelCastDirected,124,UB,alias,,med
+958,DruSpellCastLeftFrontChannel,ChannelCastDirected,124,UB,alias,,med
+960,DruSpellCastRightFrontChannel,ChannelCastDirected,124,UB,alias,,med
+962,ArtMainLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+964,ArtDualLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+966,ArtFistsLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+968,ArtBowLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+970,CombatAbility1H01Off,Special1H,57,UB MA WS,alias,,med
+972,CombatAbility1H02Off,Special1H,57,UB MA WS,alias,,med
+974,CombatFuriousStrike01,Special1H,57,UB MA WS,alias,,med
+976,CombatFuriousStrike02,Special1H,57,UB MA WS,alias,,med
+978,CombatFuriousStrikes,Special1H,57,UB MA WS,alias,,med
+980,CombatReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+982,CombatShieldThrow,ShieldBash,59,UB MA,alias,,med
+984,PalSpellCast1HUp,SpellCastOmni,54,UB SC SI,alias,,med
+986,CombatReadyPostSpellCast,ReadySpellOmni,52,UB SP,alias,,low
+988,PriReadyPostSpellCast,ReadySpellOmni,52,UB SP,alias,,low
+990,DHCombatRun,Run,5,FB,alias,,low
+992,CombatShieldBash,ShieldBash,59,UB MA,alias,,med
+994,CombatThrow,AttackThrown,107,UB RW TH SI,alias,,high
+996,CombatAbility1HPierce,Attack1HPierce,85,UB MA,alias,,high
+998,CombatAbility1HOffPierce,Attack1HPierce,85,UB MA,alias,,med
+1000,CombatMutilate,Mutilate,212,MA,alias,,high
+1002,CombatBladeStorm,Whirlwind,126,,own,analog behavior is not in any classifier set,high
+1004,CombatFinishingMove,Special1H,57,UB MA WS,alias,,med
+1006,CombatLeapStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+1008,GlvThrowMain,Attack1H,17,UB MA,alias,,med
+1010,GlvThrownOff,AttackOff,87,UB MA,alias,,med
+1012,DHCombatSprint,Sprint,143,FB,alias,,low
+1014,CombatAbilityGlv01,Special1H,57,UB MA WS,alias,,med
+1016,CombatAbilityGlv02,Special1H,57,UB MA WS,alias,,med
+1018,CombatAbilityGlvOff01,Special1H,57,UB MA WS,alias,,med
+1020,CombatAbilityGlvOff02,Special1H,57,UB MA WS,alias,,med
+1022,CombatAbilityGlvBig01,Special2H,58,UB MA WS,alias,,med
+1024,CombatAbilityGlvBig02,Special2H,58,UB MA WS,alias,,med
+1026,ReadyGlv,Ready1H,26,UB RD,alias,,high
+1028,CombatAbilityGlvBig03,Special2H,58,UB MA WS,alias,,med
+1030,DoubleJumpStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+1032,DoubleJump,Fall,40,FB AB,own,analog behavior has state-bit/death/jump handling,low
+1034,CombatEviscerate,Special1H,57,UB MA WS,alias,,med
+1036,DoubleJumpLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,low
+1038,BackFlipStart,Special1H,57,UB MA WS,alias,,low
+1040,BackFlipLoop,Special1H,57,UB MA WS,alias,,low
+1042,FelRushLoop,Run,5,FB,alias,,low
+1044,FelRushEnd,Special1H,57,UB MA WS,alias,,med
+1046,DHToAlteredStart,ToAltered,486,,own,analog behavior is not in any classifier set,med
+1048,DHToAlteredEnd,FromAltered,487,,own,analog behavior is not in any classifier set,med
+1050,DHGlide,Fall,40,FB AB,own,analog behavior has state-bit/death/jump handling,low
+1052,FanOfKnives,Whirlwind,126,,own,analog behavior is not in any classifier set,high
+1054,SingleJumpStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+1056,DHBladeDance1,Special1H,57,UB MA WS,alias,,med
+1058,DHBladeDance2,Special1H,57,UB MA WS,alias,,med
+1060,DHBladeDance3,Special1H,57,UB MA WS,alias,,med
+1062,DHMeteorStrike,Special1H,57,UB MA WS,alias,,med
+1064,CombatExecute,Special1H,57,UB MA WS,alias,,med
+1066,ArtLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+1068,ParryGlv,Parry1H,21,UB MA,alias,,high
+1070,CombatUnarmed02,AttackUnarmed,16,UB MA UN,alias,,high
+1072,CombatPistolShot,AttackRifle,49,UB RW RF SI,alias,,med
+1074,CombatPistolShotOff,AttackRifle,49,UB RW RF SI,alias,,med
+1076,Monk2HLIdle,Hold,158,,own,analog behavior is not in any classifier set,low
+1078,ArtShieldLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+1080,CombatAbility2H03,Special1H,57,UB MA WS,alias,,med
+1082,CombatStomp,Kick,95,FB MA,alias,,med
+1084,CombatRoar,BattleRoar,55,UB,alias,,med
+1086,PalReadySpellCast,ReadySpellOmni,52,UB SP,alias,,med
+1088,PalSpellPrecastRight,SpellPrecast,31,UB,alias,,med
+1090,PalSpellPrecastRightChannel,ChannelCastOmni,125,UB,alias,,med
+1092,PalSpellCastRightFront,SpellCastDirected,53,UB SC SI,alias,,med
+1094,ShaSpellCastBothOut,SpellCastOmni,54,UB SC SI,alias,,med
+1096,AttackWeapon,Attack1H,17,UB MA,alias,,high
+1098,ReadyWeapon,Ready1H,26,UB RD,alias,,high
+1100,AttackWeaponOff,AttackOff,87,UB MA,alias,,high
+1102,SpecialDual,Special1H,57,UB MA WS,alias,,med
+1104,DkCast1HFront,SpellCastDirected,53,UB SC SI,alias,,med
+1106,CastStrongRight,SpellCastDirected,53,UB SC SI,alias,,low
+1108,CastStrongLeft,SpellCastDirected,53,UB SC SI,alias,,low
+1110,CastCurseRight,SpellCastDirected,53,UB SC SI,alias,,low
+1112,CastCurseLeft,SpellCastDirected,53,UB SC SI,alias,,low
+1114,CastSweepRight,SpellCastDirected,53,UB SC SI,alias,,low
+1116,CastSweepLeft,SpellCastDirected,53,UB SC SI,alias,,low
+1118,CastStrongUpLeft,SpellCastOmni,54,UB SC SI,alias,,low
+1120,CastTwistUpBoth,SpellCastOmni,54,UB SC SI,alias,,low
+1122,CastOutStrong,SpellCastOmni,54,UB SC SI,alias,,low
+1124,DrumLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+1126,ParryWeapon,Parry1H,21,UB MA,alias,,high
+1128,ReadyFL,Ready1H,26,UB RD,alias,,high
+1130,AttackFL,Attack1H,17,UB MA,alias,,high
+1132,AttackFLOff,AttackOff,87,UB MA,alias,,high
+1134,ParryFL,Parry1H,21,UB MA,alias,,high
+1136,SpecialFL,Special1H,57,UB MA WS,alias,,med
+1138,PriHoverForward,Run,5,FB,alias,,low
+1140,PriHoverBackward,Walkbackwards,13,FB,alias,,low
+1142,PriHoverRight,RunLeft,93,FB,alias,,low
+1144,PriHoverLeft,RunLeft,93,FB,alias,,low
+1146,RunBackwards,Walkbackwards,13,FB,alias,,med
+1148,CastStrongUpRight,SpellCastOmni,54,UB SC SI,alias,,low
+1150,WAWalk,Walk,4,FB,alias,,med
+1152,WARun,Run,5,FB,alias,,med
+1154,WADrunkStand,Stand,0,FB,alias,,med
+1156,WADrunkShuffleLeft,ShuffleLeft,11,FB,alias,,med
+1158,WADrunkShuffleRight,ShuffleRight,12,FB,alias,,med
+1160,WADrunkWalk,Walk,4,FB,alias,,med
+1162,WADrunkWalkBackwards,Walkbackwards,13,FB,alias,,med
+1164,WADrunkWound,StandWound,8,UB FB WD,alias,,med
+1166,WADrunkTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1168,WATrance01,,,,own,"analog is a flag tuple, not a native animation",low
+1170,WATrance02,,,,own,"analog is a flag tuple, not a native animation",low
+1172,WAChant01,,,,own,"analog is a flag tuple, not a native animation",low
+1174,WAChant02,,,,own,"analog is a flag tuple, not a native animation",low
+1176,WAChant03,,,,own,"analog is a flag tuple, not a native animation",low
+1178,WAHang01,,,,own,"analog is a flag tuple, not a native animation",low
+1180,WAHang02,,,,own,"analog is a flag tuple, not a native animation",low
+1182,WASummon01,,,,own,"analog is a flag tuple, not a native animation",low
+1184,WASummon02,,,,own,"analog is a flag tuple, not a native animation",low
+1186,WABeggarTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1188,WABeggarStand,Stand,0,FB,alias,,med
+1190,WABeggarPoint,EmotePointNoSheathe,209,,own,analog behavior is not in any classifier set,med
+1192,WABeggarBeg,EmoteBeg,79,,own,analog behavior is not in any classifier set,med
+1194,WASit01,,,,own,"analog is a flag tuple, not a native animation",low
+1196,WASit02,,,,own,"analog is a flag tuple, not a native animation",low
+1198,WASit03,,,,own,"analog is a flag tuple, not a native animation",low
+1200,WACrierStand01,Stand,0,FB,alias,,med
+1202,WACrierStand02,Stand,0,FB,alias,,med
+1204,WACrierStand03,Stand,0,FB,alias,,med
+1206,WACrierTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1208,WACrateHold,,,,own,"analog is a flag tuple, not a native animation",low
+1210,WABarrelHold,,,,own,"analog is a flag tuple, not a native animation",low
+1212,WASackHold,,,,own,"analog is a flag tuple, not a native animation",low
+1214,WAWheelBarrowStand,Stand,0,FB,alias,,med
+1216,WAWheelBarrowWalk,Walk,4,FB,alias,,med
+1218,WAWheelBarrowRun,Run,5,FB,alias,,med
+1220,WAHammerLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1222,WACrankLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1224,WAPourStart,Loot,50,,own,analog behavior is not in any classifier set,low
+1226,WAPourLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1228,WAPourEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+1230,WAEmotePour,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1232,WARowingStandRight,Stand,0,FB,alias,,med
+1234,WARowingStandLeft,Stand,0,FB,alias,,med
+1236,WARowingRight,,,,own,"analog is a flag tuple, not a native animation",low
+1238,WARowingLeft,,,,own,"analog is a flag tuple, not a native animation",low
+1240,WAGuardStand01,Stand,0,FB,alias,,med
+1242,WAGuardStand02,Stand,0,FB,alias,,med
+1244,WAGuardStand03,Stand,0,FB,alias,,med
+1246,WAGuardStand04,Stand,0,FB,alias,,med
+1248,WAFreezing01,,,,own,"analog is a flag tuple, not a native animation",low
+1250,WAFreezing02,,,,own,"analog is a flag tuple, not a native animation",low
+1252,WAVendorStand01,Stand,0,FB,alias,,med
+1254,WAVendorStand02,Stand,0,FB,alias,,med
+1256,WAVendorStand03,Stand,0,FB,alias,,med
+1258,WAVendorTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1260,WALean01,,,,own,"analog is a flag tuple, not a native animation",low
+1262,WALean02,,,,own,"analog is a flag tuple, not a native animation",low
+1264,WALean03,,,,own,"analog is a flag tuple, not a native animation",low
+1266,WALeanTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1268,WABoatWheel,,,,own,"analog is a flag tuple, not a native animation",low
+1270,WASmithLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1272,WAScrubbing,,,,own,"analog is a flag tuple, not a native animation",low
+1274,WAWeaponSharpen,,,,own,"analog is a flag tuple, not a native animation",low
+1276,WAStirring,,,,own,"analog is a flag tuple, not a native animation",low
+1278,WAPerch01,,,,own,"analog is a flag tuple, not a native animation",low
+1280,WAPerch02,,,,own,"analog is a flag tuple, not a native animation",low
+1282,HoldWeapon,HoldBow,109,UB RW BW,alias,,high
+1284,WABarrelWalk,Walk,4,FB,alias,,med
+1286,WAPourHold,,,,own,"analog is a flag tuple, not a native animation",low
+1288,CastStrong,SpellCastDirected,53,UB SC SI,alias,,low
+1290,CastCurse,SpellCastDirected,53,UB SC SI,alias,,low
+1292,CastSweep,SpellCastDirected,53,UB SC SI,alias,,low
+1294,CastStrongUp,SpellCastOmni,54,UB SC SI,alias,,low
+1296,WABoatWheelStand,Stand,0,FB,alias,,med
+1298,WASmithStand,Stand,0,FB,alias,,med
+1300,WACrankStand,Stand,0,FB,alias,,med
+1302,WAPourWalk,Walk,4,FB,alias,,med
+1304,FalconeerStart,Loot,50,,own,analog behavior is not in any classifier set,low
+1306,FalconeerLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1308,FalconeerEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+1310,WADrunkDrink,EmoteEatNoSheathe,199,,own,analog behavior is not in any classifier set,med
+1312,WAStandEat,EmoteEatNoSheathe,199,,own,analog behavior is not in any classifier set,med
+1314,WAStandDrink,EmoteEatNoSheathe,199,,own,analog behavior is not in any classifier set,med
+1316,WABound01,,,,own,"analog is a flag tuple, not a native animation",low
+1318,WABound02,,,,own,"analog is a flag tuple, not a native animation",low
+1320,CombatAbility1H03Off,Special1H,57,UB MA WS,alias,,med
+1322,CombatAbilityDualWield01,Special1H,57,UB MA WS,alias,,med
+1324,WACradle01,,,,own,"analog is a flag tuple, not a native animation",low
+1326,LocSummon,SpellCastOmni,54,UB SC SI,alias,,low
+1328,LoadWeapon,LoadBow,105,UB RW BW,alias,,high
+1330,ArtOffLoop,Hold,158,,own,analog behavior is not in any classifier set,low
+1332,WADead01,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1334,WADead02,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1336,WADead03,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1338,WADead04,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1340,WADead05,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1342,WADead06,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1344,WADead07,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,low
+1346,GiantRun,Run,5,FB,alias,,med
+1348,BarTendEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1350,BarTendEmoteTalkQuestion,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1352,BarTendEmoteTalkExclamation,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1354,BarTendWalk,Walk,4,FB,alias,,med
+1356,BartendShuffleLeft,ShuffleLeft,11,FB,alias,,med
+1358,BarTendShuffleRight,ShuffleRight,12,FB,alias,,med
+1360,BarTendCustomSpell01,CustomSpell02,214,UB,alias,,high
+1362,BarTendCustomSpell02,CustomSpell02,214,UB,alias,,high
+1364,BarTendCustomSpell03,CustomSpell02,214,UB,alias,,high
+1366,BarServerEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1368,BarServerEmoteTalkQuestion,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1370,BarServerEmoteTalkExclamation,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1372,BarServerCustomSpell01,CustomSpell02,214,UB,alias,,high
+1374,BarServerCustomSpell02,CustomSpell02,214,UB,alias,,high
+1376,BarServerCustomSpell03,CustomSpell02,214,UB,alias,,high
+1378,BarPatronEmoteDrink,EmoteEatNoSheathe,199,,own,analog behavior is not in any classifier set,med
+1380,BarPatronEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1382,BarPatronCustomSpell01,CustomSpell02,214,UB,alias,,high
+1384,BarPatronCustomSpell02,CustomSpell02,214,UB,alias,,high
+1386,BarPatronCustomSpell03,CustomSpell02,214,UB,alias,,high
+1388,HoldDart,HoldThrown,111,UB RW TH,alias,,high
+1390,ReadyDart,ReadyThrown,108,UB RW,alias,,high
+1392,AttackDart,AttackThrown,107,UB RW TH SI,alias,,high
+1394,LoadDart,LoadThrown,112,UB RW TH,alias,,high
+1396,WADartTargetStand,Stand,0,FB,alias,,med
+1398,WADartTargetEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1400,BarPatronSitEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1402,BarPatronSitCustomSpell01,CustomSpell02,214,UB,alias,,high
+1404,BarPatronSitCustomSpell02,CustomSpell02,214,UB,alias,,high
+1406,BarPatronSitCustomSpell03,CustomSpell02,214,UB,alias,,high
+1408,BarPianoStand,Stand,0,FB,alias,,med
+1410,BarPianoEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1412,WAHearthSit,SitChairLow,102,,own,analog behavior is not in any classifier set,low
+1414,WAHearthSitEmoteCry,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1416,WAHearthSitEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1418,WAHearthSitCustomSpell01,CustomSpell02,214,UB,alias,,high
+1420,WAHearthSitCustomSpell02,CustomSpell02,214,UB,alias,,high
+1422,WAHearthSitCustomSpell03,CustomSpell02,214,UB,alias,,high
+1424,WAHearthStand,Stand,0,FB,alias,,med
+1426,WAHearthStandEmoteCheer,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1428,WAHearthStandEmoteTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1430,WAHearthStandCustomSpell01,CustomSpell02,214,UB,alias,,high
+1432,WAHearthStandCustomSpell02,CustomSpell02,214,UB,alias,,high
+1434,WAHearthStandCustomSpell03,CustomSpell02,214,UB,alias,,high
+1436,WAScribeStart,Loot,50,,own,analog behavior is not in any classifier set,low
+1438,WAScribeLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1440,WAScribeEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+1442,WAEmoteScribe,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1444,Haymaker,Kick,95,FB MA,alias,,med
+1446,HaymakerPrecast,SpellPrecast,31,UB,alias,,low
+1448,ChannelCastOmniUp,ChannelCastOmni,125,UB,alias,,high
+1450,DHJumpLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,low
+1452,Cinematic01,,,,own,"analog is a flag tuple, not a native animation",low
+1454,Cinematic02,,,,own,"analog is a flag tuple, not a native animation",low
+1456,Cinematic03,,,,own,"analog is a flag tuple, not a native animation",low
+1458,Cinematic04,,,,own,"analog is a flag tuple, not a native animation",low
+1460,Cinematic05,,,,own,"analog is a flag tuple, not a native animation",low
+1462,Cinematic06,,,,own,"analog is a flag tuple, not a native animation",low
+1464,Cinematic07,,,,own,"analog is a flag tuple, not a native animation",low
+1466,Cinematic08,,,,own,"analog is a flag tuple, not a native animation",low
+1468,Cinematic09,,,,own,"analog is a flag tuple, not a native animation",low
+1470,Cinematic10,,,,own,"analog is a flag tuple, not a native animation",low
+1472,TakeOffStart,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1474,TakeOffFinish,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1476,LandStart,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1478,LandFinish,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1480,WAWalkTalk,Walk,4,FB,alias,,med
+1482,WAPerch03,,,,own,"analog is a flag tuple, not a native animation",low
+1484,CarriageMountMoving,ReclinedMount,484,,own,analog behavior is not in any classifier set,med
+1486,TakeOffFinishFly,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1488,CombatAbility2HBig02,Special1H,57,UB MA WS,alias,,med
+1490,MountWide,Mount,91,,own,analog behavior is not in any classifier set,med
+1492,EmoteTalkSubdued,EmoteTalk,60,UB EM,alias,,med
+1494,WASit04,,,,own,"analog is a flag tuple, not a native animation",low
+1496,MountSummon,Mount,91,,own,analog behavior is not in any classifier set,med
+1498,EmoteSelfie,EmoteTalk,60,UB EM,alias,,med
+1500,CustomSpell11,CustomSpell02,214,UB,alias,,high
+1502,CustomSpell12,CustomSpell02,214,UB,alias,,high
+1504,CustomSpell13,CustomSpell02,214,UB,alias,,high
+1506,CustomSpell14,CustomSpell02,214,UB,alias,,high
+1508,CustomSpell15,CustomSpell02,214,UB,alias,,high
+1510,CustomSpell16,CustomSpell02,214,UB,alias,,high
+1512,CustomSpell17,CustomSpell02,214,UB,alias,,high
+1514,CustomSpell18,CustomSpell02,214,UB,alias,,high
+1516,CustomSpell19,CustomSpell02,214,UB,alias,,high
+1518,CustomSpell20,CustomSpell02,214,UB,alias,,high
+1520,AdvFlyLeft,RunLeft,93,FB,alias,,low
+1522,AdvFlyRight,RunLeft,93,FB,alias,,low
+1524,AdvFlyForward,Run,5,FB,alias,,low
+1526,AdvFlyBackward,Walkbackwards,13,FB,alias,,low
+1528,AdvFlyUp,Run,5,FB,alias,,low
+1530,AdvFlyDown,Walkbackwards,13,FB,alias,,low
+1532,AdvFlyForwardGlide,,,,own,"analog is a flag tuple, not a native animation",low
+1534,AdvFlyRoll,,,,own,"analog is a flag tuple, not a native animation",low
+1536,ProfCookingLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1538,ProfCookingStart,Loot,50,,own,analog behavior is not in any classifier set,low
+1540,ProfCookingEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+1542,WACurious,,,,own,"analog is a flag tuple, not a native animation",low
+1544,WAAlert,,,,own,"analog is a flag tuple, not a native animation",low
+1546,WAInvestigate,,,,own,"analog is a flag tuple, not a native animation",low
+1548,WAInteraction,,,,own,"analog is a flag tuple, not a native animation",low
+1550,WAThreaten,,,,own,"analog is a flag tuple, not a native animation",low
+1552,WAReact01,,,,own,"analog is a flag tuple, not a native animation",low
+1554,WAReact02,,,,own,"analog is a flag tuple, not a native animation",low
+1556,AdvFlyRollStart,,,,own,"analog is a flag tuple, not a native animation",low
+1558,AdvFlyRollEnd,,,,own,"analog is a flag tuple, not a native animation",low
+1560,EmpBreathPrecast,SpellPrecast,31,UB,alias,,med
+1562,EmpBreathPrecastChannel,ChannelCastOmni,125,UB,alias,,med
+1564,EmpBreathSpellCast,SpellCastOmni,54,UB SC SI,alias,,med
+1566,EmpBreathSpellCastChannel,ChannelCastOmni,125,UB,alias,,med
+1568,DracFlyBreathTakeoffStart,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1570,DracFlyBreathTakeoffFinish,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1572,DracFlyBreath,,,,own,"analog is a flag tuple, not a native animation",low
+1574,DracFlyBreathLandStart,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1576,DracFlyBreathLandFinish,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1578,DracAirDashLeft,,,,own,"analog is a flag tuple, not a native animation",low
+1580,DracAirDashForward,,,,own,"analog is a flag tuple, not a native animation",low
+1582,DracAirDashBackward,,,,own,"analog is a flag tuple, not a native animation",low
+1584,DracAirDashRight,,,,own,"analog is a flag tuple, not a native animation",low
+1586,LivingWorldProximityEnter,,,,own,"analog is a flag tuple, not a native animation",low
+1588,AdvFlyDownEnd,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1590,LivingWorldProximityLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1592,LivingWorldProximityLeave,,,,own,"analog is a flag tuple, not a native animation",low
+1594,EmpAirBarragePrecast,SpellPrecast,31,UB,alias,,med
+1596,EmpAirBarragePrecastChannel,ChannelCastOmni,125,UB,alias,,med
+1598,EmpAirBarrageSpellCast,SpellCastOmni,54,UB SC SI,alias,,med
+1600,DracClawSwipeLeft,AttackUnarmed,16,UB MA UN,alias,,low
+1602,DracClawSwipeRight,AttackUnarmed,16,UB MA UN,alias,,low
+1604,DracHoverIdle,Stand,0,FB,alias,,med
+1606,DracHoverLeft,RunLeft,93,FB,alias,,low
+1608,DracHoverRight,RunLeft,93,FB,alias,,low
+1610,DracHoverBackward,Walkbackwards,13,FB,alias,,low
+1612,DracHoverForward,Run,5,FB,alias,,low
+1614,DracAttackWings,AttackUnarmed,16,UB MA UN,alias,,low
+1616,DracAttackTail,AttackUnarmed,16,UB MA UN,alias,,low
+1618,AdvFlyStart,LiftOff,192,,own,analog behavior has state-bit/death/jump handling,low
+1620,AdvFlyLand,Land,200,,own,analog behavior has state-bit/death/jump handling,low
+1622,AdvFlyLandRun,JumpLandRun,187,FB JP JL,own,analog behavior has state-bit/death/jump handling,low
+1624,AdvFlyStrafeLeft,RunLeft,93,FB,alias,,low
+1626,AdvFlyStrafeRight,RunLeft,93,FB,alias,,low
+1628,AdvFlyIdle,Stand,0,FB,alias,,med
+1630,AdvFlyRollRight,,,,own,"analog is a flag tuple, not a native animation",low
+1632,AdvFlyRollRightEnd,,,,own,"analog is a flag tuple, not a native animation",low
+1634,AdvFlyRollLeft,,,,own,"analog is a flag tuple, not a native animation",low
+1636,AdvFlyRollLeftEnd,,,,own,"analog is a flag tuple, not a native animation",low
+1638,AdvFlyFlap,,,,own,"analog is a flag tuple, not a native animation",low
+1640,DracHoverDracClawSwipeLeft,AttackUnarmed,16,UB MA UN,alias,,low
+1642,DracHoverDracClawSwipeRight,AttackUnarmed,16,UB MA UN,alias,,low
+1644,DracHoverDracAttackWings,AttackUnarmed,16,UB MA UN,alias,,low
+1646,DracHoverReadySpellOmni,ReadySpellOmni,52,UB SP,alias,,med
+1648,DracHoverSpellCastOmni,SpellCastOmni,54,UB SC SI,alias,,med
+1650,DracHoverChannelSpellOmni,ChannelCastOmni,125,UB,alias,,med
+1652,DracHoverReadySpellDirected,ReadySpellDirected,51,UB SP,alias,,med
+1654,DracHoverChannelSpellDirected,ChannelCastDirected,124,UB,alias,,med
+1656,DracHoverSpellCastDirected,SpellCastDirected,53,UB SC SI,alias,,med
+1658,DracHoverCastOutStrong,SpellCastOmni,54,UB SC SI,alias,,med
+1660,DracHoverBattleRoar,BattleRoar,55,UB,alias,,med
+1662,DracHoverEmpBreathSpellCast,SpellCastOmni,54,UB SC SI,alias,,med
+1664,DracHoverEmpBreathSpellCastChannel,ChannelCastOmni,125,UB,alias,,med
+1666,LivingWorldTimeOfDayEnter,,,,own,"analog is a flag tuple, not a native animation",low
+1668,LivingWorldTimeOfDayLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1670,LivingWorldTimeOfDayLeave,,,,own,"analog is a flag tuple, not a native animation",low
+1672,LivingWorldWeatherEnter,,,,own,"analog is a flag tuple, not a native animation",low
+1674,LivingWorldWeatherLoop,,,,own,"analog is a flag tuple, not a native animation",low
+1676,LivingWorldWeatherLeave,,,,own,"analog is a flag tuple, not a native animation",low
+1678,AdvFlyDownStart,,,,own,"analog is a flag tuple, not a native animation",low
+1680,AdvFlyFlapBig,,,,own,"analog is a flag tuple, not a native animation",low
+1682,DracHoverReadyUnarmed,ReadyUnarmed,25,UB RD UN,alias,,high
+1684,DracHoverAttackUnarmed,AttackUnarmed,16,UB MA UN,alias,,med
+1686,DracHoverParryUnarmed,Parry1H,21,UB MA,alias,,high
+1688,DracHoverCombatWound,CombatWound,9,UB FB WD,alias,,high
+1690,DracHoverCombatCritical,CombatCritical,10,UB FB MA WD,alias,,high
+1692,DracHoverAttackTail,AttackUnarmed,16,UB MA UN,alias,,low
+1694,Glide,Fall,40,FB AB,own,analog behavior has state-bit/death/jump handling,low
+1696,GlideEnd,JumpEnd,39,FB JP JL AB,own,analog behavior has state-bit/death/jump handling,low
+1698,DracClawSwipe,AttackUnarmed,16,UB MA UN,alias,,low
+1700,DracHoverDracClawSwipe,AttackUnarmed,16,UB MA UN,alias,,low
+1702,AdvFlyFlapUp,,,,own,"analog is a flag tuple, not a native animation",low
+1704,AdvFlySlowFall,,,,own,"analog is a flag tuple, not a native animation",low
+1706,AdvFlyFlapFoward,,,,own,"analog is a flag tuple, not a native animation",low
+1708,DracSpellCastWings,SpellCastOmni,54,UB SC SI,alias,,med
+1710,DracHoverDracSpellCastWings,SpellCastOmni,54,UB SC SI,alias,,med
+1712,DracAirDashVertical,,,,own,"analog is a flag tuple, not a native animation",low
+1714,DracAirDashRefresh,,,,own,"analog is a flag tuple, not a native animation",low
+1716,SkinningLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1718,SkinningStart,Loot,50,,own,analog behavior is not in any classifier set,low
+1720,SkinningEnd,LootUp,189,,own,analog behavior is not in any classifier set,low
+1722,AdvFlyForwardGlideSlow,,,,own,"analog is a flag tuple, not a native animation",low
+1724,AdvFlyForwardGlideFast,,,,own,"analog is a flag tuple, not a native animation",low
+1726,AdvFlySecondFlapUp,,,,own,"analog is a flag tuple, not a native animation",low
+1728,FloatIdle,Stand,0,FB,alias,,med
+1730,FloatWalk,Walk,4,FB,alias,,low
+1732,CinematicTalk,EmoteTalkNoSheathe,208,,own,analog behavior is not in any classifier set,med
+1734,CinematicWAGuardEmoteSlam01,,,,own,"analog is a flag tuple, not a native animation",low
+1736,WABlowHorn,,,,own,"analog is a flag tuple, not a native animation",low
+1738,MountExtraWide,Mount,91,,own,analog behavior is not in any classifier set,med
+1740,WA2HIdle,Hold,158,,own,analog behavior is not in any classifier set,low
+1742,HerbalismLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1744,CookingLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1746,WAWeaponSharpenNoSheathe,EmoteWorkNoSheathe,136,UB EM,alias,,med
+1748,CinematicDeath,Death,1,FB DY DD,own,analog behavior has state-bit/death/jump handling,med
+1750,CinematicDeathPose,Dead,6,FB DD CO,own,analog behavior has state-bit/death/jump handling,med
+1752,EmpSlamPrecast,SpellPrecast,31,UB,alias,,med
+1754,EmpSlamPrecastChannel,ChannelCastOmni,125,UB,alias,,med
+1756,EmpSlamSpellCast,SpellCastOmni,54,UB SC SI,alias,,med
+1758,Climb,Walk,4,FB,alias,,low
+1760,ClimbStart,JumpStart,37,FB JP AB,own,analog behavior has state-bit/death/jump handling,low
+1762,ClimbEnd,JumpEnd,39,FB JP JL AB,own,analog behavior has state-bit/death/jump handling,low
+1764,MountLeanLeft,MountSpecial,94,FB,alias,,low
+1766,MountLeanRight,MountSpecial,94,FB,alias,,low
+1768,MountDive,MountSpecial,94,FB,alias,,low
+1770,MountCrouch,MountSpecial,94,FB,alias,,low
+1772,WAShovelLoop,LootHold,188,,own,analog behavior is not in any classifier set,low
+1774,EmoteTalkFrustrated,EmoteTalk,60,UB EM,alias,,med
+1776,MountMedium,Mount,91,,own,analog behavior is not in any classifier set,med

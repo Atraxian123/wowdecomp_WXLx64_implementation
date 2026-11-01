@@ -1,0 +1,1629 @@
+diff --git a/Tools/AnimIds/AnimationBehaviorAlias.txt b/Tools/AnimIds/AnimationBehaviorAlias.txt
+new file mode 100644
+index 0000000..f922ddb
+--- /dev/null
++++ b/Tools/AnimIds/AnimationBehaviorAlias.txt
+@@ -0,0 +1,417 @@
++# Animation behavior aliases for the extended AnimationData rows (ground ids 506, 508, ... 1776).
++#
++# Why: every classifier in Unit_C.cpp (IsEmoteAnim, IsUpperBodyAnim, IsMeleeAttackAnim, IsSpellCastAnim, ...) looks the
++# animation up in AnimationData.dbc and switches on its BehaviorID. An extended animation has to keep BehaviorID == its
++# own id (AnimationData::FindIdByBehaviorAndTier finds a ground row, and its FLY twin, by that value), so it would fall
++# outside every classifier set. This table says "classify this animation as that native one" without touching the DBC:
++# the classifiers read the behavior through AnimClassBehavior() (AnimBehaviorAlias.h), which maps it here.
++#
++# Format, one animation per line (ids that are not listed keep their own behavior, i.e. stay plain whole-body animations):
++#     <ground animation id>  <native animation it counts as>      # <this animation's name>  [<roles it gains>]  <confidence>
++# The base is named like the enumerators in Types.h (EmoteTalk -> ANIM_EMOTE_TALK) and must be a native id (< 506); the
++# generator checks both. The name after '#' is checked against AnimationNames.txt where that file knows the id. FLY twins
++# need no line: their BehaviorID is the ground id, so they follow it. 'low' marks rows whose analog was a stand-in guess.
++#
++# Never alias onto a behavior that does more than classify: 1/6/131/132/466-472 (death), 37-40/187 (jump/airborne),
++# 39/121/127/192/200/201/458-460/464 (they set animation-state bits). The generator refuses them.
++#
++# Regenerate AnimBehaviorAlias.h with:  python3 Tools/AnimIds/gen_behavior_alias.py
++
++506   EmoteTalk                  # EmoteSniff                           [UB EM] med
++508   AttackUnarmed              # AttackFist1H                         [UB MA UN] high
++510   AttackUnarmedOff           # AttackFist1HOff                      [UB MA UN] high
++512   Parry1H                    # ParryFist1H                          [UB MA] high
++514   ReadyUnarmed               # ReadyFist1H                          [UB RD UN] high
++516   SpecialUnarmed             # SpecialFist1H                        [UB MA WS UN] high
++524   Swim                       # SwimRun                              [FB] med
++526   Swim                       # SwimWalk                             [FB] med
++528   SwimBackwards              # SwimWalkBackwards                    [FB] med
++530   Swim                       # SwimSprint                           [FB] med
++532   Stand                      # MountSwimIdle                        [FB] med
++534   Walkbackwards              # MountSwimBackwards                   [FB] med
++536   RunLeft                    # MountSwimLeft                        [FB] med
++538   RunRight                   # MountSwimRight                       [FB] med
++540   Run                        # MountSwimRun                         [FB] med
++542   Sprint                     # MountSwimSprint                      [FB] med
++544   Walk                       # MountSwimWalk                        [FB] med
++546   Walkbackwards              # MountSwimWalkBackwards               [FB] med
++548   Stand                      # MountFlightIdle                      [FB] med
++550   Walkbackwards              # MountFlightBackwards                 [FB] med
++552   RunLeft                    # MountFlightLeft                      [FB] med
++554   RunRight                   # MountFlightRight                     [FB] med
++556   Run                        # MountFlightRun                       [FB] med
++558   Sprint                     # MountFlightSprint                    [FB] med
++560   Walk                       # MountFlightWalk                      [FB] med
++562   Walkbackwards              # MountFlightWalkBackwards             [FB] med
++576   ReadyRifle                 # ReadyBlowDart                        [UB] med
++578   LoadRifle                  # LoadBlowDart                         [UB RW RF] med
++580   HoldRifle                  # HoldBlowDart                         [UB RW RF] med
++582   AttackRifle                # AttackBlowDart                       [UB RW RF SI] med
++590   Stand                      # BarTendStand                         [FB] med
++592   Walk                       # BarServerWalk                        [FB] med
++594   Run                        # BarServerRun                         [FB] med
++596   ShuffleLeft                # BarServerShuffleLeft                 [FB] med
++598   ShuffleRight               # BarServerShuffleRight                [FB] med
++604   Stand                      # BarServerStand                       [FB] med
++606   Walk                       # BarSweepWalk                         [FB] med
++608   Run                        # BarSweepRun                          [FB] med
++610   ShuffleLeft                # BarSweepShuffleLeft                  [FB] med
++612   ShuffleRight               # BarSweepShuffleRight                 [FB] med
++618   Stand                      # MountSelfIdle                        [FB] med
++620   Walk                       # MountSelfWalk                        [FB] med
++622   Run                        # MountSelfRun                         [FB] med
++624   Sprint                     # MountSelfSprint                      [FB] med
++626   RunLeft                    # MountSelfRunLeft                     [FB] med
++628   RunRight                   # MountSelfRunRight                    [FB] med
++630   ShuffleLeft                # MountSelfShuffleLeft                 [FB] med
++632   ShuffleRight               # MountSelfShuffleRight                [FB] med
++634   Walkbackwards              # MountSelfWalkBackwards               [FB] med
++636   MountSpecial               # MountSelfSpecial                     [FB] med
++650   Special1H                  # Stormstrike                          [UB MA WS] med
++654   Special1H                  # Slam                                 [UB MA WS] med
++656   Special1H                  # DeathStrike                          [UB MA WS] med
++658   AttackUnarmed              # SwimAttackUnarmed                    [UB MA UN] high
++660   Kick                       # SpinningKick                         [FB MA] med
++662   Kick                       # RoundHouseKick                       [FB MA] med
++670   AttackUnarmed              # PalmStrike                           [UB MA UN] med
++672   AttackUnarmed              # MonkOffenseAttackUnarmed             [UB MA UN] high
++674   AttackUnarmedOff           # MonkOffenseAttackUnarmedOff          [UB MA UN] high
++676   Parry1H                    # MonkOffenseParryUnarmed              [UB MA] high
++678   ReadyUnarmed               # MonkOffenseReadyUnarmed              [UB RD UN] high
++680   SpecialUnarmed             # MonkOffenseSpecialUnarmed            [UB MA WS UN] high
++682   AttackUnarmed              # MonkDefenseAttackUnarmed             [UB MA UN] high
++684   AttackUnarmedOff           # MonkDefenseAttackUnarmedOff          [UB MA UN] high
++686   Parry1H                    # MonkDefenseParryUnarmed              [UB MA] high
++688   ReadyUnarmed               # MonkDefenseReadyUnarmed              [UB RD UN] high
++690   SpecialUnarmed             # MonkDefenseSpecialUnarmed            [UB MA WS UN] high
++692   AttackUnarmed              # MonkHealAttackUnarmed                [UB MA UN] high
++694   AttackUnarmedOff           # MonkHealAttackUnarmedOff             [UB MA UN] high
++696   Parry1H                    # MonkHealParryUnarmed                 [UB MA] high
++698   ReadyUnarmed               # MonkHealReadyUnarmed                 [UB RD UN] high
++700   SpecialUnarmed             # MonkHealSpecialUnarmed               [UB MA WS UN] high
++702   Kick                       # FlyingKick                           [FB MA] med
++704   Kick                       # FlyingKickStart                      [FB MA] med
++706   Kick                       # FlyingKickEnd                        [FB MA] med
++716   Kick                       # ThousandFists                        [FB MA] med
++718   ReadySpellDirected         # MonkHealReadySpellDirected           [UB SP] high
++720   ReadySpellOmni             # MonkHealReadySpellOmni               [UB SP] high
++722   SpellCastDirected          # MonkHealSpellCastDirected            [UB SC SI] high
++724   SpellCastOmni              # MonkHealSpellCastOmni                [UB SC SI] high
++726   ChannelCastDirected        # MonkHealChannelCastDirected          [UB] high
++728   ChannelCastOmni            # MonkHealChannelCastOmni              [UB] high
++730   Kick                       # Torpedo                              [FB MA] med
++732   EmoteSitGround             # Meditate                             [UB EM] low
++736   Kick                       # RisingSunKick                        [FB MA] med
++738   Kick                       # GroundKick                           [FB MA] med
++740   Kick                       # KickBack                             [FB MA] med
++742   Stand                      # PetBattleStand                       [FB] med
++746   Run                        # PetBattleRun                         [FB] med
++748   CombatWound                # PetBattleWound                       [UB FB WD] med
++750   AttackUnarmed              # PetBattleAttack                      [UB MA UN] med
++752   ReadySpellOmni             # PetBattleReadySpell                  [UB SP] med
++754   SpellCastOmni              # PetBattleSpellCast                   [UB SC SI] med
++756   Custom0                    # PetBattleCustom0                     [UB] high
++758   Custom0                    # PetBattleCustom1                     [UB] high
++760   Custom0                    # PetBattleCustom2                     [UB] high
++762   Custom0                    # PetBattleCustom3                     [UB] high
++764   EmoteCheer                 # PetBattleVictory                     [UB EM] med
++766   EmoteCry                   # PetBattleLoss                        [UB EM] med
++768   Stun                       # PetBattleStun                        [UB] med
++772   Stun                       # PetBattleFreeze                      [UB] med
++774   Attack1H                   # MonkOffenseAttackWeapon              [UB MA] high
++788   Stand                      # BarSweepStand                        [FB] med
++794   Stand                      # BarPatronStand                       [FB] med
++804   Stand                      # StandCharacterCreate                 [FB] med
++810   Special1H                  # CombatAbility2HBig01                 [UB MA WS] med
++812   Special1H                  # CombatAbility2H01                    [UB MA WS] med
++816   Run                        # CombatChargeLoop                     [FB] low
++818   Special1H                  # CombatAbility1H01                    [UB MA WS] med
++820   Special1H                  # CombatChargeEnd                      [UB MA WS] med
++822   Special1H                  # CombatAbility1H02                    [UB MA WS] med
++824   Special1H                  # CombatAbility1HBig01                 [UB MA WS] med
++826   Special1H                  # CombatAbility2H02                    [UB MA WS] med
++828   SpellPrecast               # ShaSpellPrecastBoth                  [UB] med
++830   SpellCastDirected          # ShaSpellCastBothFront                [UB SC SI] med
++832   SpellCastDirected          # ShaSpellCastLeftFront                [UB SC SI] med
++834   SpellCastDirected          # ShaSpellCastRightFront               [UB SC SI] med
++836   ReadyRifle                 # ReadyCrossbow                        [UB] med
++838   LoadRifle                  # LoadCrossbow                         [UB RW RF] med
++840   AttackRifle                # AttackCrossbow                       [UB RW RF SI] med
++842   HoldRifle                  # HoldCrossbow                         [UB RW RF] med
++844   Special1H                  # CombatAbility2HL01                   [UB MA WS] med
++846   Special1H                  # CombatAbility2HL02                   [UB MA WS] med
++848   Special1H                  # CombatAbility2HLBig01                [UB MA WS] med
++850   AttackUnarmed              # CombatUnarmed01                      [UB MA UN] high
++852   Kick                       # CombatStompLeft                      [FB MA] med
++854   Kick                       # CombatStompRight                     [FB MA] med
++860   ReadySpellOmni             # ShaReadySpellCast                    [UB SP] med
++862   ChannelCastOmni            # ShaSpellPrecastBothChannel           [UB] med
++864   SpellCastOmni              # ShaSpellCastBothUp                   [UB SC SI] med
++866   ChannelCastOmni            # ShaSpellCastBothUpChannel            [UB] med
++868   ChannelCastDirected        # ShaSpellCastBothFrontChannel         [UB] med
++870   ChannelCastDirected        # ShaSpellCastLeftFrontChannel         [UB] med
++872   ChannelCastDirected        # ShaSpellCastRightFrontChannel        [UB] med
++874   ReadySpellOmni             # PriReadySpellCast                    [UB SP] med
++876   SpellPrecast               # PriSpellPrecastBoth                  [UB] med
++878   ChannelCastOmni            # PriSpellPrecastBothChannel           [UB] med
++880   SpellCastOmni              # PriSpellCastBothUp                   [UB SC SI] med
++882   SpellCastDirected          # PriSpellCastBothFront                [UB SC SI] med
++884   SpellCastDirected          # PriSpellCastLeftFront                [UB SC SI] med
++886   SpellCastDirected          # PriSpellCastRightFront               [UB SC SI] med
++888   ChannelCastOmni            # PriSpellCastBothUpChannel            [UB] med
++890   ChannelCastDirected        # PriSpellCastBothFrontChannel         [UB] med
++892   ChannelCastDirected        # PriSpellCastLeftFrontChannel         [UB] med
++894   ChannelCastDirected        # PriSpellCastRightFrontChannel        [UB] med
++896   ReadySpellOmni             # MagReadySpellCast                    [UB SP] med
++898   SpellPrecast               # MagSpellPrecastBoth                  [UB] med
++900   ChannelCastOmni            # MagSpellPrecastBothChannel           [UB] med
++902   SpellCastOmni              # MagSpellCastBothUp                   [UB SC SI] med
++904   SpellCastDirected          # MagSpellCastBothFront                [UB SC SI] med
++906   SpellCastDirected          # MagSpellCastLeftFront                [UB SC SI] med
++908   SpellCastDirected          # MagSpellCastRightFront               [UB SC SI] med
++910   ChannelCastOmni            # MagSpellCastBothUpChannel            [UB] med
++912   ChannelCastDirected        # MagSpellCastBothFrontChannel         [UB] med
++914   ChannelCastDirected        # MagSpellCastLeftFrontChannel         [UB] med
++916   ChannelCastDirected        # MagSpellCastRightFrontChannel        [UB] med
++918   ReadySpellOmni             # LocReadySpellCast                    [UB SP] med
++920   SpellPrecast               # LocSpellPrecastBoth                  [UB] med
++922   ChannelCastOmni            # LocSpellPrecastBothChannel           [UB] med
++924   SpellCastOmni              # LocSpellCastBothUp                   [UB SC SI] med
++926   SpellCastDirected          # LocSpellCastBothFront                [UB SC SI] med
++928   SpellCastDirected          # LocSpellCastLeftFront                [UB SC SI] med
++930   SpellCastDirected          # LocSpellCastRightFront               [UB SC SI] med
++932   ChannelCastOmni            # LocSpellCastBothUpChannel            [UB] med
++934   ChannelCastDirected        # LocSpellCastBothFrontChannel         [UB] med
++936   ChannelCastDirected        # LocSpellCastLeftFrontChannel         [UB] med
++938   ChannelCastDirected        # LocSpellCastRightFrontChannel        [UB] med
++940   ReadySpellOmni             # DruReadySpellCast                    [UB SP] med
++942   SpellPrecast               # DruSpellPrecastBoth                  [UB] med
++944   ChannelCastOmni            # DruSpellPrecastBothChannel           [UB] med
++946   SpellCastOmni              # DruSpellCastBothUp                   [UB SC SI] med
++948   SpellCastDirected          # DruSpellCastBothFront                [UB SC SI] med
++950   SpellCastDirected          # DruSpellCastLeftFront                [UB SC SI] med
++952   SpellCastDirected          # DruSpellCastRightFront               [UB SC SI] med
++954   ChannelCastOmni            # DruSpellCastBothUpChannel            [UB] med
++956   ChannelCastDirected        # DruSpellCastBothFrontChannel         [UB] med
++958   ChannelCastDirected        # DruSpellCastLeftFrontChannel         [UB] med
++960   ChannelCastDirected        # DruSpellCastRightFrontChannel        [UB] med
++970   Special1H                  # CombatAbility1H01Off                 [UB MA WS] med
++972   Special1H                  # CombatAbility1H02Off                 [UB MA WS] med
++974   Special1H                  # CombatFuriousStrike01                [UB MA WS] med
++976   Special1H                  # CombatFuriousStrike02                [UB MA WS] med
++978   Special1H                  # CombatFuriousStrikes                 [UB MA WS] med
++980   ReadySpellOmni             # CombatReadySpellCast                 [UB SP] med
++982   ShieldBash                 # CombatShieldThrow                    [UB MA] med
++984   SpellCastOmni              # PalSpellCast1HUp                     [UB SC SI] med
++986   ReadySpellOmni             # CombatReadyPostSpellCast             [UB SP] low
++988   ReadySpellOmni             # PriReadyPostSpellCast                [UB SP] low
++990   Run                        # DHCombatRun                          [FB] low
++992   ShieldBash                 # CombatShieldBash                     [UB MA] med
++994   AttackThrown               # CombatThrow                          [UB RW TH SI] high
++996   Attack1HPierce             # CombatAbility1HPierce                [UB MA] high
++998   Attack1HPierce             # CombatAbility1HOffPierce             [UB MA] med
++1000  Mutilate                   # CombatMutilate                       [MA] high
++1004  Special1H                  # CombatFinishingMove                  [UB MA WS] med
++1008  Attack1H                   # GlvThrowMain                         [UB MA] med
++1010  AttackOff                  # GlvThrownOff                         [UB MA] med
++1012  Sprint                     # DHCombatSprint                       [FB] low
++1014  Special1H                  # CombatAbilityGlv01                   [UB MA WS] med
++1016  Special1H                  # CombatAbilityGlv02                   [UB MA WS] med
++1018  Special1H                  # CombatAbilityGlvOff01                [UB MA WS] med
++1020  Special1H                  # CombatAbilityGlvOff02                [UB MA WS] med
++1022  Special2H                  # CombatAbilityGlvBig01                [UB MA WS] med
++1024  Special2H                  # CombatAbilityGlvBig02                [UB MA WS] med
++1026  Ready1H                    # ReadyGlv                             [UB RD] high
++1028  Special2H                  # CombatAbilityGlvBig03                [UB MA WS] med
++1034  Special1H                  # CombatEviscerate                     [UB MA WS] med
++1038  Special1H                  # BackFlipStart                        [UB MA WS] low
++1040  Special1H                  # BackFlipLoop                         [UB MA WS] low
++1042  Run                        # FelRushLoop                          [FB] low
++1044  Special1H                  # FelRushEnd                           [UB MA WS] med
++1056  Special1H                  # DHBladeDance1                        [UB MA WS] med
++1058  Special1H                  # DHBladeDance2                        [UB MA WS] med
++1060  Special1H                  # DHBladeDance3                        [UB MA WS] med
++1062  Special1H                  # DHMeteorStrike                       [UB MA WS] med
++1064  Special1H                  # CombatExecute                        [UB MA WS] med
++1068  Parry1H                    # ParryGlv                             [UB MA] high
++1070  AttackUnarmed              # CombatUnarmed02                      [UB MA UN] high
++1072  AttackRifle                # CombatPistolShot                     [UB RW RF SI] med
++1074  AttackRifle                # CombatPistolShotOff                  [UB RW RF SI] med
++1080  Special1H                  # CombatAbility2H03                    [UB MA WS] med
++1082  Kick                       # CombatStomp                          [FB MA] med
++1084  BattleRoar                 # CombatRoar                           [UB] med
++1086  ReadySpellOmni             # PalReadySpellCast                    [UB SP] med
++1088  SpellPrecast               # PalSpellPrecastRight                 [UB] med
++1090  ChannelCastOmni            # PalSpellPrecastRightChannel          [UB] med
++1092  SpellCastDirected          # PalSpellCastRightFront               [UB SC SI] med
++1094  SpellCastOmni              # ShaSpellCastBothOut                  [UB SC SI] med
++1096  Attack1H                   # AttackWeapon                         [UB MA] high
++1098  Ready1H                    # ReadyWeapon                          [UB RD] high
++1100  AttackOff                  # AttackWeaponOff                      [UB MA] high
++1102  Special1H                  # SpecialDual                          [UB MA WS] med
++1104  SpellCastDirected          # DkCast1HFront                        [UB SC SI] med
++1106  SpellCastDirected          # CastStrongRight                      [UB SC SI] low
++1108  SpellCastDirected          # CastStrongLeft                       [UB SC SI] low
++1110  SpellCastDirected          # CastCurseRight                       [UB SC SI] low
++1112  SpellCastDirected          # CastCurseLeft                        [UB SC SI] low
++1114  SpellCastDirected          # CastSweepRight                       [UB SC SI] low
++1116  SpellCastDirected          # CastSweepLeft                        [UB SC SI] low
++1118  SpellCastOmni              # CastStrongUpLeft                     [UB SC SI] low
++1120  SpellCastOmni              # CastTwistUpBoth                      [UB SC SI] low
++1122  SpellCastOmni              # CastOutStrong                        [UB SC SI] low
++1126  Parry1H                    # ParryWeapon                          [UB MA] high
++1128  Ready1H                    # ReadyFL                              [UB RD] high
++1130  Attack1H                   # AttackFL                             [UB MA] high
++1132  AttackOff                  # AttackFLOff                          [UB MA] high
++1134  Parry1H                    # ParryFL                              [UB MA] high
++1136  Special1H                  # SpecialFL                            [UB MA WS] med
++1138  Run                        # PriHoverForward                      [FB] low
++1140  Walkbackwards              # PriHoverBackward                     [FB] low
++1142  RunLeft                    # PriHoverRight                        [FB] low
++1144  RunLeft                    # PriHoverLeft                         [FB] low
++1146  Walkbackwards              # RunBackwards                         [FB] med
++1148  SpellCastOmni              # CastStrongUpRight                    [UB SC SI] low
++1150  Walk                       # WAWalk                               [FB] med
++1152  Run                        # WARun                                [FB] med
++1154  Stand                      # WADrunkStand                         [FB] med
++1156  ShuffleLeft                # WADrunkShuffleLeft                   [FB] med
++1158  ShuffleRight               # WADrunkShuffleRight                  [FB] med
++1160  Walk                       # WADrunkWalk                          [FB] med
++1162  Walkbackwards              # WADrunkWalkBackwards                 [FB] med
++1164  StandWound                 # WADrunkWound                         [UB FB WD] med
++1188  Stand                      # WABeggarStand                        [FB] med
++1200  Stand                      # WACrierStand01                       [FB] med
++1202  Stand                      # WACrierStand02                       [FB] med
++1204  Stand                      # WACrierStand03                       [FB] med
++1214  Stand                      # WAWheelBarrowStand                   [FB] med
++1216  Walk                       # WAWheelBarrowWalk                    [FB] med
++1218  Run                        # WAWheelBarrowRun                     [FB] med
++1232  Stand                      # WARowingStandRight                   [FB] med
++1234  Stand                      # WARowingStandLeft                    [FB] med
++1240  Stand                      # WAGuardStand01                       [FB] med
++1242  Stand                      # WAGuardStand02                       [FB] med
++1244  Stand                      # WAGuardStand03                       [FB] med
++1246  Stand                      # WAGuardStand04                       [FB] med
++1252  Stand                      # WAVendorStand01                      [FB] med
++1254  Stand                      # WAVendorStand02                      [FB] med
++1256  Stand                      # WAVendorStand03                      [FB] med
++1282  HoldBow                    # HoldWeapon                           [UB RW BW] high
++1284  Walk                       # WABarrelWalk                         [FB] med
++1288  SpellCastDirected          # CastStrong                           [UB SC SI] low
++1290  SpellCastDirected          # CastCurse                            [UB SC SI] low
++1292  SpellCastDirected          # CastSweep                            [UB SC SI] low
++1294  SpellCastOmni              # CastStrongUp                         [UB SC SI] low
++1296  Stand                      # WABoatWheelStand                     [FB] med
++1298  Stand                      # WASmithStand                         [FB] med
++1300  Stand                      # WACrankStand                         [FB] med
++1302  Walk                       # WAPourWalk                           [FB] med
++1320  Special1H                  # CombatAbility1H03Off                 [UB MA WS] med
++1322  Special1H                  # CombatAbilityDualWield01             [UB MA WS] med
++1326  SpellCastOmni              # LocSummon                            [UB SC SI] low
++1328  LoadBow                    # LoadWeapon                           [UB RW BW] high
++1346  Run                        # GiantRun                             [FB] med
++1354  Walk                       # BarTendWalk                          [FB] med
++1356  ShuffleLeft                # BartendShuffleLeft                   [FB] med
++1358  ShuffleRight               # BarTendShuffleRight                  [FB] med
++1360  CustomSpell02              # BarTendCustomSpell01                 [UB] high
++1362  CustomSpell02              # BarTendCustomSpell02                 [UB] high
++1364  CustomSpell02              # BarTendCustomSpell03                 [UB] high
++1372  CustomSpell02              # BarServerCustomSpell01               [UB] high
++1374  CustomSpell02              # BarServerCustomSpell02               [UB] high
++1376  CustomSpell02              # BarServerCustomSpell03               [UB] high
++1382  CustomSpell02              # BarPatronCustomSpell01               [UB] high
++1384  CustomSpell02              # BarPatronCustomSpell02               [UB] high
++1386  CustomSpell02              # BarPatronCustomSpell03               [UB] high
++1388  HoldThrown                 # HoldDart                             [UB RW TH] high
++1390  ReadyThrown                # ReadyDart                            [UB RW] high
++1392  AttackThrown               # AttackDart                           [UB RW TH SI] high
++1394  LoadThrown                 # LoadDart                             [UB RW TH] high
++1396  Stand                      # WADartTargetStand                    [FB] med
++1402  CustomSpell02              # BarPatronSitCustomSpell01            [UB] high
++1404  CustomSpell02              # BarPatronSitCustomSpell02            [UB] high
++1406  CustomSpell02              # BarPatronSitCustomSpell03            [UB] high
++1408  Stand                      # BarPianoStand                        [FB] med
++1418  CustomSpell02              # WAHearthSitCustomSpell01             [UB] high
++1420  CustomSpell02              # WAHearthSitCustomSpell02             [UB] high
++1422  CustomSpell02              # WAHearthSitCustomSpell03             [UB] high
++1424  Stand                      # WAHearthStand                        [FB] med
++1430  CustomSpell02              # WAHearthStandCustomSpell01           [UB] high
++1432  CustomSpell02              # WAHearthStandCustomSpell02           [UB] high
++1434  CustomSpell02              # WAHearthStandCustomSpell03           [UB] high
++1444  Kick                       # Haymaker                             [FB MA] med
++1446  SpellPrecast               # HaymakerPrecast                      [UB] low
++1448  ChannelCastOmni            # ChannelCastOmniUp                    [UB] high
++1480  Walk                       # WAWalkTalk                           [FB] med
++1488  Special1H                  # CombatAbility2HBig02                 [UB MA WS] med
++1492  EmoteTalk                  # EmoteTalkSubdued                     [UB EM] med
++1498  EmoteTalk                  # EmoteSelfie                          [UB EM] med
++1500  CustomSpell02              # CustomSpell11                        [UB] high
++1502  CustomSpell02              # CustomSpell12                        [UB] high
++1504  CustomSpell02              # CustomSpell13                        [UB] high
++1506  CustomSpell02              # CustomSpell14                        [UB] high
++1508  CustomSpell02              # CustomSpell15                        [UB] high
++1510  CustomSpell02              # CustomSpell16                        [UB] high
++1512  CustomSpell02              # CustomSpell17                        [UB] high
++1514  CustomSpell02              # CustomSpell18                        [UB] high
++1516  CustomSpell02              # CustomSpell19                        [UB] high
++1518  CustomSpell02              # CustomSpell20                        [UB] high
++1520  RunLeft                    # AdvFlyLeft                           [FB] low
++1522  RunLeft                    # AdvFlyRight                          [FB] low
++1524  Run                        # AdvFlyForward                        [FB] low
++1526  Walkbackwards              # AdvFlyBackward                       [FB] low
++1528  Run                        # AdvFlyUp                             [FB] low
++1530  Walkbackwards              # AdvFlyDown                           [FB] low
++1560  SpellPrecast               # EmpBreathPrecast                     [UB] med
++1562  ChannelCastOmni            # EmpBreathPrecastChannel              [UB] med
++1564  SpellCastOmni              # EmpBreathSpellCast                   [UB SC SI] med
++1566  ChannelCastOmni            # EmpBreathSpellCastChannel            [UB] med
++1594  SpellPrecast               # EmpAirBarragePrecast                 [UB] med
++1596  ChannelCastOmni            # EmpAirBarragePrecastChannel          [UB] med
++1598  SpellCastOmni              # EmpAirBarrageSpellCast               [UB SC SI] med
++1600  AttackUnarmed              # DracClawSwipeLeft                    [UB MA UN] low
++1602  AttackUnarmed              # DracClawSwipeRight                   [UB MA UN] low
++1604  Stand                      # DracHoverIdle                        [FB] med
++1606  RunLeft                    # DracHoverLeft                        [FB] low
++1608  RunLeft                    # DracHoverRight                       [FB] low
++1610  Walkbackwards              # DracHoverBackward                    [FB] low
++1612  Run                        # DracHoverForward                     [FB] low
++1614  AttackUnarmed              # DracAttackWings                      [UB MA UN] low
++1616  AttackUnarmed              # DracAttackTail                       [UB MA UN] low
++1624  RunLeft                    # AdvFlyStrafeLeft                     [FB] low
++1626  RunLeft                    # AdvFlyStrafeRight                    [FB] low
++1628  Stand                      # AdvFlyIdle                           [FB] med
++1640  AttackUnarmed              # DracHoverDracClawSwipeLeft           [UB MA UN] low
++1642  AttackUnarmed              # DracHoverDracClawSwipeRight          [UB MA UN] low
++1644  AttackUnarmed              # DracHoverDracAttackWings             [UB MA UN] low
++1646  ReadySpellOmni             # DracHoverReadySpellOmni              [UB SP] med
++1648  SpellCastOmni              # DracHoverSpellCastOmni               [UB SC SI] med
++1650  ChannelCastOmni            # DracHoverChannelSpellOmni            [UB] med
++1652  ReadySpellDirected         # DracHoverReadySpellDirected          [UB SP] med
++1654  ChannelCastDirected        # DracHoverChannelSpellDirected        [UB] med
++1656  SpellCastDirected          # DracHoverSpellCastDirected           [UB SC SI] med
++1658  SpellCastOmni              # DracHoverCastOutStrong               [UB SC SI] med
++1660  BattleRoar                 # DracHoverBattleRoar                  [UB] med
++1662  SpellCastOmni              # DracHoverEmpBreathSpellCast          [UB SC SI] med
++1664  ChannelCastOmni            # DracHoverEmpBreathSpellCastChannel   [UB] med
++1682  ReadyUnarmed               # DracHoverReadyUnarmed                [UB RD UN] high
++1684  AttackUnarmed              # DracHoverAttackUnarmed               [UB MA UN] med
++1686  Parry1H                    # DracHoverParryUnarmed                [UB MA] high
++1688  CombatWound                # DracHoverCombatWound                 [UB FB WD] high
++1690  CombatCritical             # DracHoverCombatCritical              [UB FB MA WD] high
++1692  AttackUnarmed              # DracHoverAttackTail                  [UB MA UN] low
++1698  AttackUnarmed              # DracClawSwipe                        [UB MA UN] low
++1700  AttackUnarmed              # DracHoverDracClawSwipe               [UB MA UN] low
++1708  SpellCastOmni              # DracSpellCastWings                   [UB SC SI] med
++1710  SpellCastOmni              # DracHoverDracSpellCastWings          [UB SC SI] med
++1728  Stand                      # FloatIdle                            [FB] med
++1730  Walk                       # FloatWalk                            [FB] low
++1746  EmoteWorkNoSheathe         # WAWeaponSharpenNoSheathe             [UB EM] med
++1752  SpellPrecast               # EmpSlamPrecast                       [UB] med
++1754  ChannelCastOmni            # EmpSlamPrecastChannel                [UB] med
++1756  SpellCastOmni              # EmpSlamSpellCast                     [UB SC SI] med
++1758  Walk                       # Climb                                [FB] low
++1764  MountSpecial               # MountLeanLeft                        [FB] low
++1766  MountSpecial               # MountLeanRight                       [FB] low
++1768  MountSpecial               # MountDive                            [FB] low
++1770  MountSpecial               # MountCrouch                          [FB] low
++1774  EmoteTalk                  # EmoteTalkFrustrated                  [UB EM] med
+diff --git a/Tools/AnimIds/gen_behavior_alias.py b/Tools/AnimIds/gen_behavior_alias.py
+new file mode 100644
+index 0000000..bc2a6d3
+--- /dev/null
++++ b/Tools/AnimIds/gen_behavior_alias.py
+@@ -0,0 +1,144 @@
++#!/usr/bin/env python3
++"""Regenerates WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h from AnimationBehaviorAlias.txt.
++
++  python3 Tools/AnimIds/gen_behavior_alias.py            rewrite the header
++  python3 Tools/AnimIds/gen_behavior_alias.py --check    verify only (exit 1 when the header is out of date)
++
++The header holds one entry per extended ground animation (ids 506, 508, ... up to ANIM_COUNT - 2): the behavior the
++client classifies that animation as. An id without a line in the .txt maps to itself. See the .txt for the why.
++Runs after gen_anim_enum.py (it reads ANIM_COUNT and the native enumerators from Types.h).
++"""
++import argparse
++import os
++import re
++import sys
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++sys.path.insert(0, HERE)
++from gen_anim_enum import enumerator, read_names  # noqa: E402
++
++FIRST = 506
++# behaviors that set animation-state bits or drive death / airborne handling; classifying a new animation as one of
++# these would change client state, not just layering (see the .txt header)
++FORBIDDEN = {1, 6, 131, 132, 37, 38, 39, 40, 187, 121, 127, 192, 200, 201, 458, 459, 460, 464, 466, 467, 468, 472}
++
++
++def main():
++    root = os.path.abspath(os.path.join(HERE, '..', '..'))
++    ap = argparse.ArgumentParser()
++    ap.add_argument('--types', default=os.path.join(root, 'WoW/Source/Object/ObjectClient/Types.h'))
++    ap.add_argument('--names', default=os.path.join(HERE, 'AnimationNames.txt'))
++    ap.add_argument('--table', default=os.path.join(HERE, 'AnimationBehaviorAlias.txt'))
++    ap.add_argument('--out', default=os.path.join(root, 'WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h'))
++    ap.add_argument('--check', action='store_true')
++    a = ap.parse_args()
++
++    types = open(a.types, 'rb').read().decode('utf-8').replace('\r\n', '\n')
++    enum = {}
++    for m in re.finditer(r'\b(ANIM_[A-Z0-9_]+)\s*=\s*(0x[0-9A-Fa-f]+|\d+),', types):
++        enum[m.group(1)] = int(m.group(2), 0)
++    if 'ANIM_COUNT' not in enum:
++        sys.exit("ANIM_COUNT not found in " + a.types)
++    count = enum['ANIM_COUNT']
++    if (count - FIRST) % 2 or count <= FIRST:
++        sys.exit(f"ANIM_COUNT {count} does not leave whole ground/FLY pairs after id {FIRST}")
++    entries = (count - FIRST) // 2
++    native = {v: k for k, v in enum.items() if v < FIRST}
++
++    names = read_names(a.names)
++    alias = {}
++    for n, raw in enumerate(open(a.table, encoding='utf-8'), 1):
++        body, _, comment = raw.partition('#')
++        body = body.strip()
++        if not body:
++            continue
++        parts = body.split()
++        if len(parts) != 2 or not parts[0].isdigit():
++            sys.exit(f"{a.table}:{n}: expected '<id> <BaseName>', got '{body}'")
++        i, base = int(parts[0]), parts[1]
++        if i < FIRST or i >= count or (i - FIRST) % 2:
++            sys.exit(f"{a.table}:{n}: id {i} is not an extended ground animation id ({FIRST}, {FIRST + 2}, ... {count - 2})")
++        if i in alias:
++            sys.exit(f"{a.table}:{n}: id {i} listed twice")
++        e = enumerator(base)
++        if e not in enum or enum[e] >= FIRST:
++            sys.exit(f"{a.table}:{n}: '{base}' ({e}) is not a native animation enumerator in Types.h")
++        if enum[e] in FORBIDDEN:
++            sys.exit(f"{a.table}:{n}: '{base}' ({enum[e]}) sets client state; do not alias onto it (see the .txt header)")
++        label = comment.split()[0] if comment.split() else ''
++        known = names.get(i)
++        if label and known and not known.startswith('Unnamed') and known != label:
++            sys.exit(f"{a.table}:{n}: id {i} is '{known}' in AnimationNames.txt but the comment says '{label}'")
++        alias[i] = (enum[e], base, label)
++
++    rows = []
++    for k in range(entries):
++        i = FIRST + 2 * k
++        if i in alias:
++            b, base, label = alias[i]
++            rows.append(f"        {b},  // {i} {label} -> {base}")
++        else:
++            rows.append(f"        {i},  // {i}")
++    out = HEADER.format(first=FIRST, entries=entries, n_alias=len(alias), rows='\n'.join(rows))
++
++    eol = '\n'
++    if os.path.exists(a.out):
++        old = open(a.out, 'rb').read().decode('utf-8')
++        eol = '\r\n' if '\r\n' in old else '\n'
++        same = old.replace('\r\n', '\n') == out
++    else:
++        same = False
++    if a.check:
++        if not same:
++            print("AnimBehaviorAlias.h is out of date: run Tools/AnimIds/gen_behavior_alias.py", file=sys.stderr)
++            sys.exit(1)
++        print(f"up to date: {len(alias)} of {entries} extended animations aliased, ANIM_COUNT = {count}")
++        return
++    open(a.out, 'wb').write(out.replace('\n', eol).encode('utf-8'))
++    print(f"wrote {a.out}: {len(alias)} of {entries} extended animations aliased, ANIM_COUNT = {count}")
++
++
++HEADER = '''#pragma once
++
++// GENERATED by Tools/AnimIds/gen_behavior_alias.py from Tools/AnimIds/AnimationBehaviorAlias.txt - edit the .txt, not this file.
++//
++// AnimClassBehavior(): the behavior the client CLASSIFIES an animation as.
++//
++// An extended animation (id >= {first}) keeps BehaviorID == its own id so that AnimationData::FindIdByBehaviorAndTier can
++// find it (and its FLY twin, whose BehaviorID is the ground id). That puts it outside every classifier set in Unit_C.cpp.
++// The classifiers therefore read the row's BehaviorID through this function: a listed animation is classified as the
++// native animation it is modelled on (torso layering, emote / melee / cast handling, ...); everything else is returned
++// unchanged, including every native id, the "no record" sentinel (ANIM_COUNT) and all the special behaviors.
++//
++// Use it wherever a behavior is compared against a classifier value. Do NOT use it where the behavior is an identity:
++// FindIdByBehaviorAndTier, FindDefaultAnimForTier, GetAnimBehaviorId (m_mountAnimBehaviorId is fed back into
++// ResolveAnimForModel) and UpdateDisplayInfo's deathAnim keep the raw BehaviorID.
++
++#include <cstdint>
++
++#include "WoW/Source/Object/ObjectClient/Types.h"
++
++constexpr int32_t ANIM_ALIAS_FIRST = {first};    // first extended ground animation id
++constexpr int32_t ANIM_ALIAS_COUNT = {entries};    // one entry per ground id: {first}, {first} + 2, ... ANIM_COUNT - 2
++
++static_assert(ANIM_ALIAS_FIRST + 2 * ANIM_ALIAS_COUNT == ANIM_COUNT,
++              "ANIM_COUNT changed: re-run Tools/AnimIds/gen_behavior_alias.py (and list the new animations in AnimationBehaviorAlias.txt)");
++
++// {n_alias} of the {entries} entries differ from their own id.
++inline int32_t AnimClassBehavior(int32_t behavior) {{
++    static const int16_t kClassBehavior[ANIM_ALIAS_COUNT] = {{
++{rows}
++    }};
++
++    const uint32_t offset = static_cast<uint32_t>(behavior) - static_cast<uint32_t>(ANIM_ALIAS_FIRST);
++
++    if (offset >= static_cast<uint32_t>(2 * ANIM_ALIAS_COUNT) || (offset & 1)) {{
++        return behavior;
++    }}
++
++    return kClassBehavior[offset >> 1];
++}}
++'''
++
++if __name__ == '__main__':
++    main()
+diff --git a/WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h b/WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h
+new file mode 100644
+index 0000000..d325d0b
+--- /dev/null
++++ b/WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h
+@@ -0,0 +1,675 @@
++#pragma once
++
++// GENERATED by Tools/AnimIds/gen_behavior_alias.py from Tools/AnimIds/AnimationBehaviorAlias.txt - edit the .txt, not this file.
++//
++// AnimClassBehavior(): the behavior the client CLASSIFIES an animation as.
++//
++// An extended animation (id >= 506) keeps BehaviorID == its own id so that AnimationData::FindIdByBehaviorAndTier can
++// find it (and its FLY twin, whose BehaviorID is the ground id). That puts it outside every classifier set in Unit_C.cpp.
++// The classifiers therefore read the row's BehaviorID through this function: a listed animation is classified as the
++// native animation it is modelled on (torso layering, emote / melee / cast handling, ...); everything else is returned
++// unchanged, including every native id, the "no record" sentinel (ANIM_COUNT) and all the special behaviors.
++//
++// Use it wherever a behavior is compared against a classifier value. Do NOT use it where the behavior is an identity:
++// FindIdByBehaviorAndTier, FindDefaultAnimForTier, GetAnimBehaviorId (m_mountAnimBehaviorId is fed back into
++// ResolveAnimForModel) and UpdateDisplayInfo's deathAnim keep the raw BehaviorID.
++
++#include <cstdint>
++
++#include "WoW/Source/Object/ObjectClient/Types.h"
++
++constexpr int32_t ANIM_ALIAS_FIRST = 506;    // first extended ground animation id
++constexpr int32_t ANIM_ALIAS_COUNT = 636;    // one entry per ground id: 506, 506 + 2, ... ANIM_COUNT - 2
++
++static_assert(ANIM_ALIAS_FIRST + 2 * ANIM_ALIAS_COUNT == ANIM_COUNT,
++              "ANIM_COUNT changed: re-run Tools/AnimIds/gen_behavior_alias.py (and list the new animations in AnimationBehaviorAlias.txt)");
++
++// 398 of the 636 entries differ from their own id.
++inline int32_t AnimClassBehavior(int32_t behavior) {
++    static const int16_t kClassBehavior[ANIM_ALIAS_COUNT] = {
++        60,  // 506 EmoteSniff -> EmoteTalk
++        16,  // 508 AttackFist1H -> AttackUnarmed
++        117,  // 510 AttackFist1HOff -> AttackUnarmedOff
++        21,  // 512 ParryFist1H -> Parry1H
++        25,  // 514 ReadyFist1H -> ReadyUnarmed
++        118,  // 516 SpecialFist1H -> SpecialUnarmed
++        518,  // 518
++        520,  // 520
++        522,  // 522
++        42,  // 524 SwimRun -> Swim
++        42,  // 526 SwimWalk -> Swim
++        45,  // 528 SwimWalkBackwards -> SwimBackwards
++        42,  // 530 SwimSprint -> Swim
++        0,  // 532 MountSwimIdle -> Stand
++        13,  // 534 MountSwimBackwards -> Walkbackwards
++        93,  // 536 MountSwimLeft -> RunLeft
++        92,  // 538 MountSwimRight -> RunRight
++        5,  // 540 MountSwimRun -> Run
++        143,  // 542 MountSwimSprint -> Sprint
++        4,  // 544 MountSwimWalk -> Walk
++        13,  // 546 MountSwimWalkBackwards -> Walkbackwards
++        0,  // 548 MountFlightIdle -> Stand
++        13,  // 550 MountFlightBackwards -> Walkbackwards
++        93,  // 552 MountFlightLeft -> RunLeft
++        92,  // 554 MountFlightRight -> RunRight
++        5,  // 556 MountFlightRun -> Run
++        143,  // 558 MountFlightSprint -> Sprint
++        4,  // 560 MountFlightWalk -> Walk
++        13,  // 562 MountFlightWalkBackwards -> Walkbackwards
++        564,  // 564
++        566,  // 566
++        568,  // 568
++        570,  // 570
++        572,  // 572
++        574,  // 574
++        48,  // 576 ReadyBlowDart -> ReadyRifle
++        106,  // 578 LoadBlowDart -> LoadRifle
++        110,  // 580 HoldBlowDart -> HoldRifle
++        49,  // 582 AttackBlowDart -> AttackRifle
++        584,  // 584
++        586,  // 586
++        588,  // 588
++        0,  // 590 BarTendStand -> Stand
++        4,  // 592 BarServerWalk -> Walk
++        5,  // 594 BarServerRun -> Run
++        11,  // 596 BarServerShuffleLeft -> ShuffleLeft
++        12,  // 598 BarServerShuffleRight -> ShuffleRight
++        600,  // 600
++        602,  // 602
++        0,  // 604 BarServerStand -> Stand
++        4,  // 606 BarSweepWalk -> Walk
++        5,  // 608 BarSweepRun -> Run
++        11,  // 610 BarSweepShuffleLeft -> ShuffleLeft
++        12,  // 612 BarSweepShuffleRight -> ShuffleRight
++        614,  // 614
++        616,  // 616
++        0,  // 618 MountSelfIdle -> Stand
++        4,  // 620 MountSelfWalk -> Walk
++        5,  // 622 MountSelfRun -> Run
++        143,  // 624 MountSelfSprint -> Sprint
++        93,  // 626 MountSelfRunLeft -> RunLeft
++        92,  // 628 MountSelfRunRight -> RunRight
++        11,  // 630 MountSelfShuffleLeft -> ShuffleLeft
++        12,  // 632 MountSelfShuffleRight -> ShuffleRight
++        13,  // 634 MountSelfWalkBackwards -> Walkbackwards
++        94,  // 636 MountSelfSpecial -> MountSpecial
++        638,  // 638
++        640,  // 640
++        642,  // 642
++        644,  // 644
++        646,  // 646
++        648,  // 648
++        57,  // 650 Stormstrike -> Special1H
++        652,  // 652
++        57,  // 654 Slam -> Special1H
++        57,  // 656 DeathStrike -> Special1H
++        16,  // 658 SwimAttackUnarmed -> AttackUnarmed
++        95,  // 660 SpinningKick -> Kick
++        95,  // 662 RoundHouseKick -> Kick
++        664,  // 664
++        666,  // 666
++        668,  // 668
++        16,  // 670 PalmStrike -> AttackUnarmed
++        16,  // 672 MonkOffenseAttackUnarmed -> AttackUnarmed
++        117,  // 674 MonkOffenseAttackUnarmedOff -> AttackUnarmedOff
++        21,  // 676 MonkOffenseParryUnarmed -> Parry1H
++        25,  // 678 MonkOffenseReadyUnarmed -> ReadyUnarmed
++        118,  // 680 MonkOffenseSpecialUnarmed -> SpecialUnarmed
++        16,  // 682 MonkDefenseAttackUnarmed -> AttackUnarmed
++        117,  // 684 MonkDefenseAttackUnarmedOff -> AttackUnarmedOff
++        21,  // 686 MonkDefenseParryUnarmed -> Parry1H
++        25,  // 688 MonkDefenseReadyUnarmed -> ReadyUnarmed
++        118,  // 690 MonkDefenseSpecialUnarmed -> SpecialUnarmed
++        16,  // 692 MonkHealAttackUnarmed -> AttackUnarmed
++        117,  // 694 MonkHealAttackUnarmedOff -> AttackUnarmedOff
++        21,  // 696 MonkHealParryUnarmed -> Parry1H
++        25,  // 698 MonkHealReadyUnarmed -> ReadyUnarmed
++        118,  // 700 MonkHealSpecialUnarmed -> SpecialUnarmed
++        95,  // 702 FlyingKick -> Kick
++        95,  // 704 FlyingKickStart -> Kick
++        95,  // 706 FlyingKickEnd -> Kick
++        708,  // 708
++        710,  // 710
++        712,  // 712
++        714,  // 714
++        95,  // 716 ThousandFists -> Kick
++        51,  // 718 MonkHealReadySpellDirected -> ReadySpellDirected
++        52,  // 720 MonkHealReadySpellOmni -> ReadySpellOmni
++        53,  // 722 MonkHealSpellCastDirected -> SpellCastDirected
++        54,  // 724 MonkHealSpellCastOmni -> SpellCastOmni
++        124,  // 726 MonkHealChannelCastDirected -> ChannelCastDirected
++        125,  // 728 MonkHealChannelCastOmni -> ChannelCastOmni
++        95,  // 730 Torpedo -> Kick
++        72,  // 732 Meditate -> EmoteSitGround
++        734,  // 734
++        95,  // 736 RisingSunKick -> Kick
++        95,  // 738 GroundKick -> Kick
++        95,  // 740 KickBack -> Kick
++        0,  // 742 PetBattleStand -> Stand
++        744,  // 744
++        5,  // 746 PetBattleRun -> Run
++        9,  // 748 PetBattleWound -> CombatWound
++        16,  // 750 PetBattleAttack -> AttackUnarmed
++        52,  // 752 PetBattleReadySpell -> ReadySpellOmni
++        54,  // 754 PetBattleSpellCast -> SpellCastOmni
++        153,  // 756 PetBattleCustom0 -> Custom0
++        153,  // 758 PetBattleCustom1 -> Custom0
++        153,  // 760 PetBattleCustom2 -> Custom0
++        153,  // 762 PetBattleCustom3 -> Custom0
++        68,  // 764 PetBattleVictory -> EmoteCheer
++        77,  // 766 PetBattleLoss -> EmoteCry
++        14,  // 768 PetBattleStun -> Stun
++        770,  // 770
++        14,  // 772 PetBattleFreeze -> Stun
++        17,  // 774 MonkOffenseAttackWeapon -> Attack1H
++        776,  // 776
++        778,  // 778
++        780,  // 780
++        782,  // 782
++        784,  // 784
++        786,  // 786
++        0,  // 788 BarSweepStand -> Stand
++        790,  // 790
++        792,  // 792
++        0,  // 794 BarPatronStand -> Stand
++        796,  // 796
++        798,  // 798
++        800,  // 800
++        802,  // 802
++        0,  // 804 StandCharacterCreate -> Stand
++        806,  // 806
++        808,  // 808
++        57,  // 810 CombatAbility2HBig01 -> Special1H
++        57,  // 812 CombatAbility2H01 -> Special1H
++        814,  // 814
++        5,  // 816 CombatChargeLoop -> Run
++        57,  // 818 CombatAbility1H01 -> Special1H
++        57,  // 820 CombatChargeEnd -> Special1H
++        57,  // 822 CombatAbility1H02 -> Special1H
++        57,  // 824 CombatAbility1HBig01 -> Special1H
++        57,  // 826 CombatAbility2H02 -> Special1H
++        31,  // 828 ShaSpellPrecastBoth -> SpellPrecast
++        53,  // 830 ShaSpellCastBothFront -> SpellCastDirected
++        53,  // 832 ShaSpellCastLeftFront -> SpellCastDirected
++        53,  // 834 ShaSpellCastRightFront -> SpellCastDirected
++        48,  // 836 ReadyCrossbow -> ReadyRifle
++        106,  // 838 LoadCrossbow -> LoadRifle
++        49,  // 840 AttackCrossbow -> AttackRifle
++        110,  // 842 HoldCrossbow -> HoldRifle
++        57,  // 844 CombatAbility2HL01 -> Special1H
++        57,  // 846 CombatAbility2HL02 -> Special1H
++        57,  // 848 CombatAbility2HLBig01 -> Special1H
++        16,  // 850 CombatUnarmed01 -> AttackUnarmed
++        95,  // 852 CombatStompLeft -> Kick
++        95,  // 854 CombatStompRight -> Kick
++        856,  // 856
++        858,  // 858
++        52,  // 860 ShaReadySpellCast -> ReadySpellOmni
++        125,  // 862 ShaSpellPrecastBothChannel -> ChannelCastOmni
++        54,  // 864 ShaSpellCastBothUp -> SpellCastOmni
++        125,  // 866 ShaSpellCastBothUpChannel -> ChannelCastOmni
++        124,  // 868 ShaSpellCastBothFrontChannel -> ChannelCastDirected
++        124,  // 870 ShaSpellCastLeftFrontChannel -> ChannelCastDirected
++        124,  // 872 ShaSpellCastRightFrontChannel -> ChannelCastDirected
++        52,  // 874 PriReadySpellCast -> ReadySpellOmni
++        31,  // 876 PriSpellPrecastBoth -> SpellPrecast
++        125,  // 878 PriSpellPrecastBothChannel -> ChannelCastOmni
++        54,  // 880 PriSpellCastBothUp -> SpellCastOmni
++        53,  // 882 PriSpellCastBothFront -> SpellCastDirected
++        53,  // 884 PriSpellCastLeftFront -> SpellCastDirected
++        53,  // 886 PriSpellCastRightFront -> SpellCastDirected
++        125,  // 888 PriSpellCastBothUpChannel -> ChannelCastOmni
++        124,  // 890 PriSpellCastBothFrontChannel -> ChannelCastDirected
++        124,  // 892 PriSpellCastLeftFrontChannel -> ChannelCastDirected
++        124,  // 894 PriSpellCastRightFrontChannel -> ChannelCastDirected
++        52,  // 896 MagReadySpellCast -> ReadySpellOmni
++        31,  // 898 MagSpellPrecastBoth -> SpellPrecast
++        125,  // 900 MagSpellPrecastBothChannel -> ChannelCastOmni
++        54,  // 902 MagSpellCastBothUp -> SpellCastOmni
++        53,  // 904 MagSpellCastBothFront -> SpellCastDirected
++        53,  // 906 MagSpellCastLeftFront -> SpellCastDirected
++        53,  // 908 MagSpellCastRightFront -> SpellCastDirected
++        125,  // 910 MagSpellCastBothUpChannel -> ChannelCastOmni
++        124,  // 912 MagSpellCastBothFrontChannel -> ChannelCastDirected
++        124,  // 914 MagSpellCastLeftFrontChannel -> ChannelCastDirected
++        124,  // 916 MagSpellCastRightFrontChannel -> ChannelCastDirected
++        52,  // 918 LocReadySpellCast -> ReadySpellOmni
++        31,  // 920 LocSpellPrecastBoth -> SpellPrecast
++        125,  // 922 LocSpellPrecastBothChannel -> ChannelCastOmni
++        54,  // 924 LocSpellCastBothUp -> SpellCastOmni
++        53,  // 926 LocSpellCastBothFront -> SpellCastDirected
++        53,  // 928 LocSpellCastLeftFront -> SpellCastDirected
++        53,  // 930 LocSpellCastRightFront -> SpellCastDirected
++        125,  // 932 LocSpellCastBothUpChannel -> ChannelCastOmni
++        124,  // 934 LocSpellCastBothFrontChannel -> ChannelCastDirected
++        124,  // 936 LocSpellCastLeftFrontChannel -> ChannelCastDirected
++        124,  // 938 LocSpellCastRightFrontChannel -> ChannelCastDirected
++        52,  // 940 DruReadySpellCast -> ReadySpellOmni
++        31,  // 942 DruSpellPrecastBoth -> SpellPrecast
++        125,  // 944 DruSpellPrecastBothChannel -> ChannelCastOmni
++        54,  // 946 DruSpellCastBothUp -> SpellCastOmni
++        53,  // 948 DruSpellCastBothFront -> SpellCastDirected
++        53,  // 950 DruSpellCastLeftFront -> SpellCastDirected
++        53,  // 952 DruSpellCastRightFront -> SpellCastDirected
++        125,  // 954 DruSpellCastBothUpChannel -> ChannelCastOmni
++        124,  // 956 DruSpellCastBothFrontChannel -> ChannelCastDirected
++        124,  // 958 DruSpellCastLeftFrontChannel -> ChannelCastDirected
++        124,  // 960 DruSpellCastRightFrontChannel -> ChannelCastDirected
++        962,  // 962
++        964,  // 964
++        966,  // 966
++        968,  // 968
++        57,  // 970 CombatAbility1H01Off -> Special1H
++        57,  // 972 CombatAbility1H02Off -> Special1H
++        57,  // 974 CombatFuriousStrike01 -> Special1H
++        57,  // 976 CombatFuriousStrike02 -> Special1H
++        57,  // 978 CombatFuriousStrikes -> Special1H
++        52,  // 980 CombatReadySpellCast -> ReadySpellOmni
++        59,  // 982 CombatShieldThrow -> ShieldBash
++        54,  // 984 PalSpellCast1HUp -> SpellCastOmni
++        52,  // 986 CombatReadyPostSpellCast -> ReadySpellOmni
++        52,  // 988 PriReadyPostSpellCast -> ReadySpellOmni
++        5,  // 990 DHCombatRun -> Run
++        59,  // 992 CombatShieldBash -> ShieldBash
++        107,  // 994 CombatThrow -> AttackThrown
++        85,  // 996 CombatAbility1HPierce -> Attack1HPierce
++        85,  // 998 CombatAbility1HOffPierce -> Attack1HPierce
++        212,  // 1000 CombatMutilate -> Mutilate
++        1002,  // 1002
++        57,  // 1004 CombatFinishingMove -> Special1H
++        1006,  // 1006
++        17,  // 1008 GlvThrowMain -> Attack1H
++        87,  // 1010 GlvThrownOff -> AttackOff
++        143,  // 1012 DHCombatSprint -> Sprint
++        57,  // 1014 CombatAbilityGlv01 -> Special1H
++        57,  // 1016 CombatAbilityGlv02 -> Special1H
++        57,  // 1018 CombatAbilityGlvOff01 -> Special1H
++        57,  // 1020 CombatAbilityGlvOff02 -> Special1H
++        58,  // 1022 CombatAbilityGlvBig01 -> Special2H
++        58,  // 1024 CombatAbilityGlvBig02 -> Special2H
++        26,  // 1026 ReadyGlv -> Ready1H
++        58,  // 1028 CombatAbilityGlvBig03 -> Special2H
++        1030,  // 1030
++        1032,  // 1032
++        57,  // 1034 CombatEviscerate -> Special1H
++        1036,  // 1036
++        57,  // 1038 BackFlipStart -> Special1H
++        57,  // 1040 BackFlipLoop -> Special1H
++        5,  // 1042 FelRushLoop -> Run
++        57,  // 1044 FelRushEnd -> Special1H
++        1046,  // 1046
++        1048,  // 1048
++        1050,  // 1050
++        1052,  // 1052
++        1054,  // 1054
++        57,  // 1056 DHBladeDance1 -> Special1H
++        57,  // 1058 DHBladeDance2 -> Special1H
++        57,  // 1060 DHBladeDance3 -> Special1H
++        57,  // 1062 DHMeteorStrike -> Special1H
++        57,  // 1064 CombatExecute -> Special1H
++        1066,  // 1066
++        21,  // 1068 ParryGlv -> Parry1H
++        16,  // 1070 CombatUnarmed02 -> AttackUnarmed
++        49,  // 1072 CombatPistolShot -> AttackRifle
++        49,  // 1074 CombatPistolShotOff -> AttackRifle
++        1076,  // 1076
++        1078,  // 1078
++        57,  // 1080 CombatAbility2H03 -> Special1H
++        95,  // 1082 CombatStomp -> Kick
++        55,  // 1084 CombatRoar -> BattleRoar
++        52,  // 1086 PalReadySpellCast -> ReadySpellOmni
++        31,  // 1088 PalSpellPrecastRight -> SpellPrecast
++        125,  // 1090 PalSpellPrecastRightChannel -> ChannelCastOmni
++        53,  // 1092 PalSpellCastRightFront -> SpellCastDirected
++        54,  // 1094 ShaSpellCastBothOut -> SpellCastOmni
++        17,  // 1096 AttackWeapon -> Attack1H
++        26,  // 1098 ReadyWeapon -> Ready1H
++        87,  // 1100 AttackWeaponOff -> AttackOff
++        57,  // 1102 SpecialDual -> Special1H
++        53,  // 1104 DkCast1HFront -> SpellCastDirected
++        53,  // 1106 CastStrongRight -> SpellCastDirected
++        53,  // 1108 CastStrongLeft -> SpellCastDirected
++        53,  // 1110 CastCurseRight -> SpellCastDirected
++        53,  // 1112 CastCurseLeft -> SpellCastDirected
++        53,  // 1114 CastSweepRight -> SpellCastDirected
++        53,  // 1116 CastSweepLeft -> SpellCastDirected
++        54,  // 1118 CastStrongUpLeft -> SpellCastOmni
++        54,  // 1120 CastTwistUpBoth -> SpellCastOmni
++        54,  // 1122 CastOutStrong -> SpellCastOmni
++        1124,  // 1124
++        21,  // 1126 ParryWeapon -> Parry1H
++        26,  // 1128 ReadyFL -> Ready1H
++        17,  // 1130 AttackFL -> Attack1H
++        87,  // 1132 AttackFLOff -> AttackOff
++        21,  // 1134 ParryFL -> Parry1H
++        57,  // 1136 SpecialFL -> Special1H
++        5,  // 1138 PriHoverForward -> Run
++        13,  // 1140 PriHoverBackward -> Walkbackwards
++        93,  // 1142 PriHoverRight -> RunLeft
++        93,  // 1144 PriHoverLeft -> RunLeft
++        13,  // 1146 RunBackwards -> Walkbackwards
++        54,  // 1148 CastStrongUpRight -> SpellCastOmni
++        4,  // 1150 WAWalk -> Walk
++        5,  // 1152 WARun -> Run
++        0,  // 1154 WADrunkStand -> Stand
++        11,  // 1156 WADrunkShuffleLeft -> ShuffleLeft
++        12,  // 1158 WADrunkShuffleRight -> ShuffleRight
++        4,  // 1160 WADrunkWalk -> Walk
++        13,  // 1162 WADrunkWalkBackwards -> Walkbackwards
++        8,  // 1164 WADrunkWound -> StandWound
++        1166,  // 1166
++        1168,  // 1168
++        1170,  // 1170
++        1172,  // 1172
++        1174,  // 1174
++        1176,  // 1176
++        1178,  // 1178
++        1180,  // 1180
++        1182,  // 1182
++        1184,  // 1184
++        1186,  // 1186
++        0,  // 1188 WABeggarStand -> Stand
++        1190,  // 1190
++        1192,  // 1192
++        1194,  // 1194
++        1196,  // 1196
++        1198,  // 1198
++        0,  // 1200 WACrierStand01 -> Stand
++        0,  // 1202 WACrierStand02 -> Stand
++        0,  // 1204 WACrierStand03 -> Stand
++        1206,  // 1206
++        1208,  // 1208
++        1210,  // 1210
++        1212,  // 1212
++        0,  // 1214 WAWheelBarrowStand -> Stand
++        4,  // 1216 WAWheelBarrowWalk -> Walk
++        5,  // 1218 WAWheelBarrowRun -> Run
++        1220,  // 1220
++        1222,  // 1222
++        1224,  // 1224
++        1226,  // 1226
++        1228,  // 1228
++        1230,  // 1230
++        0,  // 1232 WARowingStandRight -> Stand
++        0,  // 1234 WARowingStandLeft -> Stand
++        1236,  // 1236
++        1238,  // 1238
++        0,  // 1240 WAGuardStand01 -> Stand
++        0,  // 1242 WAGuardStand02 -> Stand
++        0,  // 1244 WAGuardStand03 -> Stand
++        0,  // 1246 WAGuardStand04 -> Stand
++        1248,  // 1248
++        1250,  // 1250
++        0,  // 1252 WAVendorStand01 -> Stand
++        0,  // 1254 WAVendorStand02 -> Stand
++        0,  // 1256 WAVendorStand03 -> Stand
++        1258,  // 1258
++        1260,  // 1260
++        1262,  // 1262
++        1264,  // 1264
++        1266,  // 1266
++        1268,  // 1268
++        1270,  // 1270
++        1272,  // 1272
++        1274,  // 1274
++        1276,  // 1276
++        1278,  // 1278
++        1280,  // 1280
++        109,  // 1282 HoldWeapon -> HoldBow
++        4,  // 1284 WABarrelWalk -> Walk
++        1286,  // 1286
++        53,  // 1288 CastStrong -> SpellCastDirected
++        53,  // 1290 CastCurse -> SpellCastDirected
++        53,  // 1292 CastSweep -> SpellCastDirected
++        54,  // 1294 CastStrongUp -> SpellCastOmni
++        0,  // 1296 WABoatWheelStand -> Stand
++        0,  // 1298 WASmithStand -> Stand
++        0,  // 1300 WACrankStand -> Stand
++        4,  // 1302 WAPourWalk -> Walk
++        1304,  // 1304
++        1306,  // 1306
++        1308,  // 1308
++        1310,  // 1310
++        1312,  // 1312
++        1314,  // 1314
++        1316,  // 1316
++        1318,  // 1318
++        57,  // 1320 CombatAbility1H03Off -> Special1H
++        57,  // 1322 CombatAbilityDualWield01 -> Special1H
++        1324,  // 1324
++        54,  // 1326 LocSummon -> SpellCastOmni
++        105,  // 1328 LoadWeapon -> LoadBow
++        1330,  // 1330
++        1332,  // 1332
++        1334,  // 1334
++        1336,  // 1336
++        1338,  // 1338
++        1340,  // 1340
++        1342,  // 1342
++        1344,  // 1344
++        5,  // 1346 GiantRun -> Run
++        1348,  // 1348
++        1350,  // 1350
++        1352,  // 1352
++        4,  // 1354 BarTendWalk -> Walk
++        11,  // 1356 BartendShuffleLeft -> ShuffleLeft
++        12,  // 1358 BarTendShuffleRight -> ShuffleRight
++        214,  // 1360 BarTendCustomSpell01 -> CustomSpell02
++        214,  // 1362 BarTendCustomSpell02 -> CustomSpell02
++        214,  // 1364 BarTendCustomSpell03 -> CustomSpell02
++        1366,  // 1366
++        1368,  // 1368
++        1370,  // 1370
++        214,  // 1372 BarServerCustomSpell01 -> CustomSpell02
++        214,  // 1374 BarServerCustomSpell02 -> CustomSpell02
++        214,  // 1376 BarServerCustomSpell03 -> CustomSpell02
++        1378,  // 1378
++        1380,  // 1380
++        214,  // 1382 BarPatronCustomSpell01 -> CustomSpell02
++        214,  // 1384 BarPatronCustomSpell02 -> CustomSpell02
++        214,  // 1386 BarPatronCustomSpell03 -> CustomSpell02
++        111,  // 1388 HoldDart -> HoldThrown
++        108,  // 1390 ReadyDart -> ReadyThrown
++        107,  // 1392 AttackDart -> AttackThrown
++        112,  // 1394 LoadDart -> LoadThrown
++        0,  // 1396 WADartTargetStand -> Stand
++        1398,  // 1398
++        1400,  // 1400
++        214,  // 1402 BarPatronSitCustomSpell01 -> CustomSpell02
++        214,  // 1404 BarPatronSitCustomSpell02 -> CustomSpell02
++        214,  // 1406 BarPatronSitCustomSpell03 -> CustomSpell02
++        0,  // 1408 BarPianoStand -> Stand
++        1410,  // 1410
++        1412,  // 1412
++        1414,  // 1414
++        1416,  // 1416
++        214,  // 1418 WAHearthSitCustomSpell01 -> CustomSpell02
++        214,  // 1420 WAHearthSitCustomSpell02 -> CustomSpell02
++        214,  // 1422 WAHearthSitCustomSpell03 -> CustomSpell02
++        0,  // 1424 WAHearthStand -> Stand
++        1426,  // 1426
++        1428,  // 1428
++        214,  // 1430 WAHearthStandCustomSpell01 -> CustomSpell02
++        214,  // 1432 WAHearthStandCustomSpell02 -> CustomSpell02
++        214,  // 1434 WAHearthStandCustomSpell03 -> CustomSpell02
++        1436,  // 1436
++        1438,  // 1438
++        1440,  // 1440
++        1442,  // 1442
++        95,  // 1444 Haymaker -> Kick
++        31,  // 1446 HaymakerPrecast -> SpellPrecast
++        125,  // 1448 ChannelCastOmniUp -> ChannelCastOmni
++        1450,  // 1450
++        1452,  // 1452
++        1454,  // 1454
++        1456,  // 1456
++        1458,  // 1458
++        1460,  // 1460
++        1462,  // 1462
++        1464,  // 1464
++        1466,  // 1466
++        1468,  // 1468
++        1470,  // 1470
++        1472,  // 1472
++        1474,  // 1474
++        1476,  // 1476
++        1478,  // 1478
++        4,  // 1480 WAWalkTalk -> Walk
++        1482,  // 1482
++        1484,  // 1484
++        1486,  // 1486
++        57,  // 1488 CombatAbility2HBig02 -> Special1H
++        1490,  // 1490
++        60,  // 1492 EmoteTalkSubdued -> EmoteTalk
++        1494,  // 1494
++        1496,  // 1496
++        60,  // 1498 EmoteSelfie -> EmoteTalk
++        214,  // 1500 CustomSpell11 -> CustomSpell02
++        214,  // 1502 CustomSpell12 -> CustomSpell02
++        214,  // 1504 CustomSpell13 -> CustomSpell02
++        214,  // 1506 CustomSpell14 -> CustomSpell02
++        214,  // 1508 CustomSpell15 -> CustomSpell02
++        214,  // 1510 CustomSpell16 -> CustomSpell02
++        214,  // 1512 CustomSpell17 -> CustomSpell02
++        214,  // 1514 CustomSpell18 -> CustomSpell02
++        214,  // 1516 CustomSpell19 -> CustomSpell02
++        214,  // 1518 CustomSpell20 -> CustomSpell02
++        93,  // 1520 AdvFlyLeft -> RunLeft
++        93,  // 1522 AdvFlyRight -> RunLeft
++        5,  // 1524 AdvFlyForward -> Run
++        13,  // 1526 AdvFlyBackward -> Walkbackwards
++        5,  // 1528 AdvFlyUp -> Run
++        13,  // 1530 AdvFlyDown -> Walkbackwards
++        1532,  // 1532
++        1534,  // 1534
++        1536,  // 1536
++        1538,  // 1538
++        1540,  // 1540
++        1542,  // 1542
++        1544,  // 1544
++        1546,  // 1546
++        1548,  // 1548
++        1550,  // 1550
++        1552,  // 1552
++        1554,  // 1554
++        1556,  // 1556
++        1558,  // 1558
++        31,  // 1560 EmpBreathPrecast -> SpellPrecast
++        125,  // 1562 EmpBreathPrecastChannel -> ChannelCastOmni
++        54,  // 1564 EmpBreathSpellCast -> SpellCastOmni
++        125,  // 1566 EmpBreathSpellCastChannel -> ChannelCastOmni
++        1568,  // 1568
++        1570,  // 1570
++        1572,  // 1572
++        1574,  // 1574
++        1576,  // 1576
++        1578,  // 1578
++        1580,  // 1580
++        1582,  // 1582
++        1584,  // 1584
++        1586,  // 1586
++        1588,  // 1588
++        1590,  // 1590
++        1592,  // 1592
++        31,  // 1594 EmpAirBarragePrecast -> SpellPrecast
++        125,  // 1596 EmpAirBarragePrecastChannel -> ChannelCastOmni
++        54,  // 1598 EmpAirBarrageSpellCast -> SpellCastOmni
++        16,  // 1600 DracClawSwipeLeft -> AttackUnarmed
++        16,  // 1602 DracClawSwipeRight -> AttackUnarmed
++        0,  // 1604 DracHoverIdle -> Stand
++        93,  // 1606 DracHoverLeft -> RunLeft
++        93,  // 1608 DracHoverRight -> RunLeft
++        13,  // 1610 DracHoverBackward -> Walkbackwards
++        5,  // 1612 DracHoverForward -> Run
++        16,  // 1614 DracAttackWings -> AttackUnarmed
++        16,  // 1616 DracAttackTail -> AttackUnarmed
++        1618,  // 1618
++        1620,  // 1620
++        1622,  // 1622
++        93,  // 1624 AdvFlyStrafeLeft -> RunLeft
++        93,  // 1626 AdvFlyStrafeRight -> RunLeft
++        0,  // 1628 AdvFlyIdle -> Stand
++        1630,  // 1630
++        1632,  // 1632
++        1634,  // 1634
++        1636,  // 1636
++        1638,  // 1638
++        16,  // 1640 DracHoverDracClawSwipeLeft -> AttackUnarmed
++        16,  // 1642 DracHoverDracClawSwipeRight -> AttackUnarmed
++        16,  // 1644 DracHoverDracAttackWings -> AttackUnarmed
++        52,  // 1646 DracHoverReadySpellOmni -> ReadySpellOmni
++        54,  // 1648 DracHoverSpellCastOmni -> SpellCastOmni
++        125,  // 1650 DracHoverChannelSpellOmni -> ChannelCastOmni
++        51,  // 1652 DracHoverReadySpellDirected -> ReadySpellDirected
++        124,  // 1654 DracHoverChannelSpellDirected -> ChannelCastDirected
++        53,  // 1656 DracHoverSpellCastDirected -> SpellCastDirected
++        54,  // 1658 DracHoverCastOutStrong -> SpellCastOmni
++        55,  // 1660 DracHoverBattleRoar -> BattleRoar
++        54,  // 1662 DracHoverEmpBreathSpellCast -> SpellCastOmni
++        125,  // 1664 DracHoverEmpBreathSpellCastChannel -> ChannelCastOmni
++        1666,  // 1666
++        1668,  // 1668
++        1670,  // 1670
++        1672,  // 1672
++        1674,  // 1674
++        1676,  // 1676
++        1678,  // 1678
++        1680,  // 1680
++        25,  // 1682 DracHoverReadyUnarmed -> ReadyUnarmed
++        16,  // 1684 DracHoverAttackUnarmed -> AttackUnarmed
++        21,  // 1686 DracHoverParryUnarmed -> Parry1H
++        9,  // 1688 DracHoverCombatWound -> CombatWound
++        10,  // 1690 DracHoverCombatCritical -> CombatCritical
++        16,  // 1692 DracHoverAttackTail -> AttackUnarmed
++        1694,  // 1694
++        1696,  // 1696
++        16,  // 1698 DracClawSwipe -> AttackUnarmed
++        16,  // 1700 DracHoverDracClawSwipe -> AttackUnarmed
++        1702,  // 1702
++        1704,  // 1704
++        1706,  // 1706
++        54,  // 1708 DracSpellCastWings -> SpellCastOmni
++        54,  // 1710 DracHoverDracSpellCastWings -> SpellCastOmni
++        1712,  // 1712
++        1714,  // 1714
++        1716,  // 1716
++        1718,  // 1718
++        1720,  // 1720
++        1722,  // 1722
++        1724,  // 1724
++        1726,  // 1726
++        0,  // 1728 FloatIdle -> Stand
++        4,  // 1730 FloatWalk -> Walk
++        1732,  // 1732
++        1734,  // 1734
++        1736,  // 1736
++        1738,  // 1738
++        1740,  // 1740
++        1742,  // 1742
++        1744,  // 1744
++        136,  // 1746 WAWeaponSharpenNoSheathe -> EmoteWorkNoSheathe
++        1748,  // 1748
++        1750,  // 1750
++        31,  // 1752 EmpSlamPrecast -> SpellPrecast
++        125,  // 1754 EmpSlamPrecastChannel -> ChannelCastOmni
++        54,  // 1756 EmpSlamSpellCast -> SpellCastOmni
++        4,  // 1758 Climb -> Walk
++        1760,  // 1760
++        1762,  // 1762
++        94,  // 1764 MountLeanLeft -> MountSpecial
++        94,  // 1766 MountLeanRight -> MountSpecial
++        94,  // 1768 MountDive -> MountSpecial
++        94,  // 1770 MountCrouch -> MountSpecial
++        1772,  // 1772
++        60,  // 1774 EmoteTalkFrustrated -> EmoteTalk
++        1776,  // 1776
++    };
++
++    const uint32_t offset = static_cast<uint32_t>(behavior) - static_cast<uint32_t>(ANIM_ALIAS_FIRST);
++
++    if (offset >= static_cast<uint32_t>(2 * ANIM_ALIAS_COUNT) || (offset & 1)) {
++        return behavior;
++    }
++
++    return kClassBehavior[offset >> 1];
++}
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 53e4bb9..71d8ea6 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -48,6 +48,7 @@
+ #include "WoW/Source/Object/CMoveSpline.h"
+ #include "WoW/Source/Object/CreatureStats.h"
+ #include "WoW/Source/Object/Object.h"
++#include "WoW/Source/Object/ObjectClient/AnimBehaviorAlias.h"
+ #include "WoW/Source/Object/ObjectClient/Corpse_C.h"
+ #include "WoW/Source/Object/ObjectClient/Effect_C.h"
+ #include "WoW/Source/Object/ObjectClient/GameObject_C.h"
+@@ -1329,7 +1330,7 @@ void CGUnit_C::ModelLoaded(CM2Model* model) {
+ 
+         AnimationDataRec* animRec = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
+ 
+-        if (animRec && animRec->m_behaviorID == 127) {
++        if (animRec && AnimClassBehavior(animRec->m_behaviorID) == 127) {
+             this->m_fadeDuration = 0;
+             this->m_alpha = this->m_fadeEndAlpha;
+         }
+@@ -1612,7 +1613,7 @@ void CGUnit_C::PreAnimate(CGWorldFrame* frame) {
+ // OFFSET: 0x0071D940
+ int32_t IsEmoteAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 60:
+@@ -1656,7 +1657,7 @@ int32_t IsEmoteAnim(uint32_t animId) {
+ // OFFSET: 0x0071D380
+ int32_t IsSpellCastAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 2:
+@@ -1676,7 +1677,7 @@ int32_t IsThrownWeaponAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior == 107 || (behavior > 110 && behavior <= 112)) {
+             return 1;
+@@ -1692,7 +1693,7 @@ int32_t IsBowAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior == 46 || behavior == 105 || behavior == 109) {
+             return 1;
+@@ -1708,7 +1709,7 @@ int32_t IsRifleAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior == 49 || behavior == 106 || behavior == 110) {
+             return 1;
+@@ -2349,7 +2350,7 @@ void CGUnit_C::SendSplineDone(uint32_t time, uint32_t splineId) {
+ // OFFSET: 0x0071D590
+ int32_t IsMeleeAttackAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 10:
+@@ -3562,7 +3563,7 @@ int32_t IsFullBodyAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    switch (rec->m_behaviorID) {
++    switch (AnimClassBehavior(rec->m_behaviorID)) {
+         case 0:
+         case 1:
+         case 3:
+@@ -3647,7 +3648,7 @@ int32_t IsMeleeOrReadyAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    int32_t behavior = rec->m_behaviorID;
++    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+     if (behavior < 25 || behavior > 29) {
+         return 0;
+@@ -3669,7 +3670,7 @@ int32_t IsSpellCastOrPrecastAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    int32_t behavior = rec->m_behaviorID;
++    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+     if (behavior < 51 || behavior > 52) {
+         return 0;
+@@ -3684,7 +3685,7 @@ int32_t IsSpellPrecastAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 51 && behavior <= 52) {
+             return 1;
+@@ -3698,7 +3699,7 @@ int32_t IsSpellPrecastAnim(uint32_t animId) {
+ // OFFSET: 0x0071D800
+ int32_t IsUpperBodyAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 2:
+@@ -3823,7 +3824,7 @@ int32_t IsWeaponReadyAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 25 && behavior <= 29) {
+             return 1;
+@@ -3839,7 +3840,7 @@ int32_t IsWeaponSpecialAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 57 && (behavior <= 58 || behavior == 118)) {
+             return 1;
+@@ -3855,7 +3856,7 @@ int32_t IsJumpAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 37 && (behavior <= 39 || behavior == 187)) {
+             return 1;
+@@ -3871,7 +3872,7 @@ int32_t IsJumpLandAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior == 39 || behavior == 187) {
+             return 1;
+@@ -3887,7 +3888,7 @@ int32_t IsFishingAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 133 && behavior <= 134) {
+             return 1;
+@@ -3901,7 +3902,7 @@ int32_t IsFishingAnim(uint32_t animId) {
+ // OFFSET: 0x0071D2E0
+ int32_t IsRangedWeaponAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 46:
+@@ -4137,7 +4138,7 @@ void CGUnit_C::ProcessAnimationEvent(M2BoneSequenceInfo* slot, uint32_t currentA
+     if (this->m_combat.m_attacking.m_guid || casting || IsSpellCastOrPrecastAnim(previousAnim) || IsMeleeOrReadyAnim(previousAnim)) {
+         AnimationDataRec* rec = g_animationDataDB.GetRecord(anim);
+ 
+-        if ((rec && rec->m_behaviorID >= 25 && rec->m_behaviorID <= 29) || !anim) {
++        if ((rec && AnimClassBehavior(rec->m_behaviorID) >= 25 && AnimClassBehavior(rec->m_behaviorID) <= 29) || !anim) {
+             slot->m_variationIndex = 0;
+         }
+     }
+@@ -4177,7 +4178,7 @@ void CGUnit_C::ProcessAnimationEvent(M2BoneSequenceInfo* slot, uint32_t currentA
+ 
+     this->SetKeyBoneSequence(this->m_worldModel, bone, playing, slot->m_variationIndex, slot->m_time, slot->m_speed, blend, 1, 0);
+ 
+-    switch (GetAnimBehaviorId(anim)) {
++    switch (AnimClassBehavior(GetAnimBehaviorId(anim))) {
+         case 39:
+             this->m_animationState |= 0x4;
+             break;
+@@ -7655,7 +7656,7 @@ int32_t IsBirthAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior == 127 || (behavior > 200 && behavior <= 202)) {
+             return 1;
+@@ -7671,7 +7672,7 @@ int32_t IsSubmergedDeathAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 466 && (behavior <= 468 || behavior == 472)) {
+             return 1;
+@@ -7690,7 +7691,7 @@ int32_t IsCorpseAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    int32_t behavior = rec->m_behaviorID;
++    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+     if (behavior > 468) {
+         return behavior == 472;
+@@ -7709,7 +7710,7 @@ int32_t IsAirborneAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+     if (rec) {
+-        int32_t behavior = rec->m_behaviorID;
++        int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+         if (behavior >= 37 && (behavior <= 40 || behavior == 467)) {
+             return 1;
+@@ -7728,7 +7729,7 @@ int32_t IsDyingAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    int32_t behavior = rec->m_behaviorID;
++    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+     if (behavior > 131) {
+         if (behavior < 466 || behavior > 467) {
+@@ -7750,7 +7751,7 @@ int32_t IsDeadOrDyingAnim(uint32_t animId) {
+         return 0;
+     }
+ 
+-    int32_t behavior = rec->m_behaviorID;
++    int32_t behavior = AnimClassBehavior(rec->m_behaviorID);
+ 
+     if (behavior > 132) {
+         if (behavior < 466 || (behavior > 468 && behavior != 472)) {
+@@ -8390,7 +8391,7 @@ void CGUnit_C::ChooseDefaultAnim(uint32_t& anim, int32_t force) const {
+ 
+     uint32_t torso = this->GetCurrentTorsoAnimId();
+ 
+-    if (!force && GetAnimBehaviorId(torso) == 464) {
++    if (!force && AnimClassBehavior(GetAnimBehaviorId(torso)) == 464) {
+         anim = torso;
+         return;
+     }
+@@ -9943,7 +9944,7 @@ void CGUnit_C::PostInit(uint32_t time, const CClientObjCreate& create, bool reen
+ 
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
+ 
+-    if (anim && anim->m_behaviorID == 127) {
++    if (anim && AnimClassBehavior(anim->m_behaviorID) == 127) {
+         this->m_fadeDuration = 0;
+         this->m_alpha = this->m_fadeEndAlpha;
+     }
+@@ -14470,7 +14471,7 @@ void CGUnit_C::AnimEndHandler(CM2Model* model, uint32_t boneId, uint32_t sequenc
+     }
+ 
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
+-    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(anim ? anim->m_behaviorID : ANIM_COUNT);
+ 
+     if (behavior == 1 || behavior == 131 || behavior == 468) {
+         if (!this->m_lootableTime) {
+@@ -14516,7 +14517,7 @@ void CGUnit_C::AnimEndHandler(CM2Model* model, uint32_t boneId, uint32_t sequenc
+ 
+     AnimationDataRec* ended = g_animationDataDB.GetRecord(sequenceId);
+ 
+-    if (ended && ended->m_behaviorID >= 458 && ended->m_behaviorID <= 460) {
++    if (ended && AnimClassBehavior(ended->m_behaviorID) >= 458 && AnimClassBehavior(ended->m_behaviorID) <= 460) {
+         this->m_animationState &= ~0x2000000;
+     }
+ 
+@@ -14607,7 +14608,7 @@ void CGUnit_C::OnBaseAnimEnd(CM2Model* model, uint32_t boneId, uint32_t sequence
+ 
+     uint32_t next = ANIM_COUNT;
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(sequenceId);
+-    int32_t behavior = anim ? anim->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(anim ? anim->m_behaviorID : ANIM_COUNT);
+ 
+     if (behavior >= 458 && behavior <= 460) {
+         this->PlayBaseAnimation(464, 16);
+@@ -16980,7 +16981,7 @@ void CGUnit_C::PlaySpellVisualKit_HandleWeapons(const SpellRec* spell, const Spe
+ // OFFSET: 0x0071D510
+ static int32_t IsWoundAnim(int32_t animId) {
+     AnimationDataRec* anim = g_animationDataDB.GetRecord(animId);
+-    return anim && anim->m_behaviorID >= 8 && anim->m_behaviorID <= 10;
++    return anim && AnimClassBehavior(anim->m_behaviorID) >= 8 && AnimClassBehavior(anim->m_behaviorID) <= 10;
+ }
+ 
+ // VERIFY: 810cddf4 manual
+@@ -17130,7 +17131,7 @@ void CGUnit_C::PlayWoundAnimKit(int32_t crit) {
+     } else {
+         animId = 8;
+ 
+-        if (!this->m_mountModel && !(this->m_movement->m_flags & 0x2E0100F) && !this->m_movementData.IsSplineFlyerOrHovering() && !this->IsSitting() && GetAnimBehaviorId(this->GetCurrentTorsoAnimId()) != 98) {
++        if (!this->m_mountModel && !(this->m_movement->m_flags & 0x2E0100F) && !this->m_movementData.IsSplineFlyerOrHovering() && !this->IsSitting() && AnimClassBehavior(GetAnimBehaviorId(this->GetCurrentTorsoAnimId())) != 98) {
+             keyBone = 0xFFFFFFFF;
+         }
+     }
+@@ -18983,7 +18984,7 @@ void CGUnit_C::CreateMissile(const WOWGUID* target, PendingSpellCastData* data,
+ 
+     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
+ 
+-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
++    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
+         model->m_fadeAlpha = 0.0f;
+     }
+ 
+@@ -19243,7 +19244,7 @@ void CGUnit_C::CreateMissile(const SpellCastTargetPoint* point, PendingSpellCast
+ 
+     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
+ 
+-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
++    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
+         model->m_fadeAlpha = 0.0f;
+     }
+ 
+@@ -19432,7 +19433,7 @@ void CGUnit_C::CreateMissile(const TSStackArray<SpellCastTargetPoint>* points, P
+ 
+     AnimationDataRec* animation = g_animationDataDB.GetRecord(this->GetCurrentTorsoAnimId());
+ 
+-    if (animation && (animation->m_behaviorID == 49 || animation->m_behaviorID == 106 || animation->m_behaviorID == 110)) {
++    if (animation && (AnimClassBehavior(animation->m_behaviorID) == 49 || AnimClassBehavior(animation->m_behaviorID) == 106 || AnimClassBehavior(animation->m_behaviorID) == 110)) {
+         model->m_fadeAlpha = 0.0f;
+     }
+ 
+@@ -19620,7 +19621,7 @@ bool CGUnit_C::IsTracked() const {
+ // OFFSET: 0x0071D450
+ int32_t IsUnarmedAnim(uint32_t animId) {
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = rec ? rec->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(rec ? rec->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 16:
+@@ -21215,7 +21216,7 @@ void CGUnit_C::UpdateCritterDisplay() {
+ // OFFSET: 0x0071D450
+ static int32_t IsWeaponAnimBehavior(uint32_t animId) {
+     AnimationDataRec* animation = g_animationDataDB.GetRecord(animId);
+-    int32_t behavior = animation ? animation->m_behaviorID : ANIM_COUNT;
++    int32_t behavior = AnimClassBehavior(animation ? animation->m_behaviorID : ANIM_COUNT);
+ 
+     switch (behavior) {
+         case 16:
+@@ -21627,17 +21628,17 @@ int32_t IsSpecialIdleAnim(uint32_t animId) {
+ 
+     AnimationDataRec* rec = g_animationDataDB.GetRecord(animId);
+ 
+-    if (rec && rec->m_behaviorID == 107) {
++    if (rec && AnimClassBehavior(rec->m_behaviorID) == 107) {
+         return 1;
+     }
+ 
+     rec = g_animationDataDB.GetRecord(animId);
+ 
+-    if (rec && rec->m_behaviorID == 46) {
++    if (rec && AnimClassBehavior(rec->m_behaviorID) == 46) {
+         return 1;
+     }
+ 
+-    return GetAnimBehaviorId(animId) == 49;
++    return AnimClassBehavior(GetAnimBehaviorId(animId)) == 49;
+ }
+ 
+ // VERIFY: 597f8f44 manual

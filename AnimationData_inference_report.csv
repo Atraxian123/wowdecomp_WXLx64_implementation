@@ -1,0 +1,1273 @@
+﻿ID,Name,Weaponflags,Bodyflags,Flags,Fallback,Confidence,Rule/analog used
+506,EmoteSniff,16,264,67,0,med,emote -> EmoteTalk
+507,EmoteFlySniff,16,264,3,0,med,"derived from ground row 506 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+508,AttackFist1H,16,296,3,16,high,unarmed attack -> AttackUnarmed
+509,FlyAttackFist1H,16,296,3,245,high,"derived from ground row 508 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+510,AttackFist1HOff,16,296,0,87,high,unarmed off -> AttackUnarmedOff
+511,FlyAttackFist1HOff,16,296,0,316,high,"derived from ground row 510 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+512,ParryFist1H,0,296,3,8,high,parry -> Parry1H
+513,FlyParryFist1H,0,296,3,237,high,"derived from ground row 512 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+514,ReadyFist1H,16,256,3,25,high,unarmed ready -> ReadyUnarmed
+515,FlyReadyFist1H,16,256,3,254,high,"derived from ground row 514 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+516,SpecialFist1H,16,288,3,118,high,unarmed special -> SpecialUnarmed
+517,FlySpecialFist1H,16,288,3,347,high,"derived from ground row 516 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+518,EmoteReadStart,16,256,66,0,med,emote triple (SitGround analog)
+519,FlyEmoteReadStart,16,256,2,0,med,"derived from ground row 518 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+520,EmoteReadLoop,16,256,98,518,med,emote triple (SitGround analog)
+521,FlyEmoteReadLoop,16,256,34,519,med,"derived from ground row 520 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+522,EmoteReadEnd,16,256,82,518,med,emote triple (SitGround analog)
+523,FlyEmoteReadEnd,16,256,18,519,med,"derived from ground row 522 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+524,SwimRun,4,321,6,42,med,swim move -> Swim
+525,FlySwimRun,4,321,6,271,med,"derived from ground row 524 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+526,SwimWalk,4,321,6,42,med,swim move -> Swim
+527,FlySwimWalk,4,321,6,271,med,"derived from ground row 526 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+528,SwimWalkBackwards,4,321,22,45,med,swim move -> SwimBackwards
+529,FlySwimWalkBackwards,4,321,22,274,med,"derived from ground row 528 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+530,SwimSprint,4,321,6,42,med,swim move -> Swim
+531,FlySwimSprint,4,321,6,271,med,"derived from ground row 530 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+532,MountSwimIdle,0,1,3,0,med,mount move -> Stand
+533,FlyMountSwimIdle,0,1,3,0,med,"derived from ground row 532 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+534,MountSwimBackwards,0,65,17,544,med,mount move -> Walkbackwards
+535,FlyMountSwimBackwards,0,65,17,545,med,"derived from ground row 534 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+536,MountSwimLeft,0,1,0,0,med,mount move -> RunLeft
+537,FlyMountSwimLeft,0,1,0,0,med,"derived from ground row 536 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+538,MountSwimRight,0,1,0,0,med,mount move -> RunRight
+539,FlyMountSwimRight,0,1,0,0,med,"derived from ground row 538 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+540,MountSwimRun,0,65,6,0,med,mount move -> Run
+541,FlyMountSwimRun,0,65,6,0,med,"derived from ground row 540 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+542,MountSwimSprint,0,64,4,540,med,mount move -> Sprint
+543,FlyMountSwimSprint,0,64,4,541,med,"derived from ground row 542 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+544,MountSwimWalk,0,65,6,0,med,mount move -> Walk
+545,FlyMountSwimWalk,0,65,6,0,med,"derived from ground row 544 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+546,MountSwimWalkBackwards,0,65,17,544,med,mount move -> Walkbackwards
+547,FlyMountSwimWalkBackwards,0,65,17,545,med,"derived from ground row 546 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+548,MountFlightIdle,0,1,3,0,med,mount move -> Stand
+549,FlyMountFlightIdle,0,1,3,0,med,"derived from ground row 548 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+550,MountFlightBackwards,0,65,17,560,med,mount move -> Walkbackwards
+551,FlyMountFlightBackwards,0,65,17,561,med,"derived from ground row 550 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+552,MountFlightLeft,0,1,0,0,med,mount move -> RunLeft
+553,FlyMountFlightLeft,0,1,0,0,med,"derived from ground row 552 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+554,MountFlightRight,0,1,0,0,med,mount move -> RunRight
+555,FlyMountFlightRight,0,1,0,0,med,"derived from ground row 554 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+556,MountFlightRun,0,65,6,0,med,mount move -> Run
+557,FlyMountFlightRun,0,65,6,0,med,"derived from ground row 556 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+558,MountFlightSprint,0,64,4,556,med,mount move -> Sprint
+559,FlyMountFlightSprint,0,64,4,557,med,"derived from ground row 558 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+560,MountFlightWalk,0,65,6,0,med,mount move -> Walk
+561,FlyMountFlightWalk,0,65,6,0,med,"derived from ground row 560 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+562,MountFlightWalkBackwards,0,65,17,560,med,mount move -> Walkbackwards
+563,FlyMountFlightWalkBackwards,0,65,17,561,med,"derived from ground row 562 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+564,MountFlightStart,0,0,3,0,med,mount move -> LiftOff
+565,FlyMountFlightStart,0,0,3,0,med,"derived from ground row 564 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+566,MountSwimStart,0,0,3,0,med,mount move -> LiftOff
+567,FlyMountSwimStart,0,0,3,0,med,"derived from ground row 566 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+568,MountSwimLand,0,0,3,0,med,mount move -> Land
+569,FlyMountSwimLand,0,0,3,0,med,"derived from ground row 568 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+570,MountSwimLandRun,0,0,1,540,med,mount move -> JumpLandRun
+571,FlyMountSwimLandRun,0,0,1,541,med,"derived from ground row 570 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+572,MountFlightLand,0,0,3,0,med,mount move -> Land
+573,FlyMountFlightLand,0,0,3,0,med,"derived from ground row 572 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+574,MountFlightLandRun,0,0,1,556,med,mount move -> JumpLandRun
+575,FlyMountFlightLandRun,0,0,1,557,med,"derived from ground row 574 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+576,ReadyBlowDart,0,0,3,48,med,ranged set -> ReadyRifle
+577,FlyReadyBlowDart,0,0,3,277,med,"derived from ground row 576 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+578,LoadBlowDart,0,264,2,106,med,ranged set -> LoadRifle
+579,FlyLoadBlowDart,0,264,2,335,med,"derived from ground row 578 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+580,HoldBlowDart,0,8,3,110,med,ranged set -> HoldRifle
+581,FlyHoldBlowDart,0,8,3,339,med,"derived from ground row 580 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+582,AttackBlowDart,16,264,3,49,med,ranged set -> AttackRifle
+583,FlyAttackBlowDart,16,264,3,278,med,"derived from ground row 582 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+584,CarriageMount,0,8,3,0,med,mount seat -> ReclinedMount
+585,FlyCarriageMount,0,8,3,0,med,"derived from ground row 584 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+586,CarriagePassengerMount,0,8,3,0,med,mount seat -> ReclinedMount
+587,FlyCarriagePassengerMount,0,8,3,0,med,"derived from ground row 586 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+588,CarriageMountAttack,0,8,3,0,med,mount seat -> ReclinedMount
+589,FlyCarriageMountAttack,0,8,3,0,med,"derived from ground row 588 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+590,BarTendStand,0,1,3,0,med,ambient stand -> Stand
+591,FlyBarTendStand,0,1,3,0,med,"derived from ground row 590 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+592,BarServerWalk,0,65,6,4,med,walk -> Walk
+593,FlyBarServerWalk,0,65,6,233,med,"derived from ground row 592 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+594,BarServerRun,0,65,6,5,med,run -> Run
+595,FlyBarServerRun,0,65,6,234,med,"derived from ground row 594 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+596,BarServerShuffleLeft,0,1,4,11,med,-> ShuffleLeft
+597,FlyBarServerShuffleLeft,0,1,4,240,med,"derived from ground row 596 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+598,BarServerShuffleRight,0,1,4,12,med,-> ShuffleRight
+599,FlyBarServerShuffleRight,0,1,4,241,med,"derived from ground row 598 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+600,BarTendEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+601,FlyBarTendEmoteTalk,0,264,3,289,med,"derived from ground row 600 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+602,BarTendEmotePoint,0,264,67,84,med,-> EmotePointNoSheathe
+603,FlyBarTendEmotePoint,0,264,3,313,med,"derived from ground row 602 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+604,BarServerStand,0,1,3,0,med,ambient stand -> Stand
+605,FlyBarServerStand,0,1,3,0,med,"derived from ground row 604 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+606,BarSweepWalk,0,65,6,4,med,walk -> Walk
+607,FlyBarSweepWalk,0,65,6,233,med,"derived from ground row 606 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+608,BarSweepRun,0,65,6,5,med,run -> Run
+609,FlyBarSweepRun,0,65,6,234,med,"derived from ground row 608 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+610,BarSweepShuffleLeft,0,1,4,11,med,-> ShuffleLeft
+611,FlyBarSweepShuffleLeft,0,1,4,240,med,"derived from ground row 610 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+612,BarSweepShuffleRight,0,1,4,12,med,-> ShuffleRight
+613,FlyBarSweepShuffleRight,0,1,4,241,med,"derived from ground row 612 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+614,BarSweepEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+615,FlyBarSweepEmoteTalk,0,264,3,289,med,"derived from ground row 614 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+616,BarPatronSitEmotePoint,0,264,67,84,med,-> EmotePointNoSheathe
+617,FlyBarPatronSitEmotePoint,0,264,3,313,med,"derived from ground row 616 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+618,MountSelfIdle,0,1,3,0,med,mount move -> Stand
+619,FlyMountSelfIdle,0,1,3,0,med,"derived from ground row 618 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+620,MountSelfWalk,0,65,6,0,med,mount move -> Walk
+621,FlyMountSelfWalk,0,65,6,0,med,"derived from ground row 620 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+622,MountSelfRun,0,65,6,0,med,mount move -> Run
+623,FlyMountSelfRun,0,65,6,0,med,"derived from ground row 622 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+624,MountSelfSprint,0,64,4,622,med,mount move -> Sprint
+625,FlyMountSelfSprint,0,64,4,623,med,"derived from ground row 624 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+626,MountSelfRunLeft,0,1,0,0,med,mount move -> RunLeft
+627,FlyMountSelfRunLeft,0,1,0,0,med,"derived from ground row 626 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+628,MountSelfRunRight,0,1,0,0,med,mount move -> RunRight
+629,FlyMountSelfRunRight,0,1,0,0,med,"derived from ground row 628 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+630,MountSelfShuffleLeft,0,1,4,11,med,-> ShuffleLeft
+631,FlyMountSelfShuffleLeft,0,1,4,240,med,"derived from ground row 630 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+632,MountSelfShuffleRight,0,1,4,12,med,-> ShuffleRight
+633,FlyMountSelfShuffleRight,0,1,4,241,med,"derived from ground row 632 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+634,MountSelfWalkBackwards,0,65,17,620,med,mount move -> Walkbackwards
+635,FlyMountSelfWalkBackwards,0,65,17,621,med,"derived from ground row 634 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+636,MountSelfSpecial,0,257,3,0,med,mount move -> MountSpecial
+637,FlyMountSelfSpecial,0,257,3,0,med,"derived from ground row 636 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+638,MountSelfJump,0,257,2,0,med,mount move -> Jump
+639,FlyMountSelfJump,0,257,2,0,med,"derived from ground row 638 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+640,MountSelfJumpStart,0,257,3,0,med,mount move -> JumpStart
+641,FlyMountSelfJumpStart,0,257,3,0,med,"derived from ground row 640 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+642,MountSelfJumpEnd,0,257,3,0,med,mount move -> JumpEnd
+643,FlyMountSelfJumpEnd,0,257,3,0,med,"derived from ground row 642 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+644,MountSelfJumpLandRun,0,0,1,622,med,mount move -> JumpLandRun
+645,FlyMountSelfJumpLandRun,0,0,1,623,med,"derived from ground row 644 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+646,MountSelfStart,4,256,3,0,med,mount move -> Mount
+647,FlyMountSelfStart,4,256,3,0,med,"derived from ground row 646 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+648,MountSelfFall,0,257,3,0,med,mount move -> Fall
+649,FlyMountSelfFall,0,257,3,0,med,"derived from ground row 648 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+650,Stormstrike,32,288,3,85,med,"-> Special1H, fb Attack1HPierce"
+651,FlyStormstrike,32,288,3,314,med,"derived from ground row 650 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+652,ReadyJoustNoSheathe,32,0,3,476,high,ranged set -> ReadyJoust
+653,FlyReadyJoustNoSheathe,32,0,3,479,high,"derived from ground row 652 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+654,Slam,32,288,3,17,med,1H ability -> Special1H
+655,FlySlam,32,288,3,246,med,"derived from ground row 654 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+656,DeathStrike,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+657,FlyDeathStrike,32,288,3,247,med,"derived from ground row 656 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+658,SwimAttackUnarmed,16,296,3,16,high,unarmed attack -> AttackUnarmed
+659,FlySwimAttackUnarmed,16,296,3,245,high,"derived from ground row 658 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+660,SpinningKick,0,288,3,95,med,kick/stomp-like ability -> Kick
+661,FlySpinningKick,0,288,3,324,med,"derived from ground row 660 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+662,RoundHouseKick,0,288,3,95,med,kick/stomp-like ability -> Kick
+663,FlyRoundHouseKick,0,288,3,324,med,"derived from ground row 662 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+664,RollStart,0,257,3,0,low,jump-family -> JumpStart
+665,FlyRollStart,0,257,3,0,low,"derived from ground row 664 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+666,Roll,0,257,2,0,low,jump-family -> Jump
+667,FlyRoll,0,257,2,0,low,"derived from ground row 666 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+668,RollEnd,0,257,3,0,low,jump-family -> JumpEnd
+669,FlyRollEnd,0,257,3,0,low,"derived from ground row 668 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+670,PalmStrike,16,296,3,16,med,-> AttackUnarmed
+671,FlyPalmStrike,16,296,3,245,med,"derived from ground row 670 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+672,MonkOffenseAttackUnarmed,16,296,3,16,high,unarmed attack -> AttackUnarmed
+673,FlyMonkOffenseAttackUnarmed,16,296,3,245,high,"derived from ground row 672 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+674,MonkOffenseAttackUnarmedOff,16,296,0,87,high,unarmed off -> AttackUnarmedOff
+675,FlyMonkOffenseAttackUnarmedOff,16,296,0,316,high,"derived from ground row 674 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+676,MonkOffenseParryUnarmed,0,296,3,8,high,parry -> Parry1H
+677,FlyMonkOffenseParryUnarmed,0,296,3,237,high,"derived from ground row 676 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+678,MonkOffenseReadyUnarmed,16,256,3,25,high,unarmed ready -> ReadyUnarmed
+679,FlyMonkOffenseReadyUnarmed,16,256,3,254,high,"derived from ground row 678 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+680,MonkOffenseSpecialUnarmed,16,288,3,118,high,unarmed special -> SpecialUnarmed
+681,FlyMonkOffenseSpecialUnarmed,16,288,3,347,high,"derived from ground row 680 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+682,MonkDefenseAttackUnarmed,16,296,3,16,high,unarmed attack -> AttackUnarmed
+683,FlyMonkDefenseAttackUnarmed,16,296,3,245,high,"derived from ground row 682 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+684,MonkDefenseAttackUnarmedOff,16,296,0,87,high,unarmed off -> AttackUnarmedOff
+685,FlyMonkDefenseAttackUnarmedOff,16,296,0,316,high,"derived from ground row 684 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+686,MonkDefenseParryUnarmed,0,296,3,8,high,parry -> Parry1H
+687,FlyMonkDefenseParryUnarmed,0,296,3,237,high,"derived from ground row 686 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+688,MonkDefenseReadyUnarmed,16,256,3,25,high,unarmed ready -> ReadyUnarmed
+689,FlyMonkDefenseReadyUnarmed,16,256,3,254,high,"derived from ground row 688 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+690,MonkDefenseSpecialUnarmed,16,288,3,118,high,unarmed special -> SpecialUnarmed
+691,FlyMonkDefenseSpecialUnarmed,16,288,3,347,high,"derived from ground row 690 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+692,MonkHealAttackUnarmed,16,296,3,16,high,unarmed attack -> AttackUnarmed
+693,FlyMonkHealAttackUnarmed,16,296,3,245,high,"derived from ground row 692 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+694,MonkHealAttackUnarmedOff,16,296,0,87,high,unarmed off -> AttackUnarmedOff
+695,FlyMonkHealAttackUnarmedOff,16,296,0,316,high,"derived from ground row 694 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+696,MonkHealParryUnarmed,0,296,3,8,high,parry -> Parry1H
+697,FlyMonkHealParryUnarmed,0,296,3,237,high,"derived from ground row 696 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+698,MonkHealReadyUnarmed,16,256,3,25,high,unarmed ready -> ReadyUnarmed
+699,FlyMonkHealReadyUnarmed,16,256,3,254,high,"derived from ground row 698 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+700,MonkHealSpecialUnarmed,16,288,3,118,high,unarmed special -> SpecialUnarmed
+701,FlyMonkHealSpecialUnarmed,16,288,3,347,high,"derived from ground row 700 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+702,FlyingKick,0,288,3,95,med,kick/stomp-like ability -> Kick
+703,FlyFlyingKick,0,288,3,324,med,"derived from ground row 702 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+704,FlyingKickStart,0,288,3,95,med,kick/stomp-like ability -> Kick
+705,FlyFlyingKickStart,0,288,3,324,med,"derived from ground row 704 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+706,FlyingKickEnd,0,288,3,95,med,kick/stomp-like ability -> Kick
+707,FlyFlyingKickEnd,0,288,3,324,med,"derived from ground row 706 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+708,CraneStart,4,256,3,0,low,start of start/loop/end -> Loot
+709,FlyCraneStart,4,256,3,0,low,"derived from ground row 708 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+710,CraneLoop,0,0,35,708,low,loop of start/loop/end -> LootHold
+711,FlyCraneLoop,0,0,35,709,low,"derived from ground row 710 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+712,CraneEnd,0,0,16,708,low,end of start/loop/end -> LootUp
+713,FlyCraneEnd,0,0,16,709,low,"derived from ground row 712 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+714,Despawned,0,0,0,0,high,-> Despawn
+715,FlyDespawned,0,0,0,0,high,"derived from ground row 714 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+716,ThousandFists,0,288,3,95,med,kick/stomp-like ability -> Kick
+717,FlyThousandFists,0,288,3,324,med,"derived from ground row 716 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+718,MonkHealReadySpellDirected,4,256,2,51,high,monk heal spell -> ReadySpellDirected
+719,FlyMonkHealReadySpellDirected,4,256,2,280,high,"derived from ground row 718 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+720,MonkHealReadySpellOmni,4,264,3,52,high,monk heal spell -> ReadySpellOmni
+721,FlyMonkHealReadySpellOmni,4,264,3,281,high,"derived from ground row 720 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+722,MonkHealSpellCastDirected,4,264,2,53,high,monk heal spell -> SpellCastDirected
+723,FlyMonkHealSpellCastDirected,4,264,2,282,high,"derived from ground row 722 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+724,MonkHealSpellCastOmni,4,264,3,54,high,monk heal spell -> SpellCastOmni
+725,FlyMonkHealSpellCastOmni,4,264,3,283,high,"derived from ground row 724 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+726,MonkHealChannelCastDirected,4,256,3,124,high,monk heal spell -> ChannelCastDirected
+727,FlyMonkHealChannelCastDirected,4,256,3,353,high,"derived from ground row 726 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+728,MonkHealChannelCastOmni,4,256,3,125,high,monk heal spell -> ChannelCastOmni
+729,FlyMonkHealChannelCastOmni,4,256,3,354,high,"derived from ground row 728 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+730,Torpedo,0,288,3,95,med,kick/stomp-like ability -> Kick
+731,FlyTorpedo,0,288,3,324,med,"derived from ground row 730 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+732,Meditate,16,256,67,0,low,-> EmoteSitGround
+733,FlyMeditate,16,256,3,0,low,"derived from ground row 732 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+734,BreathOfFire,0,0,3,0,low,-> DragonSpit
+735,FlyBreathOfFire,0,0,3,0,low,"derived from ground row 734 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+736,RisingSunKick,0,288,3,95,med,kick/stomp-like ability -> Kick
+737,FlyRisingSunKick,0,288,3,324,med,"derived from ground row 736 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+738,GroundKick,0,288,3,95,med,kick/stomp-like ability -> Kick
+739,FlyGroundKick,0,288,3,324,med,"derived from ground row 738 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+740,KickBack,0,288,3,95,med,kick/stomp-like ability -> Kick
+741,FlyKickBack,0,288,3,324,med,"derived from ground row 740 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+742,PetBattleStand,0,1,3,0,med,pet battle -> Stand
+743,FlyPetBattleStand,0,1,3,0,med,"derived from ground row 742 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+744,PetBattleDeath,0,768,10,1,med,pet battle -> Death
+745,FlyPetBattleDeath,0,768,10,230,med,"derived from ground row 744 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+746,PetBattleRun,0,65,6,5,med,run -> Run
+747,FlyPetBattleRun,0,65,6,234,med,"derived from ground row 746 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+748,PetBattleWound,0,296,7,8,med,pet battle -> CombatWound
+749,FlyPetBattleWound,0,296,7,237,med,"derived from ground row 748 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+750,PetBattleAttack,0,296,3,16,med,pet battle -> AttackUnarmed
+751,FlyPetBattleAttack,0,296,3,245,med,"derived from ground row 750 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+752,PetBattleReadySpell,4,264,3,52,med,pet battle -> ReadySpellOmni
+753,FlyPetBattleReadySpell,4,264,3,281,med,"derived from ground row 752 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+754,PetBattleSpellCast,4,264,3,54,med,pet battle -> SpellCastOmni
+755,FlyPetBattleSpellCast,4,264,3,283,med,"derived from ground row 754 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+756,PetBattleCustom0,0,0,2,0,high,custom slot -> Custom0
+757,FlyPetBattleCustom0,0,0,2,0,high,"derived from ground row 756 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+758,PetBattleCustom1,0,0,2,0,high,custom slot -> Custom0
+759,FlyPetBattleCustom1,0,0,2,0,high,"derived from ground row 758 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+760,PetBattleCustom2,0,0,2,0,high,custom slot -> Custom0
+761,FlyPetBattleCustom2,0,0,2,0,high,"derived from ground row 760 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+762,PetBattleCustom3,0,0,2,0,high,custom slot -> Custom0
+763,FlyPetBattleCustom3,0,0,2,0,high,"derived from ground row 762 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+764,PetBattleVictory,0,256,67,0,med,pet battle -> EmoteCheer
+765,FlyPetBattleVictory,0,256,3,0,med,"derived from ground row 764 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+766,PetBattleLoss,0,256,67,0,med,pet battle -> EmoteCry
+767,FlyPetBattleLoss,0,256,3,0,med,"derived from ground row 766 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+768,PetBattleStun,0,256,3,0,med,pet battle -> Stun
+769,FlyPetBattleStun,0,256,3,0,med,"derived from ground row 768 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+770,PetBattleDead,0,2304,43,1,med,pet battle -> Dead
+771,FlyPetBattleDead,0,2304,43,230,med,"derived from ground row 770 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+772,PetBattleFreeze,0,256,3,0,med,pet battle -> Stun
+773,FlyPetBattleFreeze,0,256,3,0,med,"derived from ground row 772 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+774,MonkOffenseAttackWeapon,32,296,3,17,high,weapon attack -> Attack1H
+775,FlyMonkOffenseAttackWeapon,32,296,3,246,high,"derived from ground row 774 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+776,BarTendEmoteWave,0,264,67,67,med,"-> NoSheathe talk, fb EmoteWave"
+777,FlyBarTendEmoteWave,0,264,3,296,med,"derived from ground row 776 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+778,BarServerEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+779,FlyBarServerEmoteTalk,0,264,3,289,med,"derived from ground row 778 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+780,BarServerEmoteWave,0,264,67,67,med,"-> NoSheathe talk, fb EmoteWave"
+781,FlyBarServerEmoteWave,0,264,3,296,med,"derived from ground row 780 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+782,BarServerPourDrinks,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+783,FlyBarServerPourDrinks,0,0,3,0,low,"derived from ground row 782 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+784,BarServerPickup,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+785,FlyBarServerPickup,0,0,3,0,low,"derived from ground row 784 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+786,BarServerPutDown,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+787,FlyBarServerPutDown,0,0,3,0,low,"derived from ground row 786 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+788,BarSweepStand,0,1,3,0,med,ambient stand -> Stand
+789,FlyBarSweepStand,0,1,3,0,med,"derived from ground row 788 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+790,BarPatronSit,4,0,65,0,low,ambient sit -> SitChairLow
+791,FlyBarPatronSit,4,0,1,0,low,"derived from ground row 790 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+792,BarPatronSitEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+793,FlyBarPatronSitEmoteTalk,0,264,3,289,med,"derived from ground row 792 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+794,BarPatronStand,0,1,3,0,med,ambient stand -> Stand
+795,FlyBarPatronStand,0,1,3,0,med,"derived from ground row 794 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+796,BarPatronStandEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+797,FlyBarPatronStandEmoteTalk,0,264,3,289,med,"derived from ground row 796 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+798,BarPatronStandEmotePoint,0,264,67,84,med,-> EmotePointNoSheathe
+799,FlyBarPatronStandEmotePoint,0,264,3,313,med,"derived from ground row 798 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+800,CarrionSwarm,0,0,3,0,low,-> DragonSpit
+801,FlyCarrionSwarm,0,0,3,0,low,"derived from ground row 800 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+802,WheelLoop,0,0,1,0,low,held loop -> Hold
+803,FlyWheelLoop,0,0,1,0,low,"derived from ground row 802 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+804,StandCharacterCreate,0,1,3,0,med,idle -> Stand
+805,FlyStandCharacterCreate,0,1,3,0,med,"derived from ground row 804 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+806,MountChopper,4,256,3,0,med,mount-up -> Mount
+807,FlyMountChopper,4,256,3,0,med,"derived from ground row 806 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+808,FacePose,0,0,0,0,low,"pose, no flags"
+809,FlyFacePose,0,0,0,0,low,"derived from ground row 808 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+810,CombatAbility2HBig01,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+811,FlyCombatAbility2HBig01,32,288,3,247,med,"derived from ground row 810 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+812,CombatAbility2H01,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+813,FlyCombatAbility2H01,32,288,3,247,med,"derived from ground row 812 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+814,CombatWhirlwind,32,288,3,126,high,-> Whirlwind
+815,FlyCombatWhirlwind,32,288,3,355,high,"derived from ground row 814 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+816,CombatChargeLoop,32,65,6,5,low,combat run -> Run (weapon drawn)
+817,FlyCombatChargeLoop,32,65,6,234,low,"derived from ground row 816 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+818,CombatAbility1H01,32,288,3,17,med,1H ability -> Special1H
+819,FlyCombatAbility1H01,32,288,3,246,med,"derived from ground row 818 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+820,CombatChargeEnd,32,288,3,17,med,1H ability -> Special1H
+821,FlyCombatChargeEnd,32,288,3,246,med,"derived from ground row 820 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+822,CombatAbility1H02,32,288,3,17,med,1H ability -> Special1H
+823,FlyCombatAbility1H02,32,288,3,246,med,"derived from ground row 822 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+824,CombatAbility1HBig01,32,288,3,17,med,1H ability -> Special1H
+825,FlyCombatAbility1HBig01,32,288,3,246,med,"derived from ground row 824 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+826,CombatAbility2H02,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+827,FlyCombatAbility2H02,32,288,3,247,med,"derived from ground row 826 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+828,ShaSpellPrecastBoth,4,264,3,31,med,precast -> SpellPrecast
+829,FlyShaSpellPrecastBoth,4,264,3,260,med,"derived from ground row 828 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+830,ShaSpellCastBothFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+831,FlyShaSpellCastBothFront,4,264,2,282,med,"derived from ground row 830 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+832,ShaSpellCastLeftFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+833,FlyShaSpellCastLeftFront,4,264,2,282,med,"derived from ground row 832 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+834,ShaSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+835,FlyShaSpellCastRightFront,4,264,2,282,med,"derived from ground row 834 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+836,ReadyCrossbow,0,0,3,48,med,ranged set -> ReadyRifle
+837,FlyReadyCrossbow,0,0,3,277,med,"derived from ground row 836 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+838,LoadCrossbow,0,264,2,106,med,ranged set -> LoadRifle
+839,FlyLoadCrossbow,0,264,2,335,med,"derived from ground row 838 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+840,AttackCrossbow,16,264,3,49,med,ranged set -> AttackRifle
+841,FlyAttackCrossbow,16,264,3,278,med,"derived from ground row 840 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+842,HoldCrossbow,0,8,3,110,med,ranged set -> HoldRifle
+843,FlyHoldCrossbow,0,8,3,339,med,"derived from ground row 842 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+844,CombatAbility2HL01,32,288,3,19,med,"2HL ability -> Special1H, fb Attack2HL"
+845,FlyCombatAbility2HL01,32,288,3,248,med,"derived from ground row 844 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+846,CombatAbility2HL02,32,288,3,19,med,"2HL ability -> Special1H, fb Attack2HL"
+847,FlyCombatAbility2HL02,32,288,3,248,med,"derived from ground row 846 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+848,CombatAbility2HLBig01,32,288,3,19,med,"2HL ability -> Special1H, fb Attack2HL"
+849,FlyCombatAbility2HLBig01,32,288,3,248,med,"derived from ground row 848 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+850,CombatUnarmed01,16,296,3,16,high,unarmed attack -> AttackUnarmed
+851,FlyCombatUnarmed01,16,296,3,245,high,"derived from ground row 850 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+852,CombatStompLeft,0,288,3,95,med,kick/stomp-like ability -> Kick
+853,FlyCombatStompLeft,0,288,3,324,med,"derived from ground row 852 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+854,CombatStompRight,0,288,3,95,med,kick/stomp-like ability -> Kick
+855,FlyCombatStompRight,0,288,3,324,med,"derived from ground row 854 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+856,CombatLeapLoop,0,257,2,0,low,jump-family -> Jump
+857,FlyCombatLeapLoop,0,257,2,0,low,"derived from ground row 856 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+858,CombatLeapEnd,0,257,3,0,low,jump-family -> JumpEnd
+859,FlyCombatLeapEnd,0,257,3,0,low,"derived from ground row 858 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+860,ShaReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+861,FlyShaReadySpellCast,4,264,3,281,med,"derived from ground row 860 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+862,ShaSpellPrecastBothChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+863,FlyShaSpellPrecastBothChannel,4,256,3,354,med,"derived from ground row 862 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+864,ShaSpellCastBothUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+865,FlyShaSpellCastBothUp,4,264,3,283,med,"derived from ground row 864 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+866,ShaSpellCastBothUpChannel,4,256,3,125,med,channel (up) -> ChannelCastOmni
+867,FlyShaSpellCastBothUpChannel,4,256,3,354,med,"derived from ground row 866 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+868,ShaSpellCastBothFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+869,FlyShaSpellCastBothFrontChannel,4,256,3,353,med,"derived from ground row 868 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+870,ShaSpellCastLeftFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+871,FlyShaSpellCastLeftFrontChannel,4,256,3,353,med,"derived from ground row 870 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+872,ShaSpellCastRightFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+873,FlyShaSpellCastRightFrontChannel,4,256,3,353,med,"derived from ground row 872 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+874,PriReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+875,FlyPriReadySpellCast,4,264,3,281,med,"derived from ground row 874 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+876,PriSpellPrecastBoth,4,264,3,31,med,precast -> SpellPrecast
+877,FlyPriSpellPrecastBoth,4,264,3,260,med,"derived from ground row 876 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+878,PriSpellPrecastBothChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+879,FlyPriSpellPrecastBothChannel,4,256,3,354,med,"derived from ground row 878 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+880,PriSpellCastBothUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+881,FlyPriSpellCastBothUp,4,264,3,283,med,"derived from ground row 880 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+882,PriSpellCastBothFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+883,FlyPriSpellCastBothFront,4,264,2,282,med,"derived from ground row 882 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+884,PriSpellCastLeftFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+885,FlyPriSpellCastLeftFront,4,264,2,282,med,"derived from ground row 884 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+886,PriSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+887,FlyPriSpellCastRightFront,4,264,2,282,med,"derived from ground row 886 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+888,PriSpellCastBothUpChannel,4,256,3,125,med,channel (up) -> ChannelCastOmni
+889,FlyPriSpellCastBothUpChannel,4,256,3,354,med,"derived from ground row 888 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+890,PriSpellCastBothFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+891,FlyPriSpellCastBothFrontChannel,4,256,3,353,med,"derived from ground row 890 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+892,PriSpellCastLeftFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+893,FlyPriSpellCastLeftFrontChannel,4,256,3,353,med,"derived from ground row 892 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+894,PriSpellCastRightFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+895,FlyPriSpellCastRightFrontChannel,4,256,3,353,med,"derived from ground row 894 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+896,MagReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+897,FlyMagReadySpellCast,4,264,3,281,med,"derived from ground row 896 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+898,MagSpellPrecastBoth,4,264,3,31,med,precast -> SpellPrecast
+899,FlyMagSpellPrecastBoth,4,264,3,260,med,"derived from ground row 898 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+900,MagSpellPrecastBothChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+901,FlyMagSpellPrecastBothChannel,4,256,3,354,med,"derived from ground row 900 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+902,MagSpellCastBothUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+903,FlyMagSpellCastBothUp,4,264,3,283,med,"derived from ground row 902 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+904,MagSpellCastBothFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+905,FlyMagSpellCastBothFront,4,264,2,282,med,"derived from ground row 904 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+906,MagSpellCastLeftFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+907,FlyMagSpellCastLeftFront,4,264,2,282,med,"derived from ground row 906 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+908,MagSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+909,FlyMagSpellCastRightFront,4,264,2,282,med,"derived from ground row 908 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+910,MagSpellCastBothUpChannel,4,256,3,125,med,channel (up) -> ChannelCastOmni
+911,FlyMagSpellCastBothUpChannel,4,256,3,354,med,"derived from ground row 910 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+912,MagSpellCastBothFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+913,FlyMagSpellCastBothFrontChannel,4,256,3,353,med,"derived from ground row 912 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+914,MagSpellCastLeftFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+915,FlyMagSpellCastLeftFrontChannel,4,256,3,353,med,"derived from ground row 914 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+916,MagSpellCastRightFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+917,FlyMagSpellCastRightFrontChannel,4,256,3,353,med,"derived from ground row 916 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+918,LocReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+919,FlyLocReadySpellCast,4,264,3,281,med,"derived from ground row 918 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+920,LocSpellPrecastBoth,4,264,3,31,med,precast -> SpellPrecast
+921,FlyLocSpellPrecastBoth,4,264,3,260,med,"derived from ground row 920 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+922,LocSpellPrecastBothChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+923,FlyLocSpellPrecastBothChannel,4,256,3,354,med,"derived from ground row 922 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+924,LocSpellCastBothUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+925,FlyLocSpellCastBothUp,4,264,3,283,med,"derived from ground row 924 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+926,LocSpellCastBothFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+927,FlyLocSpellCastBothFront,4,264,2,282,med,"derived from ground row 926 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+928,LocSpellCastLeftFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+929,FlyLocSpellCastLeftFront,4,264,2,282,med,"derived from ground row 928 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+930,LocSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+931,FlyLocSpellCastRightFront,4,264,2,282,med,"derived from ground row 930 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+932,LocSpellCastBothUpChannel,4,256,3,125,med,channel (up) -> ChannelCastOmni
+933,FlyLocSpellCastBothUpChannel,4,256,3,354,med,"derived from ground row 932 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+934,LocSpellCastBothFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+935,FlyLocSpellCastBothFrontChannel,4,256,3,353,med,"derived from ground row 934 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+936,LocSpellCastLeftFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+937,FlyLocSpellCastLeftFrontChannel,4,256,3,353,med,"derived from ground row 936 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+938,LocSpellCastRightFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+939,FlyLocSpellCastRightFrontChannel,4,256,3,353,med,"derived from ground row 938 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+940,DruReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+941,FlyDruReadySpellCast,4,264,3,281,med,"derived from ground row 940 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+942,DruSpellPrecastBoth,4,264,3,31,med,precast -> SpellPrecast
+943,FlyDruSpellPrecastBoth,4,264,3,260,med,"derived from ground row 942 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+944,DruSpellPrecastBothChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+945,FlyDruSpellPrecastBothChannel,4,256,3,354,med,"derived from ground row 944 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+946,DruSpellCastBothUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+947,FlyDruSpellCastBothUp,4,264,3,283,med,"derived from ground row 946 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+948,DruSpellCastBothFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+949,FlyDruSpellCastBothFront,4,264,2,282,med,"derived from ground row 948 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+950,DruSpellCastLeftFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+951,FlyDruSpellCastLeftFront,4,264,2,282,med,"derived from ground row 950 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+952,DruSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+953,FlyDruSpellCastRightFront,4,264,2,282,med,"derived from ground row 952 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+954,DruSpellCastBothUpChannel,4,256,3,125,med,channel (up) -> ChannelCastOmni
+955,FlyDruSpellCastBothUpChannel,4,256,3,354,med,"derived from ground row 954 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+956,DruSpellCastBothFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+957,FlyDruSpellCastBothFrontChannel,4,256,3,353,med,"derived from ground row 956 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+958,DruSpellCastLeftFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+959,FlyDruSpellCastLeftFrontChannel,4,256,3,353,med,"derived from ground row 958 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+960,DruSpellCastRightFrontChannel,4,256,3,124,med,channel (front) -> ChannelCastDirected
+961,FlyDruSpellCastRightFrontChannel,4,256,3,353,med,"derived from ground row 960 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+962,ArtMainLoop,0,0,1,0,low,held loop -> Hold
+963,FlyArtMainLoop,0,0,1,0,low,"derived from ground row 962 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+964,ArtDualLoop,0,0,1,0,low,held loop -> Hold
+965,FlyArtDualLoop,0,0,1,0,low,"derived from ground row 964 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+966,ArtFistsLoop,0,0,1,0,low,held loop -> Hold
+967,FlyArtFistsLoop,0,0,1,0,low,"derived from ground row 966 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+968,ArtBowLoop,0,0,1,0,low,held loop -> Hold
+969,FlyArtBowLoop,0,0,1,0,low,"derived from ground row 968 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+970,CombatAbility1H01Off,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+971,FlyCombatAbility1H01Off,32,288,3,316,med,"derived from ground row 970 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+972,CombatAbility1H02Off,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+973,FlyCombatAbility1H02Off,32,288,3,316,med,"derived from ground row 972 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+974,CombatFuriousStrike01,32,288,3,17,med,1H ability -> Special1H
+975,FlyCombatFuriousStrike01,32,288,3,246,med,"derived from ground row 974 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+976,CombatFuriousStrike02,32,288,3,17,med,1H ability -> Special1H
+977,FlyCombatFuriousStrike02,32,288,3,246,med,"derived from ground row 976 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+978,CombatFuriousStrikes,32,288,3,17,med,1H ability -> Special1H
+979,FlyCombatFuriousStrikes,32,288,3,246,med,"derived from ground row 978 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+980,CombatReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+981,FlyCombatReadySpellCast,4,264,3,281,med,"derived from ground row 980 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+982,CombatShieldThrow,0,296,2,59,med,-> ShieldBash
+983,FlyCombatShieldThrow,0,296,2,288,med,"derived from ground row 982 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+984,PalSpellCast1HUp,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+985,FlyPalSpellCast1HUp,4,264,3,283,med,"derived from ground row 984 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+986,CombatReadyPostSpellCast,4,264,3,52,low,post-cast ready -> ReadySpellOmni
+987,FlyCombatReadyPostSpellCast,4,264,3,281,low,"derived from ground row 986 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+988,PriReadyPostSpellCast,4,264,3,52,low,post-cast ready -> ReadySpellOmni
+989,FlyPriReadyPostSpellCast,4,264,3,281,low,"derived from ground row 988 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+990,DHCombatRun,32,65,6,5,low,combat run -> Run (weapon drawn)
+991,FlyDHCombatRun,32,65,6,234,low,"derived from ground row 990 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+992,CombatShieldBash,0,296,2,59,med,-> ShieldBash
+993,FlyCombatShieldBash,0,296,2,288,med,"derived from ground row 992 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+994,CombatThrow,16,264,3,107,high,-> AttackThrown
+995,FlyCombatThrow,16,264,3,336,high,"derived from ground row 994 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+996,CombatAbility1HPierce,32,296,2,17,high,-> Attack1HPierce
+997,FlyCombatAbility1HPierce,32,296,2,246,high,"derived from ground row 996 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+998,CombatAbility1HOffPierce,32,296,2,88,med,"-> Attack1HPierce, fb AttackOffPierce"
+999,FlyCombatAbility1HOffPierce,32,296,2,317,med,"derived from ground row 998 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1000,CombatMutilate,32,296,3,212,high,-> Mutilate
+1001,FlyCombatMutilate,32,296,3,441,high,"derived from ground row 1000 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1002,CombatBladeStorm,32,288,3,126,high,-> Whirlwind
+1003,FlyCombatBladeStorm,32,288,3,355,high,"derived from ground row 1002 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1004,CombatFinishingMove,32,288,3,17,med,1H ability -> Special1H
+1005,FlyCombatFinishingMove,32,288,3,246,med,"derived from ground row 1004 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1006,CombatLeapStart,0,257,3,0,low,jump-family -> JumpStart
+1007,FlyCombatLeapStart,0,257,3,0,low,"derived from ground row 1006 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1008,GlvThrowMain,32,296,3,17,med,glaive throw -> Attack1H
+1009,FlyGlvThrowMain,32,296,3,246,med,"derived from ground row 1008 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1010,GlvThrownOff,32,296,3,87,med,glaive off -> AttackOff
+1011,FlyGlvThrownOff,32,296,3,316,med,"derived from ground row 1010 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1012,DHCombatSprint,32,64,4,5,low,combat sprint -> Sprint (weapon drawn)
+1013,FlyDHCombatSprint,32,64,4,234,low,"derived from ground row 1012 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1014,CombatAbilityGlv01,32,288,3,17,med,1H ability -> Special1H
+1015,FlyCombatAbilityGlv01,32,288,3,246,med,"derived from ground row 1014 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1016,CombatAbilityGlv02,32,288,3,17,med,1H ability -> Special1H
+1017,FlyCombatAbilityGlv02,32,288,3,246,med,"derived from ground row 1016 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1018,CombatAbilityGlvOff01,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+1019,FlyCombatAbilityGlvOff01,32,288,3,316,med,"derived from ground row 1018 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1020,CombatAbilityGlvOff02,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+1021,FlyCombatAbilityGlvOff02,32,288,3,316,med,"derived from ground row 1020 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1022,CombatAbilityGlvBig01,32,288,2,17,med,glaive big -> Special2H
+1023,FlyCombatAbilityGlvBig01,32,288,2,246,med,"derived from ground row 1022 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1024,CombatAbilityGlvBig02,32,288,2,17,med,glaive big -> Special2H
+1025,FlyCombatAbilityGlvBig02,32,288,2,246,med,"derived from ground row 1024 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1026,ReadyGlv,32,256,3,26,high,weapon ready -> Ready1H
+1027,FlyReadyGlv,32,256,3,255,high,"derived from ground row 1026 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1028,CombatAbilityGlvBig03,32,288,2,17,med,glaive big -> Special2H
+1029,FlyCombatAbilityGlvBig03,32,288,2,246,med,"derived from ground row 1028 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1030,DoubleJumpStart,0,257,3,0,low,jump-family -> JumpStart
+1031,FlyDoubleJumpStart,0,257,3,0,low,"derived from ground row 1030 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1032,DoubleJump,0,257,3,0,low,jump-family -> Fall
+1033,FlyDoubleJump,0,257,3,0,low,"derived from ground row 1032 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1034,CombatEviscerate,32,288,3,17,med,1H ability -> Special1H
+1035,FlyCombatEviscerate,32,288,3,246,med,"derived from ground row 1034 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1036,DoubleJumpLandRun,0,0,1,5,low,jump-family -> JumpLandRun
+1037,FlyDoubleJumpLandRun,0,0,1,234,low,"derived from ground row 1036 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1038,BackFlipStart,32,288,3,0,low,"demon hunter ability, generic Special1H"
+1039,FlyBackFlipStart,32,288,3,0,low,"derived from ground row 1038 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1040,BackFlipLoop,32,288,3,0,low,"demon hunter ability, generic Special1H"
+1041,FlyBackFlipLoop,32,288,3,0,low,"derived from ground row 1040 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1042,FelRushLoop,32,65,6,5,low,combat run -> Run (weapon drawn)
+1043,FlyFelRushLoop,32,65,6,234,low,"derived from ground row 1042 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1044,FelRushEnd,32,288,3,17,med,1H ability -> Special1H
+1045,FlyFelRushEnd,32,288,3,246,med,"derived from ground row 1044 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1046,DHToAlteredStart,16,256,0,0,med,-> ToAltered
+1047,FlyDHToAlteredStart,16,256,0,0,med,"derived from ground row 1046 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1048,DHToAlteredEnd,16,256,3,0,med,-> FromAltered
+1049,FlyDHToAlteredEnd,16,256,3,0,med,"derived from ground row 1048 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1050,DHGlide,0,257,3,0,low,jump-family -> Fall
+1051,FlyDHGlide,0,257,3,0,low,"derived from ground row 1050 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1052,FanOfKnives,32,288,3,126,high,-> Whirlwind
+1053,FlyFanOfKnives,32,288,3,355,high,"derived from ground row 1052 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1054,SingleJumpStart,0,257,3,0,low,jump-family -> JumpStart
+1055,FlySingleJumpStart,0,257,3,0,low,"derived from ground row 1054 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1056,DHBladeDance1,32,288,3,17,med,1H ability -> Special1H
+1057,FlyDHBladeDance1,32,288,3,246,med,"derived from ground row 1056 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1058,DHBladeDance2,32,288,3,17,med,1H ability -> Special1H
+1059,FlyDHBladeDance2,32,288,3,246,med,"derived from ground row 1058 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1060,DHBladeDance3,32,288,3,17,med,1H ability -> Special1H
+1061,FlyDHBladeDance3,32,288,3,246,med,"derived from ground row 1060 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1062,DHMeteorStrike,32,288,3,17,med,1H ability -> Special1H
+1063,FlyDHMeteorStrike,32,288,3,246,med,"derived from ground row 1062 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1064,CombatExecute,32,288,3,17,med,1H ability -> Special1H
+1065,FlyCombatExecute,32,288,3,246,med,"derived from ground row 1064 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1066,ArtLoop,0,0,1,0,low,held loop -> Hold
+1067,FlyArtLoop,0,0,1,0,low,"derived from ground row 1066 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1068,ParryGlv,0,296,3,8,high,parry -> Parry1H
+1069,FlyParryGlv,0,296,3,237,high,"derived from ground row 1068 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1070,CombatUnarmed02,16,296,3,16,high,unarmed attack -> AttackUnarmed
+1071,FlyCombatUnarmed02,16,296,3,245,high,"derived from ground row 1070 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1072,CombatPistolShot,16,264,3,49,med,-> AttackRifle
+1073,FlyCombatPistolShot,16,264,3,278,med,"derived from ground row 1072 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1074,CombatPistolShotOff,16,264,3,49,med,-> AttackRifle
+1075,FlyCombatPistolShotOff,16,264,3,278,med,"derived from ground row 1074 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1076,Monk2HLIdle,0,0,1,0,low,held loop -> Hold
+1077,FlyMonk2HLIdle,0,0,1,0,low,"derived from ground row 1076 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1078,ArtShieldLoop,0,0,1,0,low,held loop -> Hold
+1079,FlyArtShieldLoop,0,0,1,0,low,"derived from ground row 1078 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1080,CombatAbility2H03,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+1081,FlyCombatAbility2H03,32,288,3,247,med,"derived from ground row 1080 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1082,CombatStomp,0,288,3,95,med,kick/stomp-like ability -> Kick
+1083,FlyCombatStomp,0,288,3,324,med,"derived from ground row 1082 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1084,CombatRoar,0,264,3,55,med,-> BattleRoar
+1085,FlyCombatRoar,0,264,3,284,med,"derived from ground row 1084 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1086,PalReadySpellCast,4,264,3,52,med,caster ready -> ReadySpellOmni
+1087,FlyPalReadySpellCast,4,264,3,281,med,"derived from ground row 1086 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1088,PalSpellPrecastRight,4,264,3,31,med,precast -> SpellPrecast
+1089,FlyPalSpellPrecastRight,4,264,3,260,med,"derived from ground row 1088 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1090,PalSpellPrecastRightChannel,4,256,3,125,med,precast channel -> ChannelCastOmni
+1091,FlyPalSpellPrecastRightChannel,4,256,3,354,med,"derived from ground row 1090 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1092,PalSpellCastRightFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+1093,FlyPalSpellCastRightFront,4,264,2,282,med,"derived from ground row 1092 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1094,ShaSpellCastBothOut,4,264,3,54,med,cast (up/out) -> SpellCastOmni
+1095,FlyShaSpellCastBothOut,4,264,3,283,med,"derived from ground row 1094 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1096,AttackWeapon,32,296,3,17,high,weapon attack -> Attack1H
+1097,FlyAttackWeapon,32,296,3,246,high,"derived from ground row 1096 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1098,ReadyWeapon,32,256,3,26,high,weapon ready -> Ready1H
+1099,FlyReadyWeapon,32,256,3,255,high,"derived from ground row 1098 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1100,AttackWeaponOff,32,296,3,87,high,weapon off -> AttackOff
+1101,FlyAttackWeaponOff,32,296,3,316,high,"derived from ground row 1100 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1102,SpecialDual,32,288,3,17,med,special -> Special1H
+1103,FlySpecialDual,32,288,3,246,med,"derived from ground row 1102 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1104,DkCast1HFront,4,264,2,53,med,cast (front) -> SpellCastDirected
+1105,FlyDkCast1HFront,4,264,2,282,med,"derived from ground row 1104 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1106,CastStrongRight,4,264,2,53,low,class cast -> SpellCastDirected
+1107,FlyCastStrongRight,4,264,2,282,low,"derived from ground row 1106 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1108,CastStrongLeft,4,264,2,53,low,class cast -> SpellCastDirected
+1109,FlyCastStrongLeft,4,264,2,282,low,"derived from ground row 1108 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1110,CastCurseRight,4,264,2,53,low,class cast -> SpellCastDirected
+1111,FlyCastCurseRight,4,264,2,282,low,"derived from ground row 1110 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1112,CastCurseLeft,4,264,2,53,low,class cast -> SpellCastDirected
+1113,FlyCastCurseLeft,4,264,2,282,low,"derived from ground row 1112 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1114,CastSweepRight,4,264,2,53,low,class cast -> SpellCastDirected
+1115,FlyCastSweepRight,4,264,2,282,low,"derived from ground row 1114 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1116,CastSweepLeft,4,264,2,53,low,class cast -> SpellCastDirected
+1117,FlyCastSweepLeft,4,264,2,282,low,"derived from ground row 1116 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1118,CastStrongUpLeft,4,264,3,54,low,class cast (up/out) -> SpellCastOmni
+1119,FlyCastStrongUpLeft,4,264,3,283,low,"derived from ground row 1118 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1120,CastTwistUpBoth,4,264,3,54,low,class cast (up/out) -> SpellCastOmni
+1121,FlyCastTwistUpBoth,4,264,3,283,low,"derived from ground row 1120 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1122,CastOutStrong,4,264,3,54,low,class cast (up/out) -> SpellCastOmni
+1123,FlyCastOutStrong,4,264,3,283,low,"derived from ground row 1122 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1124,DrumLoop,0,0,1,0,low,held loop -> Hold
+1125,FlyDrumLoop,0,0,1,0,low,"derived from ground row 1124 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1126,ParryWeapon,0,296,3,8,high,parry -> Parry1H
+1127,FlyParryWeapon,0,296,3,237,high,"derived from ground row 1126 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1128,ReadyFL,32,256,3,26,high,weapon ready -> Ready1H
+1129,FlyReadyFL,32,256,3,255,high,"derived from ground row 1128 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1130,AttackFL,32,296,3,17,high,weapon attack -> Attack1H
+1131,FlyAttackFL,32,296,3,246,high,"derived from ground row 1130 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1132,AttackFLOff,32,296,3,87,high,weapon off -> AttackOff
+1133,FlyAttackFLOff,32,296,3,316,high,"derived from ground row 1132 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1134,ParryFL,0,296,3,8,high,parry -> Parry1H
+1135,FlyParryFL,0,296,3,237,high,"derived from ground row 1134 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1136,SpecialFL,32,288,3,57,med,special -> Special1H
+1137,FlySpecialFL,32,288,3,286,med,"derived from ground row 1136 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1138,PriHoverForward,0,65,6,0,low,hover/flight move -> Run
+1139,FlyPriHoverForward,0,65,6,0,low,"derived from ground row 1138 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1140,PriHoverBackward,0,65,17,13,low,-> Walkbackwards
+1141,FlyPriHoverBackward,0,65,17,242,low,"derived from ground row 1140 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1142,PriHoverRight,0,1,0,0,low,strafe -> RunLeft
+1143,FlyPriHoverRight,0,1,0,0,low,"derived from ground row 1142 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1144,PriHoverLeft,0,1,0,0,low,strafe -> RunLeft
+1145,FlyPriHoverLeft,0,1,0,0,low,"derived from ground row 1144 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1146,RunBackwards,0,65,17,13,med,-> Walkbackwards
+1147,FlyRunBackwards,0,65,17,242,med,"derived from ground row 1146 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1148,CastStrongUpRight,4,264,3,54,low,class cast (up/out) -> SpellCastOmni
+1149,FlyCastStrongUpRight,4,264,3,283,low,"derived from ground row 1148 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1150,WAWalk,0,65,6,4,med,walk -> Walk
+1151,FlyWAWalk,0,65,6,233,med,"derived from ground row 1150 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1152,WARun,0,65,6,5,med,run -> Run
+1153,FlyWARun,0,65,6,234,med,"derived from ground row 1152 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1154,WADrunkStand,0,1,3,0,med,ambient stand -> Stand
+1155,FlyWADrunkStand,0,1,3,0,med,"derived from ground row 1154 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1156,WADrunkShuffleLeft,0,1,4,11,med,-> ShuffleLeft
+1157,FlyWADrunkShuffleLeft,0,1,4,240,med,"derived from ground row 1156 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1158,WADrunkShuffleRight,0,1,4,12,med,-> ShuffleRight
+1159,FlyWADrunkShuffleRight,0,1,4,241,med,"derived from ground row 1158 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1160,WADrunkWalk,0,65,6,4,med,walk -> Walk
+1161,FlyWADrunkWalk,0,65,6,233,med,"derived from ground row 1160 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1162,WADrunkWalkBackwards,0,65,17,13,med,-> Walkbackwards
+1163,FlyWADrunkWalkBackwards,0,65,17,242,med,"derived from ground row 1162 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1164,WADrunkWound,0,296,0,8,med,-> StandWound
+1165,FlyWADrunkWound,0,296,0,237,med,"derived from ground row 1164 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1166,WADrunkTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1167,FlyWADrunkTalk,0,264,3,289,med,"derived from ground row 1166 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1168,WATrance01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1169,FlyWATrance01,0,0,3,0,low,"derived from ground row 1168 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1170,WATrance02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1171,FlyWATrance02,0,0,3,0,low,"derived from ground row 1170 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1172,WAChant01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1173,FlyWAChant01,0,0,3,0,low,"derived from ground row 1172 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1174,WAChant02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1175,FlyWAChant02,0,0,3,0,low,"derived from ground row 1174 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1176,WAChant03,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1177,FlyWAChant03,0,0,3,0,low,"derived from ground row 1176 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1178,WAHang01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1179,FlyWAHang01,0,0,3,0,low,"derived from ground row 1178 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1180,WAHang02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1181,FlyWAHang02,0,0,3,0,low,"derived from ground row 1180 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1182,WASummon01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1183,FlyWASummon01,0,0,3,0,low,"derived from ground row 1182 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1184,WASummon02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1185,FlyWASummon02,0,0,3,0,low,"derived from ground row 1184 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1186,WABeggarTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1187,FlyWABeggarTalk,0,264,3,289,med,"derived from ground row 1186 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1188,WABeggarStand,0,1,3,0,med,ambient stand -> Stand
+1189,FlyWABeggarStand,0,1,3,0,med,"derived from ground row 1188 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1190,WABeggarPoint,0,264,67,84,med,-> EmotePointNoSheathe
+1191,FlyWABeggarPoint,0,264,3,313,med,"derived from ground row 1190 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1192,WABeggarBeg,16,256,67,79,med,-> EmoteBeg
+1193,FlyWABeggarBeg,16,256,3,308,med,"derived from ground row 1192 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1194,WASit01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1195,FlyWASit01,0,0,3,0,low,"derived from ground row 1194 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1196,WASit02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1197,FlyWASit02,0,0,3,0,low,"derived from ground row 1196 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1198,WASit03,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1199,FlyWASit03,0,0,3,0,low,"derived from ground row 1198 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1200,WACrierStand01,0,1,3,0,med,ambient stand -> Stand
+1201,FlyWACrierStand01,0,1,3,0,med,"derived from ground row 1200 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1202,WACrierStand02,0,1,3,0,med,ambient stand -> Stand
+1203,FlyWACrierStand02,0,1,3,0,med,"derived from ground row 1202 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1204,WACrierStand03,0,1,3,0,med,ambient stand -> Stand
+1205,FlyWACrierStand03,0,1,3,0,med,"derived from ground row 1204 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1206,WACrierTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1207,FlyWACrierTalk,0,264,3,289,med,"derived from ground row 1206 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1208,WACrateHold,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1209,FlyWACrateHold,0,0,3,0,low,"derived from ground row 1208 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1210,WABarrelHold,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1211,FlyWABarrelHold,0,0,3,0,low,"derived from ground row 1210 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1212,WASackHold,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1213,FlyWASackHold,0,0,3,0,low,"derived from ground row 1212 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1214,WAWheelBarrowStand,0,1,3,0,med,ambient stand -> Stand
+1215,FlyWAWheelBarrowStand,0,1,3,0,med,"derived from ground row 1214 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1216,WAWheelBarrowWalk,0,65,6,4,med,walk -> Walk
+1217,FlyWAWheelBarrowWalk,0,65,6,233,med,"derived from ground row 1216 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1218,WAWheelBarrowRun,0,65,6,5,med,run -> Run
+1219,FlyWAWheelBarrowRun,0,65,6,234,med,"derived from ground row 1218 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1220,WAHammerLoop,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1221,FlyWAHammerLoop,0,0,3,0,low,"derived from ground row 1220 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1222,WACrankLoop,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1223,FlyWACrankLoop,0,0,3,0,low,"derived from ground row 1222 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1224,WAPourStart,4,256,3,0,low,start of start/loop/end -> Loot
+1225,FlyWAPourStart,4,256,3,0,low,"derived from ground row 1224 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1226,WAPourLoop,0,0,35,1224,low,loop of start/loop/end -> LootHold
+1227,FlyWAPourLoop,0,0,35,1225,low,"derived from ground row 1226 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1228,WAPourEnd,0,0,16,1224,low,end of start/loop/end -> LootUp
+1229,FlyWAPourEnd,0,0,16,1225,low,"derived from ground row 1228 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1230,WAEmotePour,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1231,FlyWAEmotePour,0,264,3,289,med,"derived from ground row 1230 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1232,WARowingStandRight,0,1,3,0,med,ambient stand -> Stand
+1233,FlyWARowingStandRight,0,1,3,0,med,"derived from ground row 1232 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1234,WARowingStandLeft,0,1,3,0,med,ambient stand -> Stand
+1235,FlyWARowingStandLeft,0,1,3,0,med,"derived from ground row 1234 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1236,WARowingRight,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1237,FlyWARowingRight,0,0,3,0,low,"derived from ground row 1236 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1238,WARowingLeft,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1239,FlyWARowingLeft,0,0,3,0,low,"derived from ground row 1238 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1240,WAGuardStand01,0,1,3,0,med,ambient stand -> Stand
+1241,FlyWAGuardStand01,0,1,3,0,med,"derived from ground row 1240 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1242,WAGuardStand02,0,1,3,0,med,ambient stand -> Stand
+1243,FlyWAGuardStand02,0,1,3,0,med,"derived from ground row 1242 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1244,WAGuardStand03,0,1,3,0,med,ambient stand -> Stand
+1245,FlyWAGuardStand03,0,1,3,0,med,"derived from ground row 1244 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1246,WAGuardStand04,0,1,3,0,med,ambient stand -> Stand
+1247,FlyWAGuardStand04,0,1,3,0,med,"derived from ground row 1246 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1248,WAFreezing01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1249,FlyWAFreezing01,0,0,3,0,low,"derived from ground row 1248 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1250,WAFreezing02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1251,FlyWAFreezing02,0,0,3,0,low,"derived from ground row 1250 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1252,WAVendorStand01,0,1,3,0,med,ambient stand -> Stand
+1253,FlyWAVendorStand01,0,1,3,0,med,"derived from ground row 1252 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1254,WAVendorStand02,0,1,3,0,med,ambient stand -> Stand
+1255,FlyWAVendorStand02,0,1,3,0,med,"derived from ground row 1254 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1256,WAVendorStand03,0,1,3,0,med,ambient stand -> Stand
+1257,FlyWAVendorStand03,0,1,3,0,med,"derived from ground row 1256 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1258,WAVendorTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1259,FlyWAVendorTalk,0,264,3,289,med,"derived from ground row 1258 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1260,WALean01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1261,FlyWALean01,0,0,3,0,low,"derived from ground row 1260 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1262,WALean02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1263,FlyWALean02,0,0,3,0,low,"derived from ground row 1262 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1264,WALean03,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1265,FlyWALean03,0,0,3,0,low,"derived from ground row 1264 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1266,WALeanTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1267,FlyWALeanTalk,0,264,3,289,med,"derived from ground row 1266 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1268,WABoatWheel,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1269,FlyWABoatWheel,0,0,3,0,low,"derived from ground row 1268 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1270,WASmithLoop,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1271,FlyWASmithLoop,0,0,3,0,low,"derived from ground row 1270 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1272,WAScrubbing,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1273,FlyWAScrubbing,0,0,3,0,low,"derived from ground row 1272 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1274,WAWeaponSharpen,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1275,FlyWAWeaponSharpen,0,0,3,0,low,"derived from ground row 1274 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1276,WAStirring,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1277,FlyWAStirring,0,0,3,0,low,"derived from ground row 1276 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1278,WAPerch01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1279,FlyWAPerch01,0,0,3,0,low,"derived from ground row 1278 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1280,WAPerch02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1281,FlyWAPerch02,0,0,3,0,low,"derived from ground row 1280 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1282,HoldWeapon,0,8,3,0,high,ranged set -> HoldBow
+1283,FlyHoldWeapon,0,8,3,0,high,"derived from ground row 1282 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1284,WABarrelWalk,0,65,6,4,med,walk -> Walk
+1285,FlyWABarrelWalk,0,65,6,233,med,"derived from ground row 1284 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1286,WAPourHold,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1287,FlyWAPourHold,0,0,3,0,low,"derived from ground row 1286 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1288,CastStrong,4,264,2,53,low,class cast -> SpellCastDirected
+1289,FlyCastStrong,4,264,2,282,low,"derived from ground row 1288 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1290,CastCurse,4,264,2,53,low,class cast -> SpellCastDirected
+1291,FlyCastCurse,4,264,2,282,low,"derived from ground row 1290 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1292,CastSweep,4,264,2,53,low,class cast -> SpellCastDirected
+1293,FlyCastSweep,4,264,2,282,low,"derived from ground row 1292 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1294,CastStrongUp,4,264,3,54,low,class cast (up/out) -> SpellCastOmni
+1295,FlyCastStrongUp,4,264,3,283,low,"derived from ground row 1294 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1296,WABoatWheelStand,0,1,3,0,med,ambient stand -> Stand
+1297,FlyWABoatWheelStand,0,1,3,0,med,"derived from ground row 1296 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1298,WASmithStand,0,1,3,0,med,ambient stand -> Stand
+1299,FlyWASmithStand,0,1,3,0,med,"derived from ground row 1298 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1300,WACrankStand,0,1,3,0,med,ambient stand -> Stand
+1301,FlyWACrankStand,0,1,3,0,med,"derived from ground row 1300 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1302,WAPourWalk,0,65,6,4,med,walk -> Walk
+1303,FlyWAPourWalk,0,65,6,233,med,"derived from ground row 1302 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1304,FalconeerStart,4,256,3,0,low,start of start/loop/end -> Loot
+1305,FlyFalconeerStart,4,256,3,0,low,"derived from ground row 1304 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1306,FalconeerLoop,0,0,35,1304,low,loop of start/loop/end -> LootHold
+1307,FlyFalconeerLoop,0,0,35,1305,low,"derived from ground row 1306 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1308,FalconeerEnd,0,0,16,1304,low,end of start/loop/end -> LootUp
+1309,FlyFalconeerEnd,0,0,16,1305,low,"derived from ground row 1308 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1310,WADrunkDrink,0,264,67,61,med,-> EmoteEatNoSheathe
+1311,FlyWADrunkDrink,0,264,3,290,med,"derived from ground row 1310 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1312,WAStandEat,0,264,67,61,med,-> EmoteEatNoSheathe
+1313,FlyWAStandEat,0,264,3,290,med,"derived from ground row 1312 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1314,WAStandDrink,0,264,67,61,med,-> EmoteEatNoSheathe
+1315,FlyWAStandDrink,0,264,3,290,med,"derived from ground row 1314 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1316,WABound01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1317,FlyWABound01,0,0,3,0,low,"derived from ground row 1316 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1318,WABound02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1319,FlyWABound02,0,0,3,0,low,"derived from ground row 1318 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1320,CombatAbility1H03Off,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+1321,FlyCombatAbility1H03Off,32,288,3,316,med,"derived from ground row 1320 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1322,CombatAbilityDualWield01,32,288,3,87,med,"off-hand ability -> Special1H, fb AttackOff"
+1323,FlyCombatAbilityDualWield01,32,288,3,316,med,"derived from ground row 1322 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1324,WACradle01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1325,FlyWACradle01,0,0,3,0,low,"derived from ground row 1324 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1326,LocSummon,4,264,3,54,low,summon -> SpellCastOmni
+1327,FlyLocSummon,4,264,3,283,low,"derived from ground row 1326 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1328,LoadWeapon,0,264,2,0,high,ranged set -> LoadBow
+1329,FlyLoadWeapon,0,264,2,0,high,"derived from ground row 1328 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1330,ArtOffLoop,0,0,1,0,low,held loop -> Hold
+1331,FlyArtOffLoop,0,0,1,0,low,"derived from ground row 1330 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1332,WADead01,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1333,FlyWADead01,0,2304,43,235,low,"derived from ground row 1332 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1334,WADead02,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1335,FlyWADead02,0,2304,43,235,low,"derived from ground row 1334 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1336,WADead03,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1337,FlyWADead03,0,2304,43,235,low,"derived from ground row 1336 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1338,WADead04,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1339,FlyWADead04,0,2304,43,235,low,"derived from ground row 1338 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1340,WADead05,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1341,FlyWADead05,0,2304,43,235,low,"derived from ground row 1340 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1342,WADead06,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1343,FlyWADead06,0,2304,43,235,low,"derived from ground row 1342 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1344,WADead07,0,2304,43,6,low,dead special -> Dead (fb Dead)
+1345,FlyWADead07,0,2304,43,235,low,"derived from ground row 1344 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1346,GiantRun,0,65,6,0,med,-> Run
+1347,FlyGiantRun,0,65,6,0,med,"derived from ground row 1346 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1348,BarTendEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1349,FlyBarTendEmoteCheer,0,264,3,297,med,"derived from ground row 1348 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1350,BarTendEmoteTalkQuestion,0,264,67,65,med,"-> EmoteTalkNoSheathe, fb TalkQuestion"
+1351,FlyBarTendEmoteTalkQuestion,0,264,3,294,med,"derived from ground row 1350 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1352,BarTendEmoteTalkExclamation,0,264,67,64,med,"-> EmoteTalkNoSheathe, fb TalkExclamation"
+1353,FlyBarTendEmoteTalkExclamation,0,264,3,293,med,"derived from ground row 1352 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1354,BarTendWalk,0,65,6,4,med,walk -> Walk
+1355,FlyBarTendWalk,0,65,6,233,med,"derived from ground row 1354 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1356,BartendShuffleLeft,0,1,4,11,med,-> ShuffleLeft
+1357,FlyBartendShuffleLeft,0,1,4,240,med,"derived from ground row 1356 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1358,BarTendShuffleRight,0,1,4,12,med,-> ShuffleRight
+1359,FlyBarTendShuffleRight,0,1,4,241,med,"derived from ground row 1358 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1360,BarTendCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1361,FlyBarTendCustomSpell01,0,0,3,0,high,"derived from ground row 1360 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1362,BarTendCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1363,FlyBarTendCustomSpell02,0,0,3,0,high,"derived from ground row 1362 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1364,BarTendCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1365,FlyBarTendCustomSpell03,0,0,3,0,high,"derived from ground row 1364 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1366,BarServerEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1367,FlyBarServerEmoteCheer,0,264,3,297,med,"derived from ground row 1366 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1368,BarServerEmoteTalkQuestion,0,264,67,65,med,"-> EmoteTalkNoSheathe, fb TalkQuestion"
+1369,FlyBarServerEmoteTalkQuestion,0,264,3,294,med,"derived from ground row 1368 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1370,BarServerEmoteTalkExclamation,0,264,67,64,med,"-> EmoteTalkNoSheathe, fb TalkExclamation"
+1371,FlyBarServerEmoteTalkExclamation,0,264,3,293,med,"derived from ground row 1370 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1372,BarServerCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1373,FlyBarServerCustomSpell01,0,0,3,0,high,"derived from ground row 1372 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1374,BarServerCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1375,FlyBarServerCustomSpell02,0,0,3,0,high,"derived from ground row 1374 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1376,BarServerCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1377,FlyBarServerCustomSpell03,0,0,3,0,high,"derived from ground row 1376 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1378,BarPatronEmoteDrink,0,264,67,61,med,-> EmoteEatNoSheathe
+1379,FlyBarPatronEmoteDrink,0,264,3,290,med,"derived from ground row 1378 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1380,BarPatronEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1381,FlyBarPatronEmoteCheer,0,264,3,297,med,"derived from ground row 1380 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1382,BarPatronCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1383,FlyBarPatronCustomSpell01,0,0,3,0,high,"derived from ground row 1382 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1384,BarPatronCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1385,FlyBarPatronCustomSpell02,0,0,3,0,high,"derived from ground row 1384 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1386,BarPatronCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1387,FlyBarPatronCustomSpell03,0,0,3,0,high,"derived from ground row 1386 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1388,HoldDart,0,8,3,111,high,ranged set -> HoldThrown
+1389,FlyHoldDart,0,8,3,340,high,"derived from ground row 1388 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1390,ReadyDart,16,256,3,108,high,ranged set -> ReadyThrown
+1391,FlyReadyDart,16,256,3,337,high,"derived from ground row 1390 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1392,AttackDart,16,264,3,107,high,ranged set -> AttackThrown
+1393,FlyAttackDart,16,264,3,336,high,"derived from ground row 1392 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1394,LoadDart,0,264,2,112,high,ranged set -> LoadThrown
+1395,FlyLoadDart,0,264,2,341,high,"derived from ground row 1394 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1396,WADartTargetStand,0,1,3,0,med,ambient stand -> Stand
+1397,FlyWADartTargetStand,0,1,3,0,med,"derived from ground row 1396 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1398,WADartTargetEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1399,FlyWADartTargetEmoteTalk,0,264,3,289,med,"derived from ground row 1398 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1400,BarPatronSitEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1401,FlyBarPatronSitEmoteCheer,0,264,3,297,med,"derived from ground row 1400 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1402,BarPatronSitCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1403,FlyBarPatronSitCustomSpell01,0,0,3,0,high,"derived from ground row 1402 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1404,BarPatronSitCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1405,FlyBarPatronSitCustomSpell02,0,0,3,0,high,"derived from ground row 1404 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1406,BarPatronSitCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1407,FlyBarPatronSitCustomSpell03,0,0,3,0,high,"derived from ground row 1406 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1408,BarPianoStand,0,1,3,0,med,ambient stand -> Stand
+1409,FlyBarPianoStand,0,1,3,0,med,"derived from ground row 1408 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1410,BarPianoEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1411,FlyBarPianoEmoteTalk,0,264,3,289,med,"derived from ground row 1410 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1412,WAHearthSit,4,0,65,0,low,ambient sit -> SitChairLow
+1413,FlyWAHearthSit,4,0,1,0,low,"derived from ground row 1412 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1414,WAHearthSitEmoteCry,0,264,67,77,med,"-> NoSheathe talk, fb EmoteCry"
+1415,FlyWAHearthSitEmoteCry,0,264,3,306,med,"derived from ground row 1414 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1416,WAHearthSitEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1417,FlyWAHearthSitEmoteCheer,0,264,3,297,med,"derived from ground row 1416 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1418,WAHearthSitCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1419,FlyWAHearthSitCustomSpell01,0,0,3,0,high,"derived from ground row 1418 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1420,WAHearthSitCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1421,FlyWAHearthSitCustomSpell02,0,0,3,0,high,"derived from ground row 1420 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1422,WAHearthSitCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1423,FlyWAHearthSitCustomSpell03,0,0,3,0,high,"derived from ground row 1422 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1424,WAHearthStand,0,1,3,0,med,ambient stand -> Stand
+1425,FlyWAHearthStand,0,1,3,0,med,"derived from ground row 1424 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1426,WAHearthStandEmoteCheer,0,264,67,68,med,"-> NoSheathe talk, fb EmoteCheer"
+1427,FlyWAHearthStandEmoteCheer,0,264,3,297,med,"derived from ground row 1426 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1428,WAHearthStandEmoteTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1429,FlyWAHearthStandEmoteTalk,0,264,3,289,med,"derived from ground row 1428 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1430,WAHearthStandCustomSpell01,0,0,3,0,high,custom slot -> CustomSpell02
+1431,FlyWAHearthStandCustomSpell01,0,0,3,0,high,"derived from ground row 1430 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1432,WAHearthStandCustomSpell02,0,0,3,0,high,custom slot -> CustomSpell02
+1433,FlyWAHearthStandCustomSpell02,0,0,3,0,high,"derived from ground row 1432 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1434,WAHearthStandCustomSpell03,0,0,3,0,high,custom slot -> CustomSpell02
+1435,FlyWAHearthStandCustomSpell03,0,0,3,0,high,"derived from ground row 1434 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1436,WAScribeStart,4,256,3,0,low,start of start/loop/end -> Loot
+1437,FlyWAScribeStart,4,256,3,0,low,"derived from ground row 1436 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1438,WAScribeLoop,0,0,35,1436,low,loop of start/loop/end -> LootHold
+1439,FlyWAScribeLoop,0,0,35,1437,low,"derived from ground row 1438 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1440,WAScribeEnd,0,0,16,1436,low,end of start/loop/end -> LootUp
+1441,FlyWAScribeEnd,0,0,16,1437,low,"derived from ground row 1440 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1442,WAEmoteScribe,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1443,FlyWAEmoteScribe,0,264,3,289,med,"derived from ground row 1442 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1444,Haymaker,0,288,3,16,med,kick/stomp-like ability -> Kick
+1445,FlyHaymaker,0,288,3,245,med,"derived from ground row 1444 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1446,HaymakerPrecast,4,264,3,31,low,-> SpellPrecast
+1447,FlyHaymakerPrecast,4,264,3,260,low,"derived from ground row 1446 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1448,ChannelCastOmniUp,4,256,3,125,high,-> ChannelCastOmni
+1449,FlyChannelCastOmniUp,4,256,3,354,high,"derived from ground row 1448 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1450,DHJumpLandRun,0,0,1,5,low,jump-family -> JumpLandRun
+1451,FlyDHJumpLandRun,0,0,1,234,low,"derived from ground row 1450 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1452,Cinematic01,0,0,3,0,low,generic cinematic
+1453,FlyCinematic01,0,0,3,0,low,"derived from ground row 1452 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1454,Cinematic02,0,0,3,0,low,generic cinematic
+1455,FlyCinematic02,0,0,3,0,low,"derived from ground row 1454 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1456,Cinematic03,0,0,3,0,low,generic cinematic
+1457,FlyCinematic03,0,0,3,0,low,"derived from ground row 1456 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1458,Cinematic04,0,0,3,0,low,generic cinematic
+1459,FlyCinematic04,0,0,3,0,low,"derived from ground row 1458 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1460,Cinematic05,0,0,3,0,low,generic cinematic
+1461,FlyCinematic05,0,0,3,0,low,"derived from ground row 1460 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1462,Cinematic06,0,0,3,0,low,generic cinematic
+1463,FlyCinematic06,0,0,3,0,low,"derived from ground row 1462 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1464,Cinematic07,0,0,3,0,low,generic cinematic
+1465,FlyCinematic07,0,0,3,0,low,"derived from ground row 1464 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1466,Cinematic08,0,0,3,0,low,generic cinematic
+1467,FlyCinematic08,0,0,3,0,low,"derived from ground row 1466 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1468,Cinematic09,0,0,3,0,low,generic cinematic
+1469,FlyCinematic09,0,0,3,0,low,"derived from ground row 1468 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1470,Cinematic10,0,0,3,0,low,generic cinematic
+1471,FlyCinematic10,0,0,3,0,low,"derived from ground row 1470 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1472,TakeOffStart,0,0,3,0,low,-> LiftOff
+1473,FlyTakeOffStart,0,0,3,0,low,"derived from ground row 1472 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1474,TakeOffFinish,0,0,3,0,low,-> LiftOff
+1475,FlyTakeOffFinish,0,0,3,0,low,"derived from ground row 1474 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1476,LandStart,0,0,3,0,low,-> Land
+1477,FlyLandStart,0,0,3,0,low,"derived from ground row 1476 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1478,LandFinish,0,0,3,0,low,-> Land
+1479,FlyLandFinish,0,0,3,0,low,"derived from ground row 1478 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1480,WAWalkTalk,0,65,6,4,med,walk -> Walk
+1481,FlyWAWalkTalk,0,65,6,233,med,"derived from ground row 1480 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1482,WAPerch03,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1483,FlyWAPerch03,0,0,3,0,low,"derived from ground row 1482 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1484,CarriageMountMoving,0,8,3,0,med,mount seat -> ReclinedMount
+1485,FlyCarriageMountMoving,0,8,3,0,med,"derived from ground row 1484 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1486,TakeOffFinishFly,0,0,3,0,low,-> LiftOff
+1487,FlyTakeOffFinishFly,0,0,3,0,low,"derived from ground row 1486 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1488,CombatAbility2HBig02,32,288,3,18,med,"2H ability -> Special1H, fb Attack2H"
+1489,FlyCombatAbility2HBig02,32,288,3,247,med,"derived from ground row 1488 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1490,MountWide,4,256,3,0,med,mount-up -> Mount
+1491,FlyMountWide,4,256,3,0,med,"derived from ground row 1490 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1492,EmoteTalkSubdued,16,264,67,60,med,emote talk variant -> EmoteTalk
+1493,FlyEmoteTalkSubdued,16,264,3,289,med,"derived from ground row 1492 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1494,WASit04,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1495,FlyWASit04,0,0,3,0,low,"derived from ground row 1494 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1496,MountSummon,4,256,3,0,med,mount-up -> Mount
+1497,FlyMountSummon,4,256,3,0,med,"derived from ground row 1496 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1498,EmoteSelfie,16,264,67,0,med,emote -> EmoteTalk
+1499,FlyEmoteSelfie,16,264,3,0,med,"derived from ground row 1498 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1500,CustomSpell11,0,0,3,0,high,custom slot -> CustomSpell02
+1501,FlyCustomSpell11,0,0,3,0,high,"derived from ground row 1500 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1502,CustomSpell12,0,0,3,0,high,custom slot -> CustomSpell02
+1503,FlyCustomSpell12,0,0,3,0,high,"derived from ground row 1502 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1504,CustomSpell13,0,0,3,0,high,custom slot -> CustomSpell02
+1505,FlyCustomSpell13,0,0,3,0,high,"derived from ground row 1504 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1506,CustomSpell14,0,0,3,0,high,custom slot -> CustomSpell02
+1507,FlyCustomSpell14,0,0,3,0,high,"derived from ground row 1506 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1508,CustomSpell15,0,0,3,0,high,custom slot -> CustomSpell02
+1509,FlyCustomSpell15,0,0,3,0,high,"derived from ground row 1508 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1510,CustomSpell16,0,0,3,0,high,custom slot -> CustomSpell02
+1511,FlyCustomSpell16,0,0,3,0,high,"derived from ground row 1510 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1512,CustomSpell17,0,0,3,0,high,custom slot -> CustomSpell02
+1513,FlyCustomSpell17,0,0,3,0,high,"derived from ground row 1512 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1514,CustomSpell18,0,0,3,0,high,custom slot -> CustomSpell02
+1515,FlyCustomSpell18,0,0,3,0,high,"derived from ground row 1514 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1516,CustomSpell19,0,0,3,0,high,custom slot -> CustomSpell02
+1517,FlyCustomSpell19,0,0,3,0,high,"derived from ground row 1516 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1518,CustomSpell20,0,0,3,0,high,custom slot -> CustomSpell02
+1519,FlyCustomSpell20,0,0,3,0,high,"derived from ground row 1518 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1520,AdvFlyLeft,0,1,0,0,low,strafe -> RunLeft
+1521,FlyAdvFlyLeft,0,1,0,0,low,"derived from ground row 1520 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1522,AdvFlyRight,0,1,0,0,low,strafe -> RunLeft
+1523,FlyAdvFlyRight,0,1,0,0,low,"derived from ground row 1522 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1524,AdvFlyForward,0,65,6,0,low,hover/flight move -> Run
+1525,FlyAdvFlyForward,0,65,6,0,low,"derived from ground row 1524 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1526,AdvFlyBackward,0,65,17,13,low,-> Walkbackwards
+1527,FlyAdvFlyBackward,0,65,17,242,low,"derived from ground row 1526 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1528,AdvFlyUp,0,65,6,0,low,hover/flight move -> Run
+1529,FlyAdvFlyUp,0,65,6,0,low,"derived from ground row 1528 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1530,AdvFlyDown,0,65,17,13,low,-> Walkbackwards
+1531,FlyAdvFlyDown,0,65,17,242,low,"derived from ground row 1530 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1532,AdvFlyForwardGlide,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1533,FlyAdvFlyForwardGlide,0,0,3,0,low,"derived from ground row 1532 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1534,AdvFlyRoll,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1535,FlyAdvFlyRoll,0,0,3,0,low,"derived from ground row 1534 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1536,ProfCookingLoop,0,0,35,1538,low,loop of start/loop/end -> LootHold
+1537,FlyProfCookingLoop,0,0,35,1539,low,"derived from ground row 1536 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1538,ProfCookingStart,4,256,3,0,low,start of start/loop/end -> Loot
+1539,FlyProfCookingStart,4,256,3,0,low,"derived from ground row 1538 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1540,ProfCookingEnd,0,0,16,1538,low,end of start/loop/end -> LootUp
+1541,FlyProfCookingEnd,0,0,16,1539,low,"derived from ground row 1540 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1542,WACurious,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1543,FlyWACurious,0,0,3,0,low,"derived from ground row 1542 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1544,WAAlert,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1545,FlyWAAlert,0,0,3,0,low,"derived from ground row 1544 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1546,WAInvestigate,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1547,FlyWAInvestigate,0,0,3,0,low,"derived from ground row 1546 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1548,WAInteraction,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1549,FlyWAInteraction,0,0,3,0,low,"derived from ground row 1548 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1550,WAThreaten,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1551,FlyWAThreaten,0,0,3,0,low,"derived from ground row 1550 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1552,WAReact01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1553,FlyWAReact01,0,0,3,0,low,"derived from ground row 1552 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1554,WAReact02,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1555,FlyWAReact02,0,0,3,0,low,"derived from ground row 1554 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1556,AdvFlyRollStart,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1557,FlyAdvFlyRollStart,0,0,3,0,low,"derived from ground row 1556 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1558,AdvFlyRollEnd,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1559,FlyAdvFlyRollEnd,0,0,3,0,low,"derived from ground row 1558 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1560,EmpBreathPrecast,4,264,3,31,med,empower precast -> SpellPrecast
+1561,FlyEmpBreathPrecast,4,264,3,260,med,"derived from ground row 1560 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1562,EmpBreathPrecastChannel,4,256,3,125,med,empower channel -> ChannelCastOmni
+1563,FlyEmpBreathPrecastChannel,4,256,3,354,med,"derived from ground row 1562 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1564,EmpBreathSpellCast,4,264,3,54,med,empower cast -> SpellCastOmni
+1565,FlyEmpBreathSpellCast,4,264,3,283,med,"derived from ground row 1564 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1566,EmpBreathSpellCastChannel,4,256,3,125,med,empower channel -> ChannelCastOmni
+1567,FlyEmpBreathSpellCastChannel,4,256,3,354,med,"derived from ground row 1566 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1568,DracFlyBreathTakeoffStart,0,0,3,0,low,-> LiftOff
+1569,FlyDracFlyBreathTakeoffStart,0,0,3,0,low,"derived from ground row 1568 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1570,DracFlyBreathTakeoffFinish,0,0,3,0,low,-> LiftOff
+1571,FlyDracFlyBreathTakeoffFinish,0,0,3,0,low,"derived from ground row 1570 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1572,DracFlyBreath,0,0,3,0,low,generic ability
+1573,FlyDracFlyBreath,0,0,3,0,low,"derived from ground row 1572 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1574,DracFlyBreathLandStart,0,0,3,0,low,-> Land
+1575,FlyDracFlyBreathLandStart,0,0,3,0,low,"derived from ground row 1574 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1576,DracFlyBreathLandFinish,0,0,3,0,low,-> Land
+1577,FlyDracFlyBreathLandFinish,0,0,3,0,low,"derived from ground row 1576 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1578,DracAirDashLeft,0,0,3,0,low,generic ability
+1579,FlyDracAirDashLeft,0,0,3,0,low,"derived from ground row 1578 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1580,DracAirDashForward,0,0,3,0,low,generic ability
+1581,FlyDracAirDashForward,0,0,3,0,low,"derived from ground row 1580 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1582,DracAirDashBackward,0,0,3,0,low,generic ability
+1583,FlyDracAirDashBackward,0,0,3,0,low,"derived from ground row 1582 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1584,DracAirDashRight,0,0,3,0,low,generic ability
+1585,FlyDracAirDashRight,0,0,3,0,low,"derived from ground row 1584 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1586,LivingWorldProximityEnter,0,0,3,0,low,living world enter/leave
+1587,FlyLivingWorldProximityEnter,0,0,3,0,low,"derived from ground row 1586 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1588,AdvFlyDownEnd,0,0,3,0,low,-> Land
+1589,FlyAdvFlyDownEnd,0,0,3,0,low,"derived from ground row 1588 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1590,LivingWorldProximityLoop,0,0,1,0,low,living world loop
+1591,FlyLivingWorldProximityLoop,0,0,1,0,low,"derived from ground row 1590 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1592,LivingWorldProximityLeave,0,0,3,0,low,living world enter/leave
+1593,FlyLivingWorldProximityLeave,0,0,3,0,low,"derived from ground row 1592 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1594,EmpAirBarragePrecast,4,264,3,31,med,empower precast -> SpellPrecast
+1595,FlyEmpAirBarragePrecast,4,264,3,260,med,"derived from ground row 1594 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1596,EmpAirBarragePrecastChannel,4,256,3,125,med,empower channel -> ChannelCastOmni
+1597,FlyEmpAirBarragePrecastChannel,4,256,3,354,med,"derived from ground row 1596 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1598,EmpAirBarrageSpellCast,4,264,3,54,med,empower cast -> SpellCastOmni
+1599,FlyEmpAirBarrageSpellCast,4,264,3,283,med,"derived from ground row 1598 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1600,DracClawSwipeLeft,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1601,FlyDracClawSwipeLeft,0,296,3,245,low,"derived from ground row 1600 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1602,DracClawSwipeRight,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1603,FlyDracClawSwipeRight,0,296,3,245,low,"derived from ground row 1602 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1604,DracHoverIdle,0,1,3,0,med,idle -> Stand
+1605,FlyDracHoverIdle,0,1,3,0,med,"derived from ground row 1604 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1606,DracHoverLeft,0,1,0,0,low,strafe -> RunLeft
+1607,FlyDracHoverLeft,0,1,0,0,low,"derived from ground row 1606 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1608,DracHoverRight,0,1,0,0,low,strafe -> RunLeft
+1609,FlyDracHoverRight,0,1,0,0,low,"derived from ground row 1608 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1610,DracHoverBackward,0,65,17,13,low,-> Walkbackwards
+1611,FlyDracHoverBackward,0,65,17,242,low,"derived from ground row 1610 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1612,DracHoverForward,0,65,6,0,low,hover/flight move -> Run
+1613,FlyDracHoverForward,0,65,6,0,low,"derived from ground row 1612 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1614,DracAttackWings,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1615,FlyDracAttackWings,0,296,3,245,low,"derived from ground row 1614 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1616,DracAttackTail,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1617,FlyDracAttackTail,0,296,3,245,low,"derived from ground row 1616 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1618,AdvFlyStart,0,0,3,0,low,-> LiftOff
+1619,FlyAdvFlyStart,0,0,3,0,low,"derived from ground row 1618 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1620,AdvFlyLand,0,0,3,0,low,-> Land
+1621,FlyAdvFlyLand,0,0,3,0,low,"derived from ground row 1620 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1622,AdvFlyLandRun,0,0,1,5,low,-> JumpLandRun
+1623,FlyAdvFlyLandRun,0,0,1,234,low,"derived from ground row 1622 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1624,AdvFlyStrafeLeft,0,1,0,0,low,strafe -> RunLeft
+1625,FlyAdvFlyStrafeLeft,0,1,0,0,low,"derived from ground row 1624 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1626,AdvFlyStrafeRight,0,1,0,0,low,strafe -> RunLeft
+1627,FlyAdvFlyStrafeRight,0,1,0,0,low,"derived from ground row 1626 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1628,AdvFlyIdle,0,1,3,0,med,idle -> Stand
+1629,FlyAdvFlyIdle,0,1,3,0,med,"derived from ground row 1628 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1630,AdvFlyRollRight,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1631,FlyAdvFlyRollRight,0,0,3,0,low,"derived from ground row 1630 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1632,AdvFlyRollRightEnd,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1633,FlyAdvFlyRollRightEnd,0,0,3,0,low,"derived from ground row 1632 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1634,AdvFlyRollLeft,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1635,FlyAdvFlyRollLeft,0,0,3,0,low,"derived from ground row 1634 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1636,AdvFlyRollLeftEnd,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1637,FlyAdvFlyRollLeftEnd,0,0,3,0,low,"derived from ground row 1636 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1638,AdvFlyFlap,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1639,FlyAdvFlyFlap,0,0,3,0,low,"derived from ground row 1638 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1640,DracHoverDracClawSwipeLeft,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1641,FlyDracHoverDracClawSwipeLeft,0,296,3,245,low,"derived from ground row 1640 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1642,DracHoverDracClawSwipeRight,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1643,FlyDracHoverDracClawSwipeRight,0,296,3,245,low,"derived from ground row 1642 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1644,DracHoverDracAttackWings,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1645,FlyDracHoverDracAttackWings,0,296,3,245,low,"derived from ground row 1644 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1646,DracHoverReadySpellOmni,4,264,3,52,med,drac spell -> ReadySpellOmni
+1647,FlyDracHoverReadySpellOmni,4,264,3,281,med,"derived from ground row 1646 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1648,DracHoverSpellCastOmni,4,264,3,54,med,drac spell -> SpellCastOmni
+1649,FlyDracHoverSpellCastOmni,4,264,3,283,med,"derived from ground row 1648 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1650,DracHoverChannelSpellOmni,4,256,3,125,med,drac spell -> ChannelCastOmni
+1651,FlyDracHoverChannelSpellOmni,4,256,3,354,med,"derived from ground row 1650 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1652,DracHoverReadySpellDirected,4,256,2,51,med,drac spell -> ReadySpellDirected
+1653,FlyDracHoverReadySpellDirected,4,256,2,280,med,"derived from ground row 1652 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1654,DracHoverChannelSpellDirected,4,256,3,124,med,drac spell -> ChannelCastDirected
+1655,FlyDracHoverChannelSpellDirected,4,256,3,353,med,"derived from ground row 1654 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1656,DracHoverSpellCastDirected,4,264,2,53,med,drac spell -> SpellCastDirected
+1657,FlyDracHoverSpellCastDirected,4,264,2,282,med,"derived from ground row 1656 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1658,DracHoverCastOutStrong,4,264,3,54,med,drac spell -> SpellCastOmni
+1659,FlyDracHoverCastOutStrong,4,264,3,283,med,"derived from ground row 1658 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1660,DracHoverBattleRoar,0,264,3,55,med,-> BattleRoar
+1661,FlyDracHoverBattleRoar,0,264,3,284,med,"derived from ground row 1660 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1662,DracHoverEmpBreathSpellCast,4,264,3,54,med,drac spell -> SpellCastOmni
+1663,FlyDracHoverEmpBreathSpellCast,4,264,3,283,med,"derived from ground row 1662 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1664,DracHoverEmpBreathSpellCastChannel,4,256,3,125,med,drac spell -> ChannelCastOmni
+1665,FlyDracHoverEmpBreathSpellCastChannel,4,256,3,354,med,"derived from ground row 1664 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1666,LivingWorldTimeOfDayEnter,0,0,3,0,low,living world enter/leave
+1667,FlyLivingWorldTimeOfDayEnter,0,0,3,0,low,"derived from ground row 1666 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1668,LivingWorldTimeOfDayLoop,0,0,1,0,low,living world loop
+1669,FlyLivingWorldTimeOfDayLoop,0,0,1,0,low,"derived from ground row 1668 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1670,LivingWorldTimeOfDayLeave,0,0,3,0,low,living world enter/leave
+1671,FlyLivingWorldTimeOfDayLeave,0,0,3,0,low,"derived from ground row 1670 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1672,LivingWorldWeatherEnter,0,0,3,0,low,living world enter/leave
+1673,FlyLivingWorldWeatherEnter,0,0,3,0,low,"derived from ground row 1672 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1674,LivingWorldWeatherLoop,0,0,1,0,low,living world loop
+1675,FlyLivingWorldWeatherLoop,0,0,1,0,low,"derived from ground row 1674 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1676,LivingWorldWeatherLeave,0,0,3,0,low,living world enter/leave
+1677,FlyLivingWorldWeatherLeave,0,0,3,0,low,"derived from ground row 1676 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1678,AdvFlyDownStart,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1679,FlyAdvFlyDownStart,0,0,3,0,low,"derived from ground row 1678 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1680,AdvFlyFlapBig,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1681,FlyAdvFlyFlapBig,0,0,3,0,low,"derived from ground row 1680 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1682,DracHoverReadyUnarmed,16,256,3,25,high,unarmed ready -> ReadyUnarmed
+1683,FlyDracHoverReadyUnarmed,16,256,3,254,high,"derived from ground row 1682 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1684,DracHoverAttackUnarmed,16,296,3,16,med,-> AttackUnarmed
+1685,FlyDracHoverAttackUnarmed,16,296,3,245,med,"derived from ground row 1684 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1686,DracHoverParryUnarmed,0,296,3,8,high,parry -> Parry1H
+1687,FlyDracHoverParryUnarmed,0,296,3,237,high,"derived from ground row 1686 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1688,DracHoverCombatWound,0,296,7,8,high,-> CombatWound
+1689,FlyDracHoverCombatWound,0,296,7,237,high,"derived from ground row 1688 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1690,DracHoverCombatCritical,0,296,7,9,high,-> CombatCritical
+1691,FlyDracHoverCombatCritical,0,296,7,238,high,"derived from ground row 1690 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1692,DracHoverAttackTail,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1693,FlyDracHoverAttackTail,0,296,3,245,low,"derived from ground row 1692 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1694,Glide,0,257,3,0,low,jump-family -> Fall
+1695,FlyGlide,0,257,3,0,low,"derived from ground row 1694 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1696,GlideEnd,0,257,3,0,low,jump-family -> JumpEnd
+1697,FlyGlideEnd,0,257,3,0,low,"derived from ground row 1696 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1698,DracClawSwipe,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1699,FlyDracClawSwipe,0,296,3,245,low,"derived from ground row 1698 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1700,DracHoverDracClawSwipe,0,296,3,16,low,drac natural attack -> AttackUnarmed
+1701,FlyDracHoverDracClawSwipe,0,296,3,245,low,"derived from ground row 1700 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1702,AdvFlyFlapUp,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1703,FlyAdvFlyFlapUp,0,0,3,0,low,"derived from ground row 1702 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1704,AdvFlySlowFall,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1705,FlyAdvFlySlowFall,0,0,3,0,low,"derived from ground row 1704 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1706,AdvFlyFlapFoward,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1707,FlyAdvFlyFlapFoward,0,0,3,0,low,"derived from ground row 1706 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1708,DracSpellCastWings,4,264,3,54,med,drac spell -> SpellCastOmni
+1709,FlyDracSpellCastWings,4,264,3,283,med,"derived from ground row 1708 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1710,DracHoverDracSpellCastWings,4,264,3,54,med,drac spell -> SpellCastOmni
+1711,FlyDracHoverDracSpellCastWings,4,264,3,283,med,"derived from ground row 1710 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1712,DracAirDashVertical,0,0,3,0,low,generic ability
+1713,FlyDracAirDashVertical,0,0,3,0,low,"derived from ground row 1712 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1714,DracAirDashRefresh,0,0,3,0,low,generic ability
+1715,FlyDracAirDashRefresh,0,0,3,0,low,"derived from ground row 1714 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1716,SkinningLoop,0,0,35,1718,low,loop of start/loop/end -> LootHold
+1717,FlySkinningLoop,0,0,35,1719,low,"derived from ground row 1716 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1718,SkinningStart,4,256,3,0,low,start of start/loop/end -> Loot
+1719,FlySkinningStart,4,256,3,0,low,"derived from ground row 1718 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1720,SkinningEnd,0,0,16,1718,low,end of start/loop/end -> LootUp
+1721,FlySkinningEnd,0,0,16,1719,low,"derived from ground row 1720 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1722,AdvFlyForwardGlideSlow,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1723,FlyAdvFlyForwardGlideSlow,0,0,3,0,low,"derived from ground row 1722 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1724,AdvFlyForwardGlideFast,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1725,FlyAdvFlyForwardGlideFast,0,0,3,0,low,"derived from ground row 1724 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1726,AdvFlySecondFlapUp,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1727,FlyAdvFlySecondFlapUp,0,0,3,0,low,"derived from ground row 1726 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1728,FloatIdle,0,1,3,0,med,idle -> Stand
+1729,FlyFloatIdle,0,1,3,0,med,"derived from ground row 1728 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1730,FloatWalk,0,65,6,4,low,-> Walk
+1731,FlyFloatWalk,0,65,6,233,low,"derived from ground row 1730 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1732,CinematicTalk,0,264,67,60,med,talk/ambient emote -> EmoteTalkNoSheathe
+1733,FlyCinematicTalk,0,264,3,289,med,"derived from ground row 1732 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1734,CinematicWAGuardEmoteSlam01,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1735,FlyCinematicWAGuardEmoteSlam01,0,0,3,0,low,"derived from ground row 1734 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1736,WABlowHorn,0,0,3,0,low,"DEFAULT generic (0,0,3,0)"
+1737,FlyWABlowHorn,0,0,3,0,low,"derived from ground row 1736 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1738,MountExtraWide,4,256,3,0,med,mount-up -> Mount
+1739,FlyMountExtraWide,4,256,3,0,med,"derived from ground row 1738 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1740,WA2HIdle,0,0,1,0,low,held loop -> Hold
+1741,FlyWA2HIdle,0,0,1,0,low,"derived from ground row 1740 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1742,HerbalismLoop,0,0,35,0,low,gathering loop -> LootHold
+1743,FlyHerbalismLoop,0,0,35,0,low,"derived from ground row 1742 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1744,CookingLoop,0,0,35,0,low,gathering loop -> LootHold
+1745,FlyCookingLoop,0,0,35,0,low,"derived from ground row 1744 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1746,WAWeaponSharpenNoSheathe,32,0,67,62,med,-> EmoteWorkNoSheathe
+1747,FlyWAWeaponSharpenNoSheathe,32,0,3,291,med,"derived from ground row 1746 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1748,CinematicDeath,0,768,10,1,med,-> Death
+1749,FlyCinematicDeath,0,768,10,230,med,"derived from ground row 1748 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1750,CinematicDeathPose,0,2304,43,1,med,-> Dead
+1751,FlyCinematicDeathPose,0,2304,43,230,med,"derived from ground row 1750 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1752,EmpSlamPrecast,4,264,3,31,med,empower precast -> SpellPrecast
+1753,FlyEmpSlamPrecast,4,264,3,260,med,"derived from ground row 1752 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1754,EmpSlamPrecastChannel,4,256,3,125,med,empower channel -> ChannelCastOmni
+1755,FlyEmpSlamPrecastChannel,4,256,3,354,med,"derived from ground row 1754 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1756,EmpSlamSpellCast,4,264,3,54,med,empower cast -> SpellCastOmni
+1757,FlyEmpSlamSpellCast,4,264,3,283,med,"derived from ground row 1756 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1758,Climb,0,65,6,4,low,-> Walk
+1759,FlyClimb,0,65,6,233,low,"derived from ground row 1758 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1760,ClimbStart,0,257,3,0,low,jump-family -> JumpStart
+1761,FlyClimbStart,0,257,3,0,low,"derived from ground row 1760 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1762,ClimbEnd,0,257,3,0,low,jump-family -> JumpEnd
+1763,FlyClimbEnd,0,257,3,0,low,"derived from ground row 1762 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1764,MountLeanLeft,0,257,3,0,low,mount special
+1765,FlyMountLeanLeft,0,257,3,0,low,"derived from ground row 1764 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1766,MountLeanRight,0,257,3,0,low,mount special
+1767,FlyMountLeanRight,0,257,3,0,low,"derived from ground row 1766 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1768,MountDive,0,257,3,0,low,mount special
+1769,FlyMountDive,0,257,3,0,low,"derived from ground row 1768 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1770,MountCrouch,0,257,3,0,low,mount special
+1771,FlyMountCrouch,0,257,3,0,low,"derived from ground row 1770 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1772,WAShovelLoop,0,0,35,0,low,gathering loop -> LootHold
+1773,FlyWAShovelLoop,0,0,35,0,low,"derived from ground row 1772 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1774,EmoteTalkFrustrated,16,264,67,60,med,emote talk variant -> EmoteTalk
+1775,FlyEmoteTalkFrustrated,16,264,3,289,med,"derived from ground row 1774 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
+1776,MountMedium,4,256,3,0,med,mount-up -> Mount
+1777,FlyMountMedium,4,256,3,0,med,"derived from ground row 1776 (Fly twin: same weapon/body flags, flags &~0x40, tier 3)"
