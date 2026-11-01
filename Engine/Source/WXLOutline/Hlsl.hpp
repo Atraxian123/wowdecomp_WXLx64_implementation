@@ -22,15 +22,16 @@ namespace
     // shape lives entirely in texture alpha, so filling their quads solid traces the card instead of
     // the creature and the silhouette comes out as straight polygon edges.
     //
-    // 0.5 is the cutout threshold the art is authored against, and the silhouette has to match what
-    // the engine actually draws. A card does not end on a hard alpha edge -- it ramps down -- so a
-    // lower threshold keeps the transparent fringe and outlines pixels nobody can see, which reads as
-    // an angular shape floating around the model.
+    // c1.x is the alpha reference the engine itself is cutting this batch with, passed in by the stamp: an
+    // alpha-key material is cut at 0.878 times the element's alpha, not at a fixed 0.5. A card does not end on a
+    // hard alpha edge -- it ramps down -- so a lower threshold keeps the faint fringe the engine does not draw and
+    // outlines pixels nobody can see, which reads as an outline floating around the transparent parts of a model.
     const char* kFillHLSL =
         "sampler2D s0 : register(s0);\n"
         "float4 c0 : register(c0);\n"
+        "float4 c1 : register(c1);\n"
         "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
-        "  clip(tex2D(s0, uv).a - 0.5);\n"
+        "  clip(tex2D(s0, uv).a - c1.x);\n"
         "  return c0;\n"
         "}\n";
 

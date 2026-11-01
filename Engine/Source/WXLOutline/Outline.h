@@ -9,7 +9,12 @@
 //     ; 1 = outline, all the time, what your open quests still need: creatures to kill, objects to use, and the
 //     ;     creatures and objects that can hold a quest item you are still missing. Works with or without Enabled.
 //     Quest=0
-//     ; RRGGBB of the quest outline.
+//     ; Outline colors, RRGGBB hex. An absent or malformed key keeps the default shown.
+//     ; The mouseover / target outline, by the unit's attitude toward you:
+//     HostileColor=FF0000
+//     NeutralColor=FFFF00
+//     FriendlyColor=00FF00
+//     ; The quest outline:
 //     QuestColor=00C8FF
 //     ; 1 = quest outlines show through walls. 0 = the scene hides them where it hides the thing.
 //     QuestThroughWalls=0

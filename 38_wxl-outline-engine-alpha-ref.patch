@@ -1,0 +1,89 @@
+diff --git a/Engine/Source/WXLOutline/Outline.cpp b/Engine/Source/WXLOutline/Outline.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.cpp
++++ b/Engine/Source/WXLOutline/Outline.cpp
+@@ -23,6 +23,7 @@
+ #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+ #include "Engine/Source/Gx/Types.h"
+ #include "Engine/Source/Model2/M2Model.h"
++#include "Engine/Source/ShaderEffect/ShaderEffect.h"
+ #include "Engine/Source/WXL/EventScript.h"
+ #include "Engine/Source/WXL/Log.h"
+ #include "WoW/Source/DB/DBClient/CreatureStats_C.h"
+@@ -272,6 +273,7 @@
+ 
+         // --- helpers ---
+         static bool ShouldStampBatch();
++        static float EngineAlphaRef();
+         int  FindTarget(const CM2Model* model) const;
+         void AddTarget(WOWGUID guid, CGUnit_C* player);
+         void RefreshQuestTargets();
+@@ -351,7 +353,7 @@
+         // recorded once here; Capture() before and Apply() after put back exactly those, whatever they were.
+         if (!stampSave_ && fillPS_)
+         {
+-            const float zero[4] = {};
++            const float zero[8] = {};
+             if (SUCCEEDED(dev->BeginStateBlock()))
+             {
+                 dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
+@@ -361,7 +363,7 @@
+                 dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
+                 dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+                 dev->SetPixelShader(fillPS_);
+-                dev->SetPixelShaderConstantF(0, zero, 1);
++                dev->SetPixelShaderConstantF(0, zero, 2); // c0 = silhouette color, c1 = alpha reference
+                 if (FAILED(dev->EndStateBlock(&stampSave_))) stampSave_ = nullptr;
+             }
+         }
+@@ -571,6 +573,15 @@
+         return blend <= GxBlend_AlphaKey && zwrite != 0;
+     }
+ 
++    // The alpha reference the engine cut the batch it just drew with. It lives in one of two places, by device
++    // capability: the alpha-test render state, or a pixel shader constant the engine's own shaders read.
++    float Outline::EngineAlphaRef()
++    {
++        if (CShaderEffect::s_useAlphaRef && g_theGxDevicePtr)
++            return static_cast<float>(g_theGxDevicePtr->m_hwRenderStates[GxRs_AlphaRef].m_data.i[0]) / 255.0f;
++        return CShaderEffect::s_fogColorAlphaRef.w;
++    }
++
+     // Draw the model again into the mask render target.
+     void Outline::StampSilhouette(IDirect3DDevice9* dev, const ev::M2BatchDrawArgs& a, int idx)
+     {
+@@ -619,6 +630,8 @@
+         dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+         dev->SetPixelShader(fillPS_);
+         dev->SetPixelShaderConstantF(0, targets_[idx].color, 1);
++        const float alphaRef[4] = { EngineAlphaRef(), 0.0f, 0.0f, 0.0f };
++        dev->SetPixelShaderConstantF(1, alphaRef, 1);
+         dev->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(a.primType), a.baseVertex, a.minIndex, a.numVerts, a.startIndex, a.primCount);
+ 
+         dev->SetRenderTarget(0, oldRT);
+diff --git a/Engine/Source/WXLOutline/Hlsl.hpp b/Engine/Source/WXLOutline/Hlsl.hpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Hlsl.hpp
++++ b/Engine/Source/WXLOutline/Hlsl.hpp
+@@ -22,15 +22,16 @@
+     // shape lives entirely in texture alpha, so filling their quads solid traces the card instead of
+     // the creature and the silhouette comes out as straight polygon edges.
+     //
+-    // 0.5 is the cutout threshold the art is authored against, and the silhouette has to match what
+-    // the engine actually draws. A card does not end on a hard alpha edge -- it ramps down -- so a
+-    // lower threshold keeps the transparent fringe and outlines pixels nobody can see, which reads as
+-    // an angular shape floating around the model.
++    // c1.x is the alpha reference the engine itself is cutting this batch with, passed in by the stamp: an
++    // alpha-key material is cut at 0.878 times the element's alpha, not at a fixed 0.5. A card does not end on a
++    // hard alpha edge -- it ramps down -- so a lower threshold keeps the faint fringe the engine does not draw and
++    // outlines pixels nobody can see, which reads as an outline floating around the transparent parts of a model.
+     const char* kFillHLSL =
+         "sampler2D s0 : register(s0);\n"
+         "float4 c0 : register(c0);\n"
++        "float4 c1 : register(c1);\n"
+         "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+-        "  clip(tex2D(s0, uv).a - 0.5);\n"
++        "  clip(tex2D(s0, uv).a - c1.x);\n"
+         "  return c0;\n"
+         "}\n";
+ 

@@ -1,0 +1,135 @@
+diff --git a/Engine/Source/WXLOutline/Outline.cpp b/Engine/Source/WXLOutline/Outline.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.cpp
++++ b/Engine/Source/WXLOutline/Outline.cpp
+@@ -218,12 +218,21 @@
+             return CurrentFrameSize(dev, cw, ch) && cw == w && ch == h;
+         }
+ 
+-        void ColorForReaction(int reaction, float* c)
++        // [Outline] <Key>=RRGGBB, or `def` when the key is absent or not six hex digits. Absent is silent, a bad value is
++        // said once in the log.
++        void IniColor(const char* key, const float* def, float* out)
+         {
+-            if (reaction < UNIT_REACTION_UNFRIENDLY)  { c[0] = 1.0f; c[1] = 0.0f; c[2] = 0.0f; } // hostile
+-            else if (reaction < UNIT_REACTION_FRIENDLY) { c[0] = 1.0f; c[1] = 1.0f; c[2] = 0.0f; } // neutral
+-            else                                        { c[0] = 0.0f; c[1] = 1.0f; c[2] = 0.0f; } // friendly
+-            c[3] = 1.0f;
++            out[0] = def[0]; out[1] = def[1]; out[2] = def[2]; out[3] = 1.0f;
++
++            char path[MAX_PATH] = {};
++            char text[32] = {};
++            if (!IniPath(path, sizeof(path))) return;
++            GetPrivateProfileStringA("Outline", key, "", text, sizeof(text), path);
++            if (!text[0]) return;
++
++            float rgb[3];
++            if (ParseHexColor(text, rgb)) { out[0] = rgb[0]; out[1] = rgb[1]; out[2] = rgb[2]; }
++            else wxl::LogCat("OUTLINE", "[Outline] %s \"%s\" is not RRGGBB hex, using the default", key, text);
+         }
+     }
+ 
+@@ -238,7 +247,11 @@
+             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
+             bool  questThroughWalls = false;
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+-            float questColor[4] = { 0.0f, 0.78f, 1.0f, 1.0f };
++            // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
++            float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
++            float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
++            float friendlyColor[4] = { 0.0f, 1.0f,  0.0f, 1.0f };
++            float questColor[4]    = { 0.0f, 0.78f, 1.0f, 1.0f };
+         };
+ 
+         explicit Outline(const Options& o)
+@@ -246,6 +259,9 @@
+               questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+         {
+             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
++            std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
++            std::memcpy(neutralColor_, o.neutralColor, sizeof(neutralColor_));
++            std::memcpy(friendlyColor_, o.friendlyColor, sizeof(friendlyColor_));
+             on<&Outline::OnEndScene>(ev::Event::OnEndScene);
+             on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
+             on<&Outline::OnDeviceLost>(ev::Event::OnDeviceLost);
+@@ -298,6 +314,9 @@
+         bool                hideBehind_;
+         bool                loggedNoDepth_ = false;
+         float               questColor_[4]{};
++        float               hostileColor_[4]{};
++        float               neutralColor_[4]{};
++        float               friendlyColor_[4]{};
+         Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
+         int                 questCount_ = 0;
+         unsigned long long  lastQuestRefresh_ = 0;
+@@ -402,7 +421,11 @@
+         const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
+         targets_[count_].model    = model;
+         targets_[count_].depthTest = hideBehind_ || (type & TYPEMASK_PLAYER) != 0; // players always hide behind walls; NPCs only with HideBehindObjects
+-        ColorForReaction(reaction, targets_[count_].color);
++        // hated / hostile, then unfriendly / neutral, then friendly and up
++        const float* color = reaction < UNIT_REACTION_UNFRIENDLY ? hostileColor_
++                           : reaction < UNIT_REACTION_FRIENDLY   ? neutralColor_
++                                                                  : friendlyColor_;
++        std::memcpy(targets_[count_].color, color, sizeof(targets_[count_].color));
+         ++count_;
+     }
+ 
+@@ -841,21 +864,10 @@
+         o.questThroughWalls = IniInt("Outline", "QuestThroughWalls", 0) != 0;
+         o.hideBehindObjects = IniInt("Outline", "HideBehindObjects", 0) != 0;
+ 
+-        char colorText[32] = {};
+-        {
+-            char path[MAX_PATH] = {};
+-            if (IniPath(path, sizeof(path)))
+-                GetPrivateProfileStringA("Outline", "QuestColor", "", colorText, sizeof(colorText), path);
+-        }
+-        float rgb[3];
+-        if (ParseHexColor(colorText, rgb))
+-        {
+-            o.questColor[0] = rgb[0]; o.questColor[1] = rgb[1]; o.questColor[2] = rgb[2];
+-        }
+-        else if (colorText[0])
+-        {
+-            wxl::LogCat("OUTLINE", "[Outline] QuestColor \"%s\" is not RRGGBB hex, using the default", colorText);
+-        }
++        IniColor("HostileColor",  o.hostileColor,  o.hostileColor);
++        IniColor("NeutralColor",  o.neutralColor,  o.neutralColor);
++        IniColor("FriendlyColor", o.friendlyColor, o.friendlyColor);
++        IniColor("QuestColor",    o.questColor,    o.questColor);
+ 
+         static Outline s_outline(o);
+         wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",
+diff --git a/Engine/Source/WXLOutline/Outline.h b/Engine/Source/WXLOutline/Outline.h
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.h
++++ b/Engine/Source/WXLOutline/Outline.h
+@@ -9,7 +9,12 @@
+ //     ; 1 = outline, all the time, what your open quests still need: creatures to kill, objects to use, and the
+ //     ;     creatures and objects that can hold a quest item you are still missing. Works with or without Enabled.
+ //     Quest=0
+-//     ; RRGGBB of the quest outline.
++//     ; Outline colors, RRGGBB hex. An absent or malformed key keeps the default shown.
++//     ; The mouseover / target outline, by the unit's attitude toward you:
++//     HostileColor=FF0000
++//     NeutralColor=FFFF00
++//     FriendlyColor=00FF00
++//     ; The quest outline:
+ //     QuestColor=00C8FF
+ //     ; 1 = quest outlines show through walls. 0 = the scene hides them where it hides the thing.
+ //     QuestThroughWalls=0
+diff --git a/Engine/Source/WXLOutline/README.md b/Engine/Source/WXLOutline/README.md
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/README.md
++++ b/Engine/Source/WXLOutline/README.md
+@@ -7,6 +7,9 @@
+ [Outline]
+ Enabled=1          ; mouseover / target, colored by reaction
+ Quest=1            ; quest objectives, always on
++HostileColor=FF0000
++NeutralColor=FFFF00
++FriendlyColor=00FF00
+ QuestColor=00C8FF
+ QuestThroughWalls=0
+ HideBehindObjects=0  ; 1 = no outline shows through anything in front

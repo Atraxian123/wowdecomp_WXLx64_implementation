@@ -23,6 +23,7 @@
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/Types.h"
 #include "Engine/Source/Model2/M2Model.h"
+#include "Engine/Source/ShaderEffect/ShaderEffect.h"
 #include "Engine/Source/WXL/EventScript.h"
 #include "Engine/Source/WXL/Log.h"
 #include "WoW/Source/DB/DBClient/CreatureStats_C.h"
@@ -217,12 +218,21 @@ namespace wxl::outline
             return CurrentFrameSize(dev, cw, ch) && cw == w && ch == h;
         }
 
-        void ColorForReaction(int reaction, float* c)
+        // [Outline] <Key>=RRGGBB, or `def` when the key is absent or not six hex digits. Absent is silent, a bad value is
+        // said once in the log.
+        void IniColor(const char* key, const float* def, float* out)
         {
-            if (reaction < UNIT_REACTION_UNFRIENDLY)  { c[0] = 1.0f; c[1] = 0.0f; c[2] = 0.0f; } // hostile
-            else if (reaction < UNIT_REACTION_FRIENDLY) { c[0] = 1.0f; c[1] = 1.0f; c[2] = 0.0f; } // neutral
-            else                                        { c[0] = 0.0f; c[1] = 1.0f; c[2] = 0.0f; } // friendly
-            c[3] = 1.0f;
+            out[0] = def[0]; out[1] = def[1]; out[2] = def[2]; out[3] = 1.0f;
+
+            char path[MAX_PATH] = {};
+            char text[32] = {};
+            if (!IniPath(path, sizeof(path))) return;
+            GetPrivateProfileStringA("Outline", key, "", text, sizeof(text), path);
+            if (!text[0]) return;
+
+            float rgb[3];
+            if (ParseHexColor(text, rgb)) { out[0] = rgb[0]; out[1] = rgb[1]; out[2] = rgb[2]; }
+            else wxl::LogCat("OUTLINE", "[Outline] %s \"%s\" is not RRGGBB hex, using the default", key, text);
         }
     }
 
@@ -237,7 +247,11 @@ namespace wxl::outline
             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
             bool  questThroughWalls = false;
             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
-            float questColor[4] = { 0.0f, 0.78f, 1.0f, 1.0f };
+            // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+            float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+            float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
+            float friendlyColor[4] = { 0.0f, 1.0f,  0.0f, 1.0f };
+            float questColor[4]    = { 0.0f, 0.78f, 1.0f, 1.0f };
         };
 
         explicit Outline(const Options& o)
@@ -245,6 +259,9 @@ namespace wxl::outline
               questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
         {
             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
+            std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
+            std::memcpy(neutralColor_, o.neutralColor, sizeof(neutralColor_));
+            std::memcpy(friendlyColor_, o.friendlyColor, sizeof(friendlyColor_));
             on<&Outline::OnEndScene>(ev::Event::OnEndScene);
             on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
             on<&Outline::OnDeviceLost>(ev::Event::OnDeviceLost);
@@ -272,6 +289,7 @@ namespace wxl::outline
 
         // --- helpers ---
         static bool ShouldStampBatch();
+        static float EngineAlphaRef();
         int  FindTarget(const CM2Model* model) const;
         void AddTarget(WOWGUID guid, CGUnit_C* player);
         void RefreshQuestTargets();
@@ -296,6 +314,9 @@ namespace wxl::outline
         bool                hideBehind_;
         bool                loggedNoDepth_ = false;
         float               questColor_[4]{};
+        float               hostileColor_[4]{};
+        float               neutralColor_[4]{};
+        float               friendlyColor_[4]{};
         Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
         int                 questCount_ = 0;
         unsigned long long  lastQuestRefresh_ = 0;
@@ -351,7 +372,7 @@ namespace wxl::outline
         // recorded once here; Capture() before and Apply() after put back exactly those, whatever they were.
         if (!stampSave_ && fillPS_)
         {
-            const float zero[4] = {};
+            const float zero[8] = {};
             if (SUCCEEDED(dev->BeginStateBlock()))
             {
                 dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
@@ -361,7 +382,7 @@ namespace wxl::outline
                 dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
                 dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
                 dev->SetPixelShader(fillPS_);
-                dev->SetPixelShaderConstantF(0, zero, 1);
+                dev->SetPixelShaderConstantF(0, zero, 2); // c0 = silhouette color, c1 = alpha reference
                 if (FAILED(dev->EndStateBlock(&stampSave_))) stampSave_ = nullptr;
             }
         }
@@ -400,7 +421,11 @@ namespace wxl::outline
         const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
         targets_[count_].model    = model;
         targets_[count_].depthTest = hideBehind_ || (type & TYPEMASK_PLAYER) != 0; // players always hide behind walls; NPCs only with HideBehindObjects
-        ColorForReaction(reaction, targets_[count_].color);
+        // hated / hostile, then unfriendly / neutral, then friendly and up
+        const float* color = reaction < UNIT_REACTION_UNFRIENDLY ? hostileColor_
+                           : reaction < UNIT_REACTION_FRIENDLY   ? neutralColor_
+                                                                  : friendlyColor_;
+        std::memcpy(targets_[count_].color, color, sizeof(targets_[count_].color));
         ++count_;
     }
 
@@ -571,6 +596,15 @@ namespace wxl::outline
         return blend <= GxBlend_AlphaKey && zwrite != 0;
     }
 
+    // The alpha reference the engine cut the batch it just drew with. It lives in one of two places, by device
+    // capability: the alpha-test render state, or a pixel shader constant the engine's own shaders read.
+    float Outline::EngineAlphaRef()
+    {
+        if (CShaderEffect::s_useAlphaRef && g_theGxDevicePtr)
+            return static_cast<float>(g_theGxDevicePtr->m_hwRenderStates[GxRs_AlphaRef].m_data.i[0]) / 255.0f;
+        return CShaderEffect::s_fogColorAlphaRef.w;
+    }
+
     // Draw the model again into the mask render target.
     void Outline::StampSilhouette(IDirect3DDevice9* dev, const ev::M2BatchDrawArgs& a, int idx)
     {
@@ -619,6 +653,8 @@ namespace wxl::outline
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
         dev->SetPixelShader(fillPS_);
         dev->SetPixelShaderConstantF(0, targets_[idx].color, 1);
+        const float alphaRef[4] = { EngineAlphaRef(), 0.0f, 0.0f, 0.0f };
+        dev->SetPixelShaderConstantF(1, alphaRef, 1);
         dev->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(a.primType), a.baseVertex, a.minIndex, a.numVerts, a.startIndex, a.primCount);
 
         dev->SetRenderTarget(0, oldRT);
@@ -828,21 +864,10 @@ namespace wxl::outline
         o.questThroughWalls = IniInt("Outline", "QuestThroughWalls", 0) != 0;
         o.hideBehindObjects = IniInt("Outline", "HideBehindObjects", 0) != 0;
 
-        char colorText[32] = {};
-        {
-            char path[MAX_PATH] = {};
-            if (IniPath(path, sizeof(path)))
-                GetPrivateProfileStringA("Outline", "QuestColor", "", colorText, sizeof(colorText), path);
-        }
-        float rgb[3];
-        if (ParseHexColor(colorText, rgb))
-        {
-            o.questColor[0] = rgb[0]; o.questColor[1] = rgb[1]; o.questColor[2] = rgb[2];
-        }
-        else if (colorText[0])
-        {
-            wxl::LogCat("OUTLINE", "[Outline] QuestColor \"%s\" is not RRGGBB hex, using the default", colorText);
-        }
+        IniColor("HostileColor",  o.hostileColor,  o.hostileColor);
+        IniColor("NeutralColor",  o.neutralColor,  o.neutralColor);
+        IniColor("FriendlyColor", o.friendlyColor, o.friendlyColor);
+        IniColor("QuestColor",    o.questColor,    o.questColor);
 
         static Outline s_outline(o);
         wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",

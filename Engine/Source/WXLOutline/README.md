@@ -7,6 +7,9 @@ Reaction-colored silhouette outline on the mouseover and target units, ported fr
 [Outline]
 Enabled=1          ; mouseover / target, colored by reaction
 Quest=1            ; quest objectives, always on
+HostileColor=FF0000
+NeutralColor=FFFF00
+FriendlyColor=00FF00
 QuestColor=00C8FF
 QuestThroughWalls=0
 HideBehindObjects=0  ; 1 = no outline shows through anything in front
