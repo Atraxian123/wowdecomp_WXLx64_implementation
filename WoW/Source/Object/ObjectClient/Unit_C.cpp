@@ -8,6 +8,7 @@
 #include "Engine/Source/FrameScript/FrameScript.h"
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Model2/ModernM2/FlightAnim.h"
+#include "Engine/Source/WXL/CastAnim.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Model2/M2Shared.h"
 #include "Engine/Source/Os/TimeManager.h"
@@ -4478,6 +4479,37 @@ void CGUnit_C::PlayBaseAnimation(uint32_t animId, int32_t flags) {
 
             if (0.0f != currentInfo.m_moveSpeed && currentInfo.m_duration) {
                 time = current.m_time * info.m_duration / currentInfo.m_duration % info.m_duration;
+            }
+        }
+    }
+
+    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLExtendedEquipment.ini). The spell precast (wind-up)
+    // sequence plays at the speed that makes it last the spell's casting time, so it ends with the cast bar.
+    // GetSpellCastingTime already includes haste, and the speed is fixed here, once, when the sequence starts:
+    // the cast time of a spell in progress does not change. Channels (they loop their own animation) and instant
+    // or open-ended casts are left at the stock speed; PrecastSpeed returns the speed it was given for those.
+    if (wxl::castanim::ScalePrecastEnabled() && this->m_castSpellId && !this->m_unit->m_unitChannelSpell
+        && (this->m_animationState & 0x400) && AnimClassBehavior(GetAnimBehaviorId(anim)) == 31) {
+        SpellRec castSpell;
+
+        if (g_spellDB.GetRecord(this->m_castSpellId, &castSpell)) {
+            const int32_t castTime = this->GetSpellCastingTime(&castSpell);
+
+            if (wxl::castanim::LoopShorterAnimations()) {
+                // [Animation] LoopShorterAnimations=1: a precast shorter than the cast keeps its authored speed and
+                // loops; negative haste slows it by the cast's own factor first (see CastAnim.h). The factor is the
+                // one GetSpellCastingTime applies, so spells that haste does not touch count as 1.
+                float castSpeedMod = 1.0f;
+
+                if (!(castSpell.m_attributes & 0x30) && !(castSpell.m_attributesExC & 0x20000000)) {
+                    castSpeedMod = this->m_unit->m_unitModCastSpeed;
+                }
+
+                speed = wxl::castanim::PrecastSpeedLooping(info.m_duration, castTime, castSpeedMod,
+                                                           wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
+            } else {
+                speed = wxl::castanim::PrecastSpeed(info.m_duration, castTime,
+                                                    wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
             }
         }
     }

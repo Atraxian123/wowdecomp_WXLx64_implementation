@@ -1,0 +1,142 @@
+diff --git a/Engine/Source/WXL/CastAnim.h b/Engine/Source/WXL/CastAnim.h
+index 0000000..0000000 100644
+--- a/Engine/Source/WXL/CastAnim.h
++++ b/Engine/Source/WXL/CastAnim.h
+@@ -16,6 +16,14 @@
+ //     PrecastMinSpeed=0.5
+ //     PrecastMaxSpeed=2.0
+ //
++//     ; 0 = every precast is fitted to the cast time, as described above.
++//     ; 1 = a precast that is naturally SHORTER than the cast time is not stretched: it plays at its authored
++//     ;     speed and loops, as the stock client does. Exception, negative haste (the cast takes longer than
++//     ;     base): the animation is first slowed by the same factor as the cast, then looped. If even that
++//     ;     slowed animation is longer than the cast time, it is fitted to the cast time like in mode 0.
++//     ;     A precast longer than the cast time is always fitted. Only has an effect with the switch above on.
++//     LoopShorterAnimations=0
++//
+ // The values are read once, on first use. Edit the ini, restart the client.
+ //
+ // The decision is a pure function (PrecastSpeed) so a host test can run it without the game.
+@@ -33,6 +41,9 @@
+     float PrecastMinSpeed();
+     float PrecastMaxSpeed();
+ 
++    /// [Animation] LoopShorterAnimations. False unless the ini sets it.
++    bool LoopShorterAnimations();
++
+     /// Playback speed that makes a sequence of `durationMs` last `castTimeMs`, clamped to [minSpeed, maxSpeed].
+     /// Returns `fallback` (the speed the caller already has, normally 1.0) when there is nothing to scale: no
+     /// sequence length, or a cast time that is not a real, finite duration (instant, negative, or the
+@@ -46,4 +57,24 @@
+         const float speed = static_cast<float>(durationMs) / static_cast<float>(castTimeMs);
+         return std::min(std::max(speed, minSpeed), maxSpeed);
+     }
++
++    /// LoopShorterAnimations=1 variant of PrecastSpeed. `castSpeedMod` is the unit's cast time multiplier as
++    /// it applies to this spell (1 = no haste, above 1 = negative haste, below 1 = haste; pass 1 for a spell
++    /// that haste does not affect).
++    ///   * The sequence, slowed by negative haste (never sped up by haste), still fits in the cast time:
++    ///     speed 1 / castSpeedMod. The sequence is shorter than the cast, so the client loops it.
++    ///   * Otherwise it is fitted to the cast time, clamped, exactly like PrecastSpeed.
++    /// Nothing to scale (see PrecastSpeed): `fallback`.
++    inline float PrecastSpeedLooping(uint32_t durationMs, int32_t castTimeMs, float castSpeedMod, float minSpeed, float maxSpeed, float fallback = 1.0f)
++    {
++        constexpr int32_t kNoRealCastTime = 0x7FFFFFFF;
++        if (durationMs == 0 || castTimeMs <= 0 || castTimeMs == kNoRealCastTime)
++            return fallback;
++
++        const float slow = castSpeedMod > 1.0f ? castSpeedMod : 1.0f;
++        if (static_cast<double>(durationMs) * slow <= static_cast<double>(castTimeMs))
++            return 1.0f / slow;
++
++        return PrecastSpeed(durationMs, castTimeMs, minSpeed, maxSpeed, fallback);
++    }
+ }
+diff --git a/Engine/Source/WXL/CastAnim.cpp b/Engine/Source/WXL/CastAnim.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXL/CastAnim.cpp
++++ b/Engine/Source/WXL/CastAnim.cpp
+@@ -71,19 +71,21 @@
+             bool scalePrecast = false;
+             float minSpeed = 0.5f;
+             float maxSpeed = 2.0f;
++            bool loopShorter = false;
+ 
+             Config()
+             {
+                 scalePrecast = IniInt("Animation", "ScalePrecastToCastTime", 0) != 0;
+                 minSpeed = IniFloat("Animation", "PrecastMinSpeed", 0.5f);
+                 maxSpeed = IniFloat("Animation", "PrecastMaxSpeed", 2.0f);
++                loopShorter = IniInt("Animation", "LoopShorterAnimations", 0) != 0;
+ 
+                 // A zero, negative or inverted range would stall the animation or divide by zero later.
+                 if (!(minSpeed > 0.0f)) minSpeed = 0.5f;
+                 if (!(maxSpeed >= minSpeed)) maxSpeed = minSpeed;
+ 
+                 if (scalePrecast)
+-                    wxl::LogCat("ANIM", "precast animation scaled to cast time (speed %.2f..%.2f)", minSpeed, maxSpeed);
++                    wxl::LogCat("ANIM", "precast animation scaled to cast time (speed %.2f..%.2f), shorter animations %s", minSpeed, maxSpeed, loopShorter ? "looped (slowed by negative haste first)" : "fitted too");
+                 else
+                     wxl::LogCat("ANIM", "precast animation: stock behaviour ([Animation] ScalePrecastToCastTime is 0 or absent)");
+             }
+@@ -100,4 +102,5 @@
+     bool ScalePrecastEnabled() { return Cfg().scalePrecast; }
+     float PrecastMinSpeed() { return Cfg().minSpeed; }
+     float PrecastMaxSpeed() { return Cfg().maxSpeed; }
++    bool LoopShorterAnimations() { return Cfg().loopShorter; }
+ }
+diff --git a/Tools/WxlModuleTest/castanim_test.cpp b/Tools/WxlModuleTest/castanim_test.cpp
+index 0000000..0000000 100644
+--- a/Tools/WxlModuleTest/castanim_test.cpp
++++ b/Tools/WxlModuleTest/castanim_test.cpp
+@@ -29,6 +29,19 @@
+     CHECK(ca::PrecastSpeed(0, 1500, lo, hi) == 1.0f, "sequence without a length: untouched");
+     CHECK(ca::PrecastSpeed(0, 1500, lo, hi, 1.25f) == 1.25f, "the fallback is what is returned when nothing scales");
+ 
++    // LoopShorterAnimations=1 (1000 ms sequence)
++    auto L = [&](int32_t cast, float mod) { return ca::PrecastSpeedLooping(1000, cast, mod, lo, hi); };
++    CHECK(L(3000, 1.0f) == 1.0f, "shorter than the cast, no haste: authored speed (loops)");
++    CHECK(L(3000, 0.7f) == 1.0f, "shorter than the cast, haste: still authored speed (haste never speeds it up)");
++    CHECK(L(1000, 1.0f) == 1.0f, "exactly the cast time: authored speed");
++    CHECK(L(3000, 2.0f) == 0.5f, "negative haste x2, slowed animation (2000) still shorter: slowed by the factor, loops");
++    CHECK(L(2000, 2.0f) == 0.5f, "slowed animation exactly the cast time: slowed by the factor");
++    CHECK(L(1500, 2.0f) > 0.66f && L(1500, 2.0f) < 0.67f, "slowed animation (2000) longer than the 1500 ms cast: fitted to the cast time");
++    CHECK(L(500, 1.0f) == 2.0f && L(100, 1.0f) == hi, "animation longer than the cast: fitted, clamped to the maximum");
++    CHECK(L(500, 0.5f) == 2.0f, "animation longer than a hasted cast: fitted");
++    CHECK(L(10000, 4.0f) == 0.25f, "large negative haste: the slow-down is not clamped (it still fits the cast)");
++    CHECK(L(0, 2.0f) == 1.0f && L(0x7FFFFFFF, 2.0f) == 1.0f && ca::PrecastSpeedLooping(0, 1500, 2.0f, lo, hi) == 1.0f, "nothing to scale: untouched");
++
+     // a degenerate range is the caller's to sanitise (the ini loader does); equal limits pin the speed
+     CHECK(ca::PrecastSpeed(1000, 4000, 1.0f, 1.0f) == 1.0f, "min == max pins the speed");
+ 
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 0000000..0000000 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -4493,8 +4493,24 @@
+         SpellRec castSpell;
+ 
+         if (g_spellDB.GetRecord(this->m_castSpellId, &castSpell)) {
+-            speed = wxl::castanim::PrecastSpeed(info.m_duration, this->GetSpellCastingTime(&castSpell),
+-                                                wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
++            const int32_t castTime = this->GetSpellCastingTime(&castSpell);
++
++            if (wxl::castanim::LoopShorterAnimations()) {
++                // [Animation] LoopShorterAnimations=1: a precast shorter than the cast keeps its authored speed and
++                // loops; negative haste slows it by the cast's own factor first (see CastAnim.h). The factor is the
++                // one GetSpellCastingTime applies, so spells that haste does not touch count as 1.
++                float castSpeedMod = 1.0f;
++
++                if (!(castSpell.m_attributes & 0x30) && !(castSpell.m_attributesExC & 0x20000000)) {
++                    castSpeedMod = this->m_unit->m_unitModCastSpeed;
++                }
++
++                speed = wxl::castanim::PrecastSpeedLooping(info.m_duration, castTime, castSpeedMod,
++                                                           wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
++            } else {
++                speed = wxl::castanim::PrecastSpeed(info.m_duration, castTime,
++                                                    wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
++            }
+         }
+     }
+ 

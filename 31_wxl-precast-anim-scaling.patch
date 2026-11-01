@@ -1,0 +1,266 @@
+diff --git a/Engine/Source/WXL/CastAnim.h b/Engine/Source/WXL/CastAnim.h
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/Engine/Source/WXL/CastAnim.h
+@@ -0,0 +1,49 @@
++// WXL cast animation scaling: stretches or squeezes the spell PRECAST animation to the spell's casting time.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// OPT-IN. The stock client plays the precast (wind-up) sequence at its authored speed, whatever the cast time.
++// With the switch below on, CGUnit_C::PlayBaseAnimation plays it at sequenceDuration / castTime, so the
++// wind-up finishes when the cast bar does. Everything else is stock. In WXLExtendedEquipment.ini (beside the
++// client executable):
++//
++//     [Animation]
++//     ; 1 = scale the spell precast animation (SpellPrecast and the modern aliases of it) to the spell's cast
++//     ; time. Haste is already part of that time. Channeled spells and instant casts are never scaled.
++//     ScalePrecastToCastTime=0
++//
++//     ; Limits of the playback speed (1.0 = the authored speed). A cast outside the range plays at the limit:
++//     ; a long cast ends its precast early and the ready pose that follows carries on to the end of the bar.
++//     PrecastMinSpeed=0.5
++//     PrecastMaxSpeed=2.0
++//
++// The values are read once, on first use. Edit the ini, restart the client.
++//
++// The decision is a pure function (PrecastSpeed) so a host test can run it without the game.
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++
++namespace wxl::castanim
++{
++    /// [Animation] ScalePrecastToCastTime. False (stock behaviour) unless the ini sets it.
++    bool ScalePrecastEnabled();
++
++    /// [Animation] PrecastMinSpeed / PrecastMaxSpeed, already sanitised (0 < min <= max).
++    float PrecastMinSpeed();
++    float PrecastMaxSpeed();
++
++    /// Playback speed that makes a sequence of `durationMs` last `castTimeMs`, clamped to [minSpeed, maxSpeed].
++    /// Returns `fallback` (the speed the caller already has, normally 1.0) when there is nothing to scale: no
++    /// sequence length, or a cast time that is not a real, finite duration (instant, negative, or the
++    /// 0x7FFFFFFF placeholder the client uses for "until cancelled").
++    inline float PrecastSpeed(uint32_t durationMs, int32_t castTimeMs, float minSpeed, float maxSpeed, float fallback = 1.0f)
++    {
++        constexpr int32_t kNoRealCastTime = 0x7FFFFFFF;
++        if (durationMs == 0 || castTimeMs <= 0 || castTimeMs == kNoRealCastTime)
++            return fallback;
++
++        const float speed = static_cast<float>(durationMs) / static_cast<float>(castTimeMs);
++        return std::min(std::max(speed, minSpeed), maxSpeed);
++    }
++}
+diff --git a/Engine/Source/WXL/CastAnim.cpp b/Engine/Source/WXL/CastAnim.cpp
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/Engine/Source/WXL/CastAnim.cpp
+@@ -0,0 +1,103 @@
++// WXL cast animation scaling switches. See CastAnim.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++
++#include "Engine/Source/WXL/CastAnim.h"
++
++#include "Engine/Source/WXL/Log.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++
++namespace wxl::castanim
++{
++    namespace
++    {
++        // WXLExtendedEquipment.ini sits beside the client executable. This module lives in WXLCore, which
++        // cannot call the equip modules' helper, so the lookup is repeated, as Log.cpp and Culling.cpp do.
++        // Missing file, section or key: the default.
++        bool IniPath(char* path, size_t cap)
++        {
++#ifdef _WIN32
++            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
++            if (n == 0 || n >= cap) return false;
++            char* slash = std::strrchr(path, '\\');
++            const char* name = "WXLExtendedEquipment.ini";
++            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
++            std::strcpy(slash + 1, name);
++            return true;
++#else
++            (void)path; (void)cap;
++            return false;
++#endif
++        }
++
++        int IniInt(const char* section, const char* key, int def)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            if (!IniPath(path, sizeof(path))) return def;
++            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
++#else
++            (void)section; (void)key;
++            return def;
++#endif
++        }
++
++        float IniFloat(const char* section, const char* key, float def)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            if (!IniPath(path, sizeof(path))) return def;
++            char out[64] = {};
++            GetPrivateProfileStringA(section, key, "", out, sizeof(out), path);
++            if (!out[0]) return def;
++            char* end = nullptr;
++            const double v = std::strtod(out, &end);
++            return (end == out) ? def : static_cast<float>(v);
++#else
++            (void)section; (void)key;
++            return def;
++#endif
++        }
++
++        struct Config
++        {
++            bool scalePrecast = false;
++            float minSpeed = 0.5f;
++            float maxSpeed = 2.0f;
++
++            Config()
++            {
++                scalePrecast = IniInt("Animation", "ScalePrecastToCastTime", 0) != 0;
++                minSpeed = IniFloat("Animation", "PrecastMinSpeed", 0.5f);
++                maxSpeed = IniFloat("Animation", "PrecastMaxSpeed", 2.0f);
++
++                // A zero, negative or inverted range would stall the animation or divide by zero later.
++                if (!(minSpeed > 0.0f)) minSpeed = 0.5f;
++                if (!(maxSpeed >= minSpeed)) maxSpeed = minSpeed;
++
++                if (scalePrecast)
++                    wxl::LogCat("ANIM", "precast animation scaled to cast time (speed %.2f..%.2f)", minSpeed, maxSpeed);
++                else
++                    wxl::LogCat("ANIM", "precast animation: stock behaviour ([Animation] ScalePrecastToCastTime is 0 or absent)");
++            }
++        };
++
++        // Built on first use; C++11 guarantees the construction happens once even if several threads race.
++        const Config& Cfg()
++        {
++            static const Config c;
++            return c;
++        }
++    }
++
++    bool ScalePrecastEnabled() { return Cfg().scalePrecast; }
++    float PrecastMinSpeed() { return Cfg().minSpeed; }
++    float PrecastMaxSpeed() { return Cfg().maxSpeed; }
++}
+diff --git a/Tools/WxlModuleTest/castanim_test.cpp b/Tools/WxlModuleTest/castanim_test.cpp
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/Tools/WxlModuleTest/castanim_test.cpp
+@@ -0,0 +1,43 @@
++// Host-side test of the precast animation speed decision (Engine/Source/WXL/CastAnim.h). Needs no game data.
++// Build and run it with run_castanim_tests.sh.
++#include <cstdio>
++
++#include "Engine/Source/WXL/CastAnim.h"
++
++static int g_pass = 0, g_fail = 0;
++#define CHECK(cond, msg) do { if (cond) ++g_pass; else { ++g_fail; std::printf("  FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
++
++int main()
++{
++    namespace ca = wxl::castanim;
++    const float lo = 0.5f, hi = 2.0f;
++
++    // 1000 ms sequence
++    CHECK(ca::PrecastSpeed(1000, 1000, lo, hi) == 1.0f, "cast time equal to the sequence: authored speed");
++    CHECK(ca::PrecastSpeed(1000, 2000, lo, hi) == 0.5f, "twice as long a cast: half speed");
++    CHECK(ca::PrecastSpeed(1000, 500, lo, hi) == 2.0f, "half as long a cast: double speed");
++    CHECK(ca::PrecastSpeed(1000, 1500, lo, hi) > 0.66f && ca::PrecastSpeed(1000, 1500, lo, hi) < 0.67f, "1.5 s cast: 2/3 speed");
++
++    // clamping
++    CHECK(ca::PrecastSpeed(1000, 10000, lo, hi) == lo, "very long cast: clamped to the minimum speed");
++    CHECK(ca::PrecastSpeed(1000, 100, lo, hi) == hi, "very short cast: clamped to the maximum speed");
++
++    // nothing to scale: the caller's speed comes back
++    CHECK(ca::PrecastSpeed(1000, 0, lo, hi) == 1.0f, "instant cast: untouched");
++    CHECK(ca::PrecastSpeed(1000, -5, lo, hi) == 1.0f, "negative cast time: untouched");
++    CHECK(ca::PrecastSpeed(1000, 0x7FFFFFFF, lo, hi) == 1.0f, "until-cancelled placeholder: untouched");
++    CHECK(ca::PrecastSpeed(0, 1500, lo, hi) == 1.0f, "sequence without a length: untouched");
++    CHECK(ca::PrecastSpeed(0, 1500, lo, hi, 1.25f) == 1.25f, "the fallback is what is returned when nothing scales");
++
++    // a degenerate range is the caller's to sanitise (the ini loader does); equal limits pin the speed
++    CHECK(ca::PrecastSpeed(1000, 4000, 1.0f, 1.0f) == 1.0f, "min == max pins the speed");
++
++#ifndef _WIN32
++    // off by default, and the limits are valid, when there is no ini to read
++    CHECK(!ca::ScalePrecastEnabled(), "opt-in: disabled without the ini switch");
++    CHECK(ca::PrecastMinSpeed() > 0.0f && ca::PrecastMaxSpeed() >= ca::PrecastMinSpeed(), "default limits are a valid range");
++#endif
++
++    std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/run_castanim_tests.sh b/Tools/WxlModuleTest/run_castanim_tests.sh
+new file mode 100755
+index 0000000..0000000
+--- /dev/null
++++ b/Tools/WxlModuleTest/run_castanim_tests.sh
+@@ -0,0 +1,13 @@
++#!/bin/sh
++# Builds the precast animation scaling decision (Engine/Source/WXL/CastAnim) with its host test using g++,
++# with address and undefined-behaviour sanitizers, and runs it. No game files needed.
++#   ./run_castanim_tests.sh        (exit code 0 = everything passed)
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd)
++R=$(cd "$HERE/../.." && pwd)
++OUT=${TMPDIR:-/tmp}/wxl_castanim_test
++mkdir -p "$OUT"
++g++ -std=c++20 -O1 -g -w -fsanitize=address,undefined -pthread -I "$R" \
++    "$HERE/castanim_test.cpp" "$R/Engine/Source/WXL/CastAnim.cpp" "$R/Engine/Source/WXL/Log.cpp" \
++    -o "$OUT/castanim_test"
++"$OUT/castanim_test"
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 0000000..0000000 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -8,6 +8,7 @@
+ #include "Engine/Source/FrameScript/FrameScript.h"
+ #include "Engine/Source/Model2/M2Model.h"
+ #include "Engine/Source/Model2/ModernM2/FlightAnim.h"
++#include "Engine/Source/WXL/CastAnim.h"
+ #include "Engine/Source/Model2/M2Scene.h"
+ #include "Engine/Source/Model2/M2Shared.h"
+ #include "Engine/Source/Os/TimeManager.h"
+@@ -4482,6 +4483,21 @@
+         }
+     }
+ 
++    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLExtendedEquipment.ini). The spell precast (wind-up)
++    // sequence plays at the speed that makes it last the spell's casting time, so it ends with the cast bar.
++    // GetSpellCastingTime already includes haste, and the speed is fixed here, once, when the sequence starts:
++    // the cast time of a spell in progress does not change. Channels (they loop their own animation) and instant
++    // or open-ended casts are left at the stock speed; PrecastSpeed returns the speed it was given for those.
++    if (wxl::castanim::ScalePrecastEnabled() && this->m_castSpellId && !this->m_unit->m_unitChannelSpell
++        && (this->m_animationState & 0x400) && AnimClassBehavior(GetAnimBehaviorId(anim)) == 31) {
++        SpellRec castSpell;
++
++        if (g_spellDB.GetRecord(this->m_castSpellId, &castSpell)) {
++            speed = wxl::castanim::PrecastSpeed(info.m_duration, this->GetSpellCastingTime(&castSpell),
++                                                wxl::castanim::PrecastMinSpeed(), wxl::castanim::PrecastMaxSpeed(), speed);
++        }
++    }
++
+     int32_t blend = !(flags & 0x1);
+     int32_t blendMount = blend;
+     int32_t blendTorso = blend;
