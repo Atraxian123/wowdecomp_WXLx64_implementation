@@ -1,0 +1,189 @@
+diff --git a/Engine/Source/WXLOutline/Outline.cpp b/Engine/Source/WXLOutline/Outline.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.cpp
++++ b/Engine/Source/WXLOutline/Outline.cpp
+@@ -40,6 +40,7 @@
+ #include <d3d9.h>
+ #include <d3dcompiler.h>
+ 
++#include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+ 
+@@ -418,8 +419,11 @@
+     namespace
+     {
+         // What the open quests still want, from the quest log (progress) and the quest cache (requirements).
+-        // The cache is read without a callback, so nothing is queried from the server: a quest whose record is not
+-        // cached yet is simply skipped until it is.
++        // A quest whose record is not cached yet is requested and skipped until it arrives.
++        // Asking for a record with a callback is what makes the cache query the server for one it does not have; the
++        // answer lands in the cache, and the next refresh finds it, so the callback has nothing left to do.
++        void QuestRecordArrived(int32_t, const WOWGUID&, void*, bool) {}
++
+         void CollectQuestNeeds(CGPlayer_C* player, QuestNeeds& needs)
+         {
+             const WOWGUID none = { 0 };
+@@ -428,12 +432,12 @@
+                 const PlayerQuestLogEntry& e = player->m_player->m_playerQuestLog[slot];
+                 if (!e.m_questId || (e.m_state & 0x3)) continue; // empty slot, complete (1) or failed (2)
+ 
+-                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, nullptr, nullptr, false);
++                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, QuestRecordArrived, nullptr, false);
+                 if (!quest) continue;
+ 
+-                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or negated game object entry
++                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or game object entry with the sign bit set
+                     if (quest->m_objectiveId[i] && e.m_counts[i] < quest->m_objectiveRequiredCount[i])
+-                        needs.AddObjective(static_cast<int32_t>(quest->m_objectiveId[i]));
++                        needs.AddObjective(quest->m_objectiveId[i]);
+ 
+                 for (uint32_t i = 0; i < 6; ++i) // items to collect
+                 {
+@@ -667,19 +671,36 @@
+         dev->SetDepthStencilSurface(nullptr);
+         dev->SetPixelShader(blurPS_);
+ 
+-        // The step is in blur-target texels, spread_ in frame pixels, hence the divisor.
+-        const float step = spread_ / float(kBlurDivisor);
+-        const float horizontal[4] = { 1.0f / blurA_.width, 0.0f, step, 0.0f };
+-        dev->SetRenderTarget(0, blurA_.surface);
+-        dev->SetTexture(0, mask_.texture);
+-        dev->SetPixelShaderConstantF(0, horizontal, 1);
+-        DrawFullscreenQuad(dev, blurA_.width, blurA_.height);
+-
+-        const float vertical[4] = { 0.0f, 1.0f / blurB_.height, step, 0.0f };
+-        dev->SetRenderTarget(0, blurB_.surface);
+-        dev->SetTexture(0, blurA_.texture);
+-        dev->SetPixelShaderConstantF(0, vertical, 1);
+-        DrawFullscreenQuad(dev, blurB_.width, blurB_.height);
++        // One 5-tap pass spreads its taps 1.4 * step apart; past a step of about 1.5 pixels they skip over small or thin
++        // silhouettes and leave separate ghost copies instead of a smooth falloff. A wide halo is therefore built from
++        // repeated passes at a fixed small step: the variances add, so n passes of spread / sqrt(n) are as wide as one
++        // pass of `spread`, and the step never exceeds kMaxPassSpread. Up to the limit this is the single pass it was.
++        constexpr float kMaxPassSpread = 1.5f;
++        constexpr int   kMaxIterations = 8;
++        int iterations = 1;
++        while (iterations < kMaxIterations && spread_ > kMaxPassSpread * std::sqrt(static_cast<float>(iterations)))
++            ++iterations;
++        const float passSpread = spread_ / std::sqrt(static_cast<float>(iterations));
++
++        // The step is in blur-target texels, spread in frame pixels, hence the divisor.
++        const float step = passSpread / float(kBlurDivisor);
++        IDirect3DTexture9* source = mask_.texture;
++        for (int i = 0; i < iterations; ++i)
++        {
++            const float horizontal[4] = { 1.0f / blurA_.width, 0.0f, step, 0.0f };
++            dev->SetRenderTarget(0, blurA_.surface);
++            dev->SetTexture(0, source);
++            dev->SetPixelShaderConstantF(0, horizontal, 1);
++            DrawFullscreenQuad(dev, blurA_.width, blurA_.height);
++
++            const float vertical[4] = { 0.0f, 1.0f / blurB_.height, step, 0.0f };
++            dev->SetRenderTarget(0, blurB_.surface);
++            dev->SetTexture(0, blurA_.texture);
++            dev->SetPixelShaderConstantF(0, vertical, 1);
++            DrawFullscreenQuad(dev, blurB_.width, blurB_.height);
++
++            source = blurB_.texture; // the next iteration blurs the blurred result
++        }
+ 
+         const float apply[4] = { intensity_, 0.0f, 0.0f, 0.0f };
+         dev->SetRenderTarget(0, oldRT);
+diff --git a/Engine/Source/WXLOutline/QuestMatch.h b/Engine/Source/WXLOutline/QuestMatch.h
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/QuestMatch.h
++++ b/Engine/Source/WXLOutline/QuestMatch.h
+@@ -16,11 +16,14 @@
+     class QuestNeeds
+     {
+     public:
+-        /// A kill / interact objective still short of its count. The quest cache stores a creature as its entry id
+-        /// and a game object as the negated entry id (0 means no objective).
+-        void AddObjective(int32_t creatureOrGameObject)
+-        {
+-            if (creatureOrGameObject != 0) m_objectives.push_back(creatureOrGameObject);
++        /// A kill / interact objective still short of its count, as the quest cache stores it: the creature entry
++        /// itself, or a game object entry with the sign bit set (the client reads it back as `objective & 0x7FFFFFFF`).
++        /// 0 means no objective.
++        void AddObjective(uint32_t raw)
++        {
++            if (raw == 0) return;
++            if (raw & 0x80000000u) m_gameObjects.push_back(raw & 0x7FFFFFFFu);
++            else                   m_creatures.push_back(raw);
+         }
+ 
+         /// A quest item still short of the count the quest wants.
+@@ -29,38 +32,35 @@
+             if (itemId != 0) m_items.push_back(itemId);
+         }
+ 
+-        bool Empty() const { return m_objectives.empty() && m_items.empty(); }
++        bool Empty() const { return m_creatures.empty() && m_gameObjects.empty() && m_items.empty(); }
+ 
+         /// A creature counts for an open objective under its own entry or under one of its kill-credit entries.
+         bool NeedsCreature(uint32_t entry, const uint32_t* killCredit, size_t killCreditCount) const
+         {
+-            if (HasObjective(static_cast<int32_t>(entry))) return true;
++            if (Has(m_creatures, entry)) return true;
+             for (size_t i = 0; killCredit && i < killCreditCount; ++i)
+-                if (killCredit[i] && HasObjective(static_cast<int32_t>(killCredit[i]))) return true;
++                if (Has(m_creatures, killCredit[i])) return true;
+             return false;
+         }
+ 
+-        bool NeedsGameObject(uint32_t entry) const
+-        {
+-            return entry != 0 && HasObjective(-static_cast<int32_t>(entry));
+-        }
++        bool NeedsGameObject(uint32_t entry) const { return Has(m_gameObjects, entry); }
+ 
+         /// Whether any of the quest items a creature or game object can hold is one a quest still wants.
+         bool NeedsItemFrom(const uint32_t* questItems, size_t count) const
+         {
+             for (size_t i = 0; questItems && i < count; ++i)
+-                if (questItems[i] && std::find(m_items.begin(), m_items.end(), questItems[i]) != m_items.end())
+-                    return true;
++                if (Has(m_items, questItems[i])) return true;
+             return false;
+         }
+ 
+     private:
+-        bool HasObjective(int32_t id) const
++        static bool Has(const std::vector<uint32_t>& v, uint32_t id)
+         {
+-            return id != 0 && std::find(m_objectives.begin(), m_objectives.end(), id) != m_objectives.end();
++            return id != 0 && std::find(v.begin(), v.end(), id) != v.end();
+         }
+ 
+-        std::vector<int32_t>  m_objectives;
++        std::vector<uint32_t> m_creatures;
++        std::vector<uint32_t> m_gameObjects;
+         std::vector<uint32_t> m_items;
+     };
+ 
+diff --git a/Tools/WxlModuleTest/questmatch_test.cpp b/Tools/WxlModuleTest/questmatch_test.cpp
+index 0000000..0000000 100644
+--- a/Tools/WxlModuleTest/questmatch_test.cpp
++++ b/Tools/WxlModuleTest/questmatch_test.cpp
+@@ -18,8 +18,8 @@
+     CHECK(!none.NeedsGameObject(77), "empty needs match no object");
+ 
+     QuestNeeds n;
+-    n.AddObjective(1234);   // kill creature 1234
+-    n.AddObjective(-5678);  // use game object 5678
++    n.AddObjective(1234);               // kill creature 1234
++    n.AddObjective(0x80000000u | 5678); // use game object 5678: the sign bit marks a game object
+     n.AddObjective(0);      // no objective: ignored
+     n.AddItem(900);
+     n.AddItem(0);           // no item: ignored
+@@ -28,7 +28,8 @@
+     CHECK(n.NeedsCreature(1234, nullptr, 0), "creature matched by its own entry");
+     CHECK(!n.NeedsCreature(1235, nullptr, 0), "other creature does not match");
+     CHECK(!n.NeedsCreature(5678, nullptr, 0), "a game object objective is not a creature");
+-    CHECK(n.NeedsGameObject(5678), "game object matched by its negated entry");
++    CHECK(n.NeedsGameObject(5678), "game object matched through the sign-bit encoding");
++    CHECK(!n.NeedsCreature(0x80000000u | 5678, nullptr, 0), "the flagged value is not a creature entry");
+     CHECK(!n.NeedsGameObject(1234), "a creature objective is not a game object");
+     CHECK(!n.NeedsGameObject(0), "entry 0 never matches");
+ 

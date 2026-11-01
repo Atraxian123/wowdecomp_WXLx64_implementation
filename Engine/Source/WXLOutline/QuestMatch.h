@@ -16,11 +16,14 @@ namespace wxl::outline
     class QuestNeeds
     {
     public:
-        /// A kill / interact objective still short of its count. The quest cache stores a creature as its entry id
-        /// and a game object as the negated entry id (0 means no objective).
-        void AddObjective(int32_t creatureOrGameObject)
+        /// A kill / interact objective still short of its count, as the quest cache stores it: the creature entry
+        /// itself, or a game object entry with the sign bit set (the client reads it back as `objective & 0x7FFFFFFF`).
+        /// 0 means no objective.
+        void AddObjective(uint32_t raw)
         {
-            if (creatureOrGameObject != 0) m_objectives.push_back(creatureOrGameObject);
+            if (raw == 0) return;
+            if (raw & 0x80000000u) m_gameObjects.push_back(raw & 0x7FFFFFFFu);
+            else                   m_creatures.push_back(raw);
         }
 
         /// A quest item still short of the count the quest wants.
@@ -29,38 +32,35 @@ namespace wxl::outline
             if (itemId != 0) m_items.push_back(itemId);
         }
 
-        bool Empty() const { return m_objectives.empty() && m_items.empty(); }
+        bool Empty() const { return m_creatures.empty() && m_gameObjects.empty() && m_items.empty(); }
 
         /// A creature counts for an open objective under its own entry or under one of its kill-credit entries.
         bool NeedsCreature(uint32_t entry, const uint32_t* killCredit, size_t killCreditCount) const
         {
-            if (HasObjective(static_cast<int32_t>(entry))) return true;
+            if (Has(m_creatures, entry)) return true;
             for (size_t i = 0; killCredit && i < killCreditCount; ++i)
-                if (killCredit[i] && HasObjective(static_cast<int32_t>(killCredit[i]))) return true;
+                if (Has(m_creatures, killCredit[i])) return true;
             return false;
         }
 
-        bool NeedsGameObject(uint32_t entry) const
-        {
-            return entry != 0 && HasObjective(-static_cast<int32_t>(entry));
-        }
+        bool NeedsGameObject(uint32_t entry) const { return Has(m_gameObjects, entry); }
 
         /// Whether any of the quest items a creature or game object can hold is one a quest still wants.
         bool NeedsItemFrom(const uint32_t* questItems, size_t count) const
         {
             for (size_t i = 0; questItems && i < count; ++i)
-                if (questItems[i] && std::find(m_items.begin(), m_items.end(), questItems[i]) != m_items.end())
-                    return true;
+                if (Has(m_items, questItems[i])) return true;
             return false;
         }
 
     private:
-        bool HasObjective(int32_t id) const
+        static bool Has(const std::vector<uint32_t>& v, uint32_t id)
         {
-            return id != 0 && std::find(m_objectives.begin(), m_objectives.end(), id) != m_objectives.end();
+            return id != 0 && std::find(v.begin(), v.end(), id) != v.end();
         }
 
-        std::vector<int32_t>  m_objectives;
+        std::vector<uint32_t> m_creatures;
+        std::vector<uint32_t> m_gameObjects;
         std::vector<uint32_t> m_items;
     };
 

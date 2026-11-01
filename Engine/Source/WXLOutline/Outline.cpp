@@ -40,6 +40,7 @@
 #include <d3d9.h>
 #include <d3dcompiler.h>
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -418,8 +419,11 @@ namespace wxl::outline
     namespace
     {
         // What the open quests still want, from the quest log (progress) and the quest cache (requirements).
-        // The cache is read without a callback, so nothing is queried from the server: a quest whose record is not
-        // cached yet is simply skipped until it is.
+        // A quest whose record is not cached yet is requested and skipped until it arrives.
+        // Asking for a record with a callback is what makes the cache query the server for one it does not have; the
+        // answer lands in the cache, and the next refresh finds it, so the callback has nothing left to do.
+        void QuestRecordArrived(int32_t, const WOWGUID&, void*, bool) {}
+
         void CollectQuestNeeds(CGPlayer_C* player, QuestNeeds& needs)
         {
             const WOWGUID none = { 0 };
@@ -428,12 +432,12 @@ namespace wxl::outline
                 const PlayerQuestLogEntry& e = player->m_player->m_playerQuestLog[slot];
                 if (!e.m_questId || (e.m_state & 0x3)) continue; // empty slot, complete (1) or failed (2)
 
-                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, nullptr, nullptr, false);
+                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, QuestRecordArrived, nullptr, false);
                 if (!quest) continue;
 
-                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or negated game object entry
+                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or game object entry with the sign bit set
                     if (quest->m_objectiveId[i] && e.m_counts[i] < quest->m_objectiveRequiredCount[i])
-                        needs.AddObjective(static_cast<int32_t>(quest->m_objectiveId[i]));
+                        needs.AddObjective(quest->m_objectiveId[i]);
 
                 for (uint32_t i = 0; i < 6; ++i) // items to collect
                 {
@@ -667,19 +671,36 @@ namespace wxl::outline
         dev->SetDepthStencilSurface(nullptr);
         dev->SetPixelShader(blurPS_);
 
-        // The step is in blur-target texels, spread_ in frame pixels, hence the divisor.
-        const float step = spread_ / float(kBlurDivisor);
-        const float horizontal[4] = { 1.0f / blurA_.width, 0.0f, step, 0.0f };
-        dev->SetRenderTarget(0, blurA_.surface);
-        dev->SetTexture(0, mask_.texture);
-        dev->SetPixelShaderConstantF(0, horizontal, 1);
-        DrawFullscreenQuad(dev, blurA_.width, blurA_.height);
+        // One 5-tap pass spreads its taps 1.4 * step apart; past a step of about 1.5 pixels they skip over small or thin
+        // silhouettes and leave separate ghost copies instead of a smooth falloff. A wide halo is therefore built from
+        // repeated passes at a fixed small step: the variances add, so n passes of spread / sqrt(n) are as wide as one
+        // pass of `spread`, and the step never exceeds kMaxPassSpread. Up to the limit this is the single pass it was.
+        constexpr float kMaxPassSpread = 1.5f;
+        constexpr int   kMaxIterations = 8;
+        int iterations = 1;
+        while (iterations < kMaxIterations && spread_ > kMaxPassSpread * std::sqrt(static_cast<float>(iterations)))
+            ++iterations;
+        const float passSpread = spread_ / std::sqrt(static_cast<float>(iterations));
 
-        const float vertical[4] = { 0.0f, 1.0f / blurB_.height, step, 0.0f };
-        dev->SetRenderTarget(0, blurB_.surface);
-        dev->SetTexture(0, blurA_.texture);
-        dev->SetPixelShaderConstantF(0, vertical, 1);
-        DrawFullscreenQuad(dev, blurB_.width, blurB_.height);
+        // The step is in blur-target texels, spread in frame pixels, hence the divisor.
+        const float step = passSpread / float(kBlurDivisor);
+        IDirect3DTexture9* source = mask_.texture;
+        for (int i = 0; i < iterations; ++i)
+        {
+            const float horizontal[4] = { 1.0f / blurA_.width, 0.0f, step, 0.0f };
+            dev->SetRenderTarget(0, blurA_.surface);
+            dev->SetTexture(0, source);
+            dev->SetPixelShaderConstantF(0, horizontal, 1);
+            DrawFullscreenQuad(dev, blurA_.width, blurA_.height);
+
+            const float vertical[4] = { 0.0f, 1.0f / blurB_.height, step, 0.0f };
+            dev->SetRenderTarget(0, blurB_.surface);
+            dev->SetTexture(0, blurA_.texture);
+            dev->SetPixelShaderConstantF(0, vertical, 1);
+            DrawFullscreenQuad(dev, blurB_.width, blurB_.height);
+
+            source = blurB_.texture; // the next iteration blurs the blurred result
+        }
 
         const float apply[4] = { intensity_, 0.0f, 0.0f, 0.0f };
         dev->SetRenderTarget(0, oldRT);

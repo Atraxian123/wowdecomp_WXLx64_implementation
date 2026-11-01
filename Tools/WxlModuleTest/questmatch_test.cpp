@@ -18,8 +18,8 @@ int main()
     CHECK(!none.NeedsGameObject(77), "empty needs match no object");
 
     QuestNeeds n;
-    n.AddObjective(1234);   // kill creature 1234
-    n.AddObjective(-5678);  // use game object 5678
+    n.AddObjective(1234);               // kill creature 1234
+    n.AddObjective(0x80000000u | 5678); // use game object 5678: the sign bit marks a game object
     n.AddObjective(0);      // no objective: ignored
     n.AddItem(900);
     n.AddItem(0);           // no item: ignored
@@ -28,7 +28,8 @@ int main()
     CHECK(n.NeedsCreature(1234, nullptr, 0), "creature matched by its own entry");
     CHECK(!n.NeedsCreature(1235, nullptr, 0), "other creature does not match");
     CHECK(!n.NeedsCreature(5678, nullptr, 0), "a game object objective is not a creature");
-    CHECK(n.NeedsGameObject(5678), "game object matched by its negated entry");
+    CHECK(n.NeedsGameObject(5678), "game object matched through the sign-bit encoding");
+    CHECK(!n.NeedsCreature(0x80000000u | 5678, nullptr, 0), "the flagged value is not a creature entry");
     CHECK(!n.NeedsGameObject(1234), "a creature objective is not a game object");
     CHECK(!n.NeedsGameObject(0), "entry 0 never matches");
 
