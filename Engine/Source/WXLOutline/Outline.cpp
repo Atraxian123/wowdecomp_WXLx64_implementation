@@ -18,13 +18,20 @@
 #include "Engine/Source/WXLOutline/Outline.h"
 
 #include "Engine/Source/WXLOutline/Hlsl.hpp"
+#include "Engine/Source/WXLOutline/QuestMatch.h"
 
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/Types.h"
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/WXL/EventScript.h"
 #include "Engine/Source/WXL/Log.h"
+#include "WoW/Source/DB/DBClient/CreatureStats_C.h"
+#include "WoW/Source/DB/DBClient/DBCacheInstances.h"
+#include "WoW/Source/Object/GameObjectStats.h"
+#include "WoW/Source/Object/ObjectClient/GameObject_C.h"
 #include "WoW/Source/Object/ObjectClient/Object_C.h"
+#include "WoW/Source/Object/ObjectClient/Player_C.h"
+#include "WoW/Source/Object/QuestCache.h"
 #include "WoW/Source/Object/ObjectClient/Unit_C.h"
 #include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
 #include "WoW/Source/Ui/GameUI.h"
@@ -221,16 +228,33 @@ namespace wxl::outline
     class Outline final : public ev::EventScript
     {
     public:
-        Outline(float spread, float intensity, bool debug) : spread_(spread), intensity_(intensity), debug_(debug)
+        struct Options
         {
+            float spread = 1.5f, intensity = 2.0f;
+            bool  debug = false;
+            bool  mouseTarget = true;       // [Outline] Enabled: the reaction-colored mouseover / target outline
+            bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
+            bool  questThroughWalls = false;
+            bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+            float questColor[4] = { 0.0f, 0.78f, 1.0f, 1.0f };
+        };
+
+        explicit Outline(const Options& o)
+            : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+              questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+        {
+            std::memcpy(questColor_, o.questColor, sizeof(questColor_));
             on<&Outline::OnEndScene>(ev::Event::OnEndScene);
             on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
             on<&Outline::OnDeviceLost>(ev::Event::OnDeviceLost);
         }
 
     private:
-        static constexpr int kMaxTargets = 2;
-        struct Tgt { const CM2Model* model; float color[4]; bool isPlayer; };
+        static constexpr int kMaxQuestTargets = 32;
+        static constexpr int kMaxTargets = 2 + kMaxQuestTargets;
+        static constexpr unsigned long long kQuestRefreshMs = 250;
+        // depthTest: the scene hides the outline where it hides the unit. Otherwise the outline shows through.
+        struct Tgt { const CM2Model* model; float color[4]; bool depthTest; };
 
         // --- event handlers ---
         void OnEndScene(const ev::EndSceneArgs& a);
@@ -249,6 +273,8 @@ namespace wxl::outline
         static bool ShouldStampBatch();
         int  FindTarget(const CM2Model* model) const;
         void AddTarget(WOWGUID guid, CGUnit_C* player);
+        void RefreshQuestTargets();
+        void AppendQuestTargets();
         void ReleaseTargets();
 
         Tgt                 targets_[kMaxTargets]{};
@@ -263,6 +289,15 @@ namespace wxl::outline
         float               spread_;
         float               intensity_;
         bool                debug_;                // draw the raw mask in the top-left corner
+        bool                mouseTarget_;
+        bool                quest_;
+        bool                questThroughWalls_;
+        bool                hideBehind_;
+        bool                loggedNoDepth_ = false;
+        float               questColor_[4]{};
+        Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
+        int                 questCount_ = 0;
+        unsigned long long  lastQuestRefresh_ = 0;
         IDirect3DPixelShader9* debugPS_ = nullptr;
     };
 
@@ -363,7 +398,7 @@ namespace wxl::outline
         // The unit's own attitude toward the player, the same direction the client's highlight sound uses.
         const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
         targets_[count_].model    = model;
-        targets_[count_].isPlayer = (type & TYPEMASK_PLAYER) != 0;
+        targets_[count_].depthTest = hideBehind_ || (type & TYPEMASK_PLAYER) != 0; // players always hide behind walls; NPCs only with HideBehindObjects
         ColorForReaction(reaction, targets_[count_].color);
         ++count_;
     }
@@ -371,9 +406,149 @@ namespace wxl::outline
     void Outline::RebuildTargets()
     {
         count_ = 0;
-        CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
-        AddTarget(CGGameUI::m_currentObjectTrack, player); // mouseover
-        AddTarget(CGGameUI::m_lockedTarget,       player);
+        if (mouseTarget_)
+        {
+            CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
+            AddTarget(CGGameUI::m_currentObjectTrack, player); // mouseover
+            AddTarget(CGGameUI::m_lockedTarget,       player);
+        }
+        if (quest_) AppendQuestTargets();
+    }
+
+    namespace
+    {
+        // What the open quests still want, from the quest log (progress) and the quest cache (requirements).
+        // The cache is read without a callback, so nothing is queried from the server: a quest whose record is not
+        // cached yet is simply skipped until it is.
+        void CollectQuestNeeds(CGPlayer_C* player, QuestNeeds& needs)
+        {
+            const WOWGUID none = { 0 };
+            for (uint32_t slot = 0; slot < 25; ++slot)
+            {
+                const PlayerQuestLogEntry& e = player->m_player->m_playerQuestLog[slot];
+                if (!e.m_questId || (e.m_state & 0x3)) continue; // empty slot, complete (1) or failed (2)
+
+                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, nullptr, nullptr, false);
+                if (!quest) continue;
+
+                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or negated game object entry
+                    if (quest->m_objectiveId[i] && e.m_counts[i] < quest->m_objectiveRequiredCount[i])
+                        needs.AddObjective(static_cast<int32_t>(quest->m_objectiveId[i]));
+
+                for (uint32_t i = 0; i < 6; ++i) // items to collect
+                {
+                    const uint32_t item = quest->m_collectItemId[i];
+                    if (item && player->m_bag.GetItemTypeCount(static_cast<int32_t>(item), 8) < static_cast<int32_t>(quest->m_collectItemCount[i]))
+                        needs.AddItem(item);
+                }
+            }
+        }
+
+        struct QuestScan
+        {
+            const QuestNeeds* needs;
+            const CM2Model*   models[32];
+            int               count;
+        };
+
+        // Visible objects, one at a time. Returns non-zero to keep going.
+        int32_t QuestScanCallback(WOWGUID guid, void* param)
+        {
+            auto* scan = static_cast<QuestScan*>(param);
+            if (scan->count >= static_cast<int>(sizeof(scan->models) / sizeof(scan->models[0]))) return 0;
+
+            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
+            if (!obj || !obj->m_obj) return 1;
+
+            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
+            const uint32_t entry = obj->m_obj->m_entryID;
+            bool match = false;
+
+            if (type & TYPEMASK_PLAYER)
+            {
+                return 1;
+            }
+            else if (type & TYPEMASK_UNIT)
+            {
+                CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
+                const CreatureStats_C* stats = unit->m_creatureCacheEntry;
+
+                if (!unit->IsDeadOrGhost())
+                {
+                    match = scan->needs->NeedsCreature(entry, stats ? stats->m_killCredit : nullptr, 2)
+                         || (stats && scan->needs->NeedsItemFrom(stats->m_questItem, 6));
+                }
+                else if ((unit->m_unit->m_unitDynamicFlags & 0x1) && stats) // a corpse still holding loot
+                {
+                    match = scan->needs->NeedsItemFrom(stats->m_questItem, 6);
+                }
+            }
+            else if (type & TYPEMASK_GAMEOBJECT)
+            {
+                CGGameObject_C* go = static_cast<CGGameObject_C*>(obj);
+                const GameObjectStats* stats = go->m_stats;
+                const uint16_t dyn = go->m_gameObject ? go->m_gameObject->m_dynamicFlags : 0;
+
+                // Besides the quest data, the server's own "sparkle" (0x8, unless the object cannot be used right now,
+                // 0x4) is its statement that this object matters to this player's quests; the client draws the sparkle
+                // from the same flag.
+                match = scan->needs->NeedsGameObject(entry)
+                     || (stats && scan->needs->NeedsItemFrom(stats->m_questItems, 6))
+                     || ((dyn & 0x8) && !(dyn & 0x4));
+            }
+
+            if (match)
+            {
+                const CM2Model* model = obj->GetObjectModel();
+                if (model) scan->models[scan->count++] = model;
+            }
+            return 1;
+        }
+    }
+
+    // Rebuilds the quest target list from the quest log and the visible objects. Run on a timer, not per frame: the
+    // log changes on kills and loot, and nothing here has to be frame-exact.
+    void Outline::RefreshQuestTargets()
+    {
+        questCount_ = 0;
+
+        CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
+        if (!player || !player->m_player) return;
+
+        QuestNeeds needs;
+        CollectQuestNeeds(player, needs);
+        if (needs.Empty()) return;
+
+        QuestScan scan{ &needs, {}, 0 };
+        ClntObjMgrEnumVisibleObjects(QuestScanCallback, &scan);
+
+        // Pointers only: they are compared against the model being drawn, never dereferenced, so one that outlives
+        // its object by a refresh interval is harmless.
+        for (int i = 0; i < scan.count; ++i)
+        {
+            Tgt& t = questTargets_[questCount_++];
+            t.model = scan.models[i];
+            std::memcpy(t.color, questColor_, sizeof(t.color));
+            t.depthTest = hideBehind_ || !questThroughWalls_;
+        }
+    }
+
+    void Outline::AppendQuestTargets()
+    {
+        const unsigned long long now = GetTickCount64();
+        if (now - lastQuestRefresh_ >= kQuestRefreshMs)
+        {
+            lastQuestRefresh_ = now;
+            RefreshQuestTargets();
+        }
+
+        for (int q = 0; q < questCount_ && count_ < kMaxTargets; ++q)
+        {
+            bool dup = false;
+            for (int i = 0; i < count_; ++i)
+                if (targets_[i].model == questTargets_[q].model) { dup = true; break; } // the mouseover / target color wins
+            if (!dup) targets_[count_++] = questTargets_[q];
+        }
     }
 
     // Attached particles, glows and billboards draw through the same model context as the mesh. The silhouette is
@@ -406,11 +581,19 @@ namespace wxl::outline
         // to be compatible with the mask target (no multisampling, at least as large). Otherwise, like NPCs, the
         // outline is see-through.
         bool useDepth = false;
-        if (targets_[idx].isPlayer && oldDS)
+        if (targets_[idx].depthTest && oldDS)
         {
             D3DSURFACE_DESC d{};
             useDepth = SUCCEEDED(oldDS->GetDesc(&d)) && d.MultiSampleType == D3DMULTISAMPLE_NONE
                     && d.Width >= mask_.width && d.Height >= mask_.height;
+        }
+
+        if (targets_[idx].depthTest && !useDepth && !loggedNoDepth_)
+        {
+            // Asked to hide behind objects, but the scene's depth surface cannot be paired with the mask (multisampled,
+            // or smaller): the outline falls back to showing through. Said once.
+            loggedNoDepth_ = true;
+            wxl::LogCat("OUTLINE", "depth testing unavailable (scene depth surface is multisampled or smaller than the mask): outlines show through objects");
         }
 
         dev->SetRenderTarget(0, mask_.surface);
@@ -607,19 +790,41 @@ namespace wxl::outline
 
     void Init()
     {
-        if (IniInt("Outline", "Enabled", 0) == 0)
+        Outline::Options o;
+        o.mouseTarget = IniInt("Outline", "Enabled", 0) != 0;
+        o.quest       = IniInt("Outline", "Quest", 0) != 0;
+        if (!o.mouseTarget && !o.quest)
         {
-            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled is 0 or absent)");
+            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled and Quest are 0 or absent)");
             return;
         }
 
-        float spread = IniFloat("Outline", "Spread", 1.5f);
-        float intensity = IniFloat("Outline", "Intensity", 2.0f);
-        if (!(spread > 0.0f))    spread = 1.5f;
-        if (!(intensity > 0.0f)) intensity = 2.0f;
+        o.spread    = IniFloat("Outline", "Spread", 1.5f);
+        o.intensity = IniFloat("Outline", "Intensity", 2.0f);
+        if (!(o.spread > 0.0f))    o.spread = 1.5f;
+        if (!(o.intensity > 0.0f)) o.intensity = 2.0f;
+        o.debug = IniInt("Outline", "Debug", 0) != 0;
+        o.questThroughWalls = IniInt("Outline", "QuestThroughWalls", 0) != 0;
+        o.hideBehindObjects = IniInt("Outline", "HideBehindObjects", 0) != 0;
 
-        const bool debug = IniInt("Outline", "Debug", 0) != 0;
-        static Outline s_outline(spread, intensity, debug);
-        wxl::LogCat("OUTLINE", "unit outline active on mouseover and target (spread %.2f, intensity %.2f)", spread, intensity);
+        char colorText[32] = {};
+        {
+            char path[MAX_PATH] = {};
+            if (IniPath(path, sizeof(path)))
+                GetPrivateProfileStringA("Outline", "QuestColor", "", colorText, sizeof(colorText), path);
+        }
+        float rgb[3];
+        if (ParseHexColor(colorText, rgb))
+        {
+            o.questColor[0] = rgb[0]; o.questColor[1] = rgb[1]; o.questColor[2] = rgb[2];
+        }
+        else if (colorText[0])
+        {
+            wxl::LogCat("OUTLINE", "[Outline] QuestColor \"%s\" is not RRGGBB hex, using the default", colorText);
+        }
+
+        static Outline s_outline(o);
+        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",
+                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.spread, o.intensity);
     }
 }

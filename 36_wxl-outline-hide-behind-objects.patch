@@ -1,0 +1,105 @@
+diff --git a/Engine/Source/WXLOutline/Outline.cpp b/Engine/Source/WXLOutline/Outline.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.cpp
++++ b/Engine/Source/WXLOutline/Outline.cpp
+@@ -235,12 +235,13 @@
+             bool  mouseTarget = true;       // [Outline] Enabled: the reaction-colored mouseover / target outline
+             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
+             bool  questThroughWalls = false;
++            bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             float questColor[4] = { 0.0f, 0.78f, 1.0f, 1.0f };
+         };
+ 
+         explicit Outline(const Options& o)
+             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+-              questThroughWalls_(o.questThroughWalls)
++              questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+         {
+             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
+             on<&Outline::OnEndScene>(ev::Event::OnEndScene);
+@@ -291,6 +292,8 @@
+         bool                mouseTarget_;
+         bool                quest_;
+         bool                questThroughWalls_;
++        bool                hideBehind_;
++        bool                loggedNoDepth_ = false;
+         float               questColor_[4]{};
+         Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
+         int                 questCount_ = 0;
+@@ -395,7 +398,7 @@
+         // The unit's own attitude toward the player, the same direction the client's highlight sound uses.
+         const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
+         targets_[count_].model    = model;
+-        targets_[count_].depthTest = (type & TYPEMASK_PLAYER) != 0; // players hide behind walls, NPCs show through
++        targets_[count_].depthTest = hideBehind_ || (type & TYPEMASK_PLAYER) != 0; // players always hide behind walls; NPCs only with HideBehindObjects
+         ColorForReaction(reaction, targets_[count_].color);
+         ++count_;
+     }
+@@ -526,7 +529,7 @@
+             Tgt& t = questTargets_[questCount_++];
+             t.model = scan.models[i];
+             std::memcpy(t.color, questColor_, sizeof(t.color));
+-            t.depthTest = !questThroughWalls_;
++            t.depthTest = hideBehind_ || !questThroughWalls_;
+         }
+     }
+ 
+@@ -585,6 +588,14 @@
+                     && d.Width >= mask_.width && d.Height >= mask_.height;
+         }
+ 
++        if (targets_[idx].depthTest && !useDepth && !loggedNoDepth_)
++        {
++            // Asked to hide behind objects, but the scene's depth surface cannot be paired with the mask (multisampled,
++            // or smaller): the outline falls back to showing through. Said once.
++            loggedNoDepth_ = true;
++            wxl::LogCat("OUTLINE", "depth testing unavailable (scene depth surface is multisampled or smaller than the mask): outlines show through objects");
++        }
++
+         dev->SetRenderTarget(0, mask_.surface);
+         if (useDepth)
+         {
+@@ -794,6 +805,7 @@
+         if (!(o.intensity > 0.0f)) o.intensity = 2.0f;
+         o.debug = IniInt("Outline", "Debug", 0) != 0;
+         o.questThroughWalls = IniInt("Outline", "QuestThroughWalls", 0) != 0;
++        o.hideBehindObjects = IniInt("Outline", "HideBehindObjects", 0) != 0;
+ 
+         char colorText[32] = {};
+         {
+diff --git a/Engine/Source/WXLOutline/Outline.h b/Engine/Source/WXLOutline/Outline.h
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.h
++++ b/Engine/Source/WXLOutline/Outline.h
+@@ -13,6 +13,9 @@
+ //     QuestColor=00C8FF
+ //     ; 1 = quest outlines show through walls. 0 = the scene hides them where it hides the thing.
+ //     QuestThroughWalls=0
++//     ; 1 = every outline (mouseover, target, quest) is hidden wherever something nearer covers the unit or object,
++//     ;     the player model and walls included. Overrides QuestThroughWalls. 0 = NPC outlines show through.
++//     HideBehindObjects=0
+ //     ; Blur tap spacing in frame pixels: the width of the halo. 1.5 is the shipped look.
+ //     Spread=1.5
+ //     ; Halo opacity multiplier.
+@@ -20,7 +23,8 @@
+ //     ; 1 = also draw the raw silhouette mask in the top-left corner (what was stamped, before blurring).
+ //     Debug=0
+ //
+-// Mouseover and target: players are outlined only where the scene does not hide them; NPCs show through walls.
++// Mouseover and target: players are outlined only where the scene does not hide them; NPCs show through objects
++// unless HideBehindObjects is on. The halo is a blur, so a few pixels of it can still spill onto whatever is in front.
+ // Quest: what the quest log and the client's own creature / object caches say is still needed, refreshed four times a
+ // second; a creature or object the client has not cached yet is picked up once it is. Read once, at startup.
+ //
+diff --git a/Engine/Source/WXLOutline/README.md b/Engine/Source/WXLOutline/README.md
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/README.md
++++ b/Engine/Source/WXLOutline/README.md
+@@ -9,6 +9,7 @@
+ Quest=1            ; quest objectives, always on
+ QuestColor=00C8FF
+ QuestThroughWalls=0
++HideBehindObjects=0  ; 1 = no outline shows through anything in front
+ Spread=1.5
+ Intensity=2.0
+ ```
