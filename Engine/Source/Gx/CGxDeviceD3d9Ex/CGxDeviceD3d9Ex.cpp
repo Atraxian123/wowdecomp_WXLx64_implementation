@@ -1,3 +1,5 @@
+#include "Engine/Source/WXL/DrawContext.h"
+#include "Engine/Source/WXL/Hooks.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -687,6 +689,8 @@ void CGxDeviceD3d9Ex::ISceneEnd() {
         return;
     }
 
+    // WXL: last chance to draw into the frame, scene still open. The core's outline pass lives here.
+    wxl::events::EmitIfAny(wxl::events::Event::OnEndScene, wxl::events::EndSceneArgs{ this->m_d3dDevice });
     this->m_d3dDevice->EndScene();
     this->m_inScene = 0;
 
@@ -2676,6 +2680,7 @@ int32_t CGxDeviceD3d9Ex::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) 
             this->DeviceSetDefWindow(*reinterpret_cast<const CRect*>(param1));
 
             if (this->m_d3dDevice && this->m_context) {
+                wxl::events::EmitIfAny(wxl::events::Event::OnDeviceLost, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
                 this->IReleaseD3dResources(0);
 
                 D3DPRESENT_PARAMETERS d3dpp;
@@ -2994,6 +2999,7 @@ void CGxDeviceD3d9Ex::ITexMarkAsUpdated(CGxTex* texId) {
 void CGxDeviceD3d9Ex::ISceneBegin() {
     if (!this->m_context) {
         if (this->m_d3dDevice->TestCooperativeLevel() == D3DERR_DEVICENOTRESET) {
+            wxl::events::EmitIfAny(wxl::events::Event::OnDeviceLost, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
             this->IReleaseD3dResources(0);
 
             D3DPRESENT_PARAMETERS d3dpp;
@@ -3098,6 +3104,14 @@ void CGxDeviceD3d9Ex::Draw(CGxBatch* batch, int32_t count) {
     if (count) {
         uint32_t primCount = this->PrimCalcCount(batch->m_primType, batch->m_count);
         this->m_d3dDevice->DrawIndexedPrimitive(s_primitiveConversion[batch->m_primType], baseVertexIndex, batch->m_minIndex, batch->m_maxIndex - batch->m_minIndex + 1, batch->m_start + (this->m_primIndexBuf->m_index >> 1), primCount);
+
+        // WXL: an M2 batch just drew with its buffers still bound; subscribers may re-issue it (unit outline).
+        if (void* wxlModel = wxl::events::CurrentM2Model()) {
+            wxl::events::EmitIfAny(wxl::events::Event::OnM2BatchDraw,
+                wxl::events::M2BatchDrawArgs{ this->m_d3dDevice, wxlModel, static_cast<int>(s_primitiveConversion[batch->m_primType]),
+                                              static_cast<int>(baseVertexIndex), static_cast<uint32_t>(batch->m_minIndex), static_cast<uint32_t>(batch->m_maxIndex - batch->m_minIndex + 1),
+                                              static_cast<uint32_t>(batch->m_start + (this->m_primIndexBuf->m_index >> 1)), primCount });
+        }
     } else {
         uint32_t primCount = this->PrimCalcCount(batch->m_primType, batch->m_count);
         this->m_d3dDevice->DrawPrimitive(s_primitiveConversion[batch->m_primType], baseVertexIndex, primCount);

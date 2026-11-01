@@ -14,6 +14,8 @@ target_include_directories(Gx
 )
 
 target_link_libraries(Gx
+    PUBLIC
+        WXLCore
     PRIVATE
         d3d9.lib
 )

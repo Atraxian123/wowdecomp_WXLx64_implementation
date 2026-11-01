@@ -1,0 +1,166 @@
+diff --git a/Engine/Source/Model2/CM2SceneRender.cpp b/Engine/Source/Model2/CM2SceneRender.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/Model2/CM2SceneRender.cpp
++++ b/Engine/Source/Model2/CM2SceneRender.cpp
+@@ -425,7 +425,9 @@
+ // VERIFY: aeedaf63 manual
+ // OFFSET: 0x008203B0
+ void CM2SceneRender::DrawBatch() {
+-    wxl::events::ScopedM2Model wxlDrawModel(this->m_curModel); // WXL: names the model for the device's OnM2BatchDraw emit
++    // WXL: names the model for the device's OnM2BatchDraw emit. Only the opaque pass: that is where a unit's solid
++    // geometry (alpha-key cutouts included) draws; the later passes carry blended effects, which are not silhouette.
++    wxl::events::ScopedM2Model wxlDrawModel(this->m_pass == M2PASS_0 ? this->m_curModel : nullptr);
+ 
+     DebugLog("Batch: model=%s index=%d", this->m_curModel->m_shared->m_fileNameWithoutPath, this->m_curElement->m_index);
+ 
+diff --git a/Engine/Source/WXLOutline/Outline.cpp b/Engine/Source/WXLOutline/Outline.cpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.cpp
++++ b/Engine/Source/WXLOutline/Outline.cpp
+@@ -159,20 +159,26 @@
+ 
+         // Full-surface quad in pre-transformed coordinates (the -0.5 is D3D9's texel-centre offset), fixed-function
+         // vertex path. A state block restores the stream and format afterwards.
+-        void DrawFullscreenQuad(IDirect3DDevice9* dev, UINT w, UINT h)
++        void DrawQuad(IDirect3DDevice9* dev, float x0, float y0, float x1, float y1)
+         {
+             struct V { float x, y, z, rhw, u, v; };
+-            const float r = static_cast<float>(w) - 0.5f, b = static_cast<float>(h) - 0.5f;
+             const V q[4] = {
+-                { -0.5f, -0.5f, 0.0f, 1.0f, 0.0f, 0.0f },
+-                {  r,    -0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
+-                { -0.5f,  b,    0.0f, 1.0f, 0.0f, 1.0f },
+-                {  r,     b,    0.0f, 1.0f, 1.0f, 1.0f },
++                { x0 - 0.5f, y0 - 0.5f, 0.0f, 1.0f, 0.0f, 0.0f },
++                { x1 - 0.5f, y0 - 0.5f, 0.0f, 1.0f, 1.0f, 0.0f },
++                { x0 - 0.5f, y1 - 0.5f, 0.0f, 1.0f, 0.0f, 1.0f },
++                { x1 - 0.5f, y1 - 0.5f, 0.0f, 1.0f, 1.0f, 1.0f },
+             };
+             dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+             dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(V));
+         }
+ 
++        // Full-surface quad (the -0.5 in DrawQuad is D3D9's texel-centre offset), fixed-function vertex path. A state
++        // block restores the stream and format afterwards.
++        void DrawFullscreenQuad(IDirect3DDevice9* dev, UINT w, UINT h)
++        {
++            DrawQuad(dev, 0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
++        }
++
+         class ScopedDeviceState final
+         {
+         public:
+@@ -194,6 +200,15 @@
+             IDirect3DStateBlock9* state_ = nullptr;
+         };
+ 
++        // True when render target 0 is the same size as the mask, i.e. the main frame. A batch drawn into anything
++        // else (a model frame's offscreen target, a shadow or reflection map) is not part of the picture the mask
++        // describes, and stamping it would put a silhouette in the wrong place.
++        bool DrawingIntoFrame(IDirect3DDevice9* dev, UINT w, UINT h)
++        {
++            UINT cw = 0, ch = 0;
++            return CurrentFrameSize(dev, cw, ch) && cw == w && ch == h;
++        }
++
+         void ColorForReaction(int reaction, float* c)
+         {
+             if (reaction < UNIT_REACTION_UNFRIENDLY)  { c[0] = 1.0f; c[1] = 0.0f; c[2] = 0.0f; } // hostile
+@@ -206,7 +221,7 @@
+     class Outline final : public ev::EventScript
+     {
+     public:
+-        Outline(float spread, float intensity) : spread_(spread), intensity_(intensity)
++        Outline(float spread, float intensity, bool debug) : spread_(spread), intensity_(intensity), debug_(debug)
+         {
+             on<&Outline::OnEndScene>(ev::Event::OnEndScene);
+             on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
+@@ -247,6 +262,8 @@
+         bool                stamped_  = false;     // a silhouette reached the mask this frame
+         float               spread_;
+         float               intensity_;
++        bool                debug_;                // draw the raw mask in the top-left corner
++        IDirect3DPixelShader9* debugPS_ = nullptr;
+     };
+ 
+     // Drops everything tied to a device. The objects hold the device alive until released, so this is also what
+@@ -256,6 +273,7 @@
+         SafeRelease(fillPS_);
+         SafeRelease(blurPS_);
+         SafeRelease(applyPS_);
++        SafeRelease(debugPS_);
+         SafeRelease(stampSave_);
+         ReleaseTargets();
+         stamped_ = false;
+@@ -284,6 +302,7 @@
+         if (!fillPS_)  fillPS_  = CompilePixelShader(dev, kFillHLSL,  "ps_2_0");
+         if (!blurPS_)  blurPS_  = CompilePixelShader(dev, kBlurHLSL,  "ps_2_0");
+         if (!applyPS_) applyPS_ = CompilePixelShader(dev, kApplyHLSL, "ps_2_0");
++        if (debug_ && !debugPS_) debugPS_ = CompilePixelShader(dev, kDebugHLSL, "ps_2_0");
+ 
+         // A freshly created target holds whatever was in that memory, and the mask is otherwise only wiped after a
+         // frame that stamped into it, so its first clear belongs here.
+@@ -491,6 +510,15 @@
+         dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+         DrawFullscreenQuad(dev, frame.Width, frame.Height);
+ 
++        if (debug_ && debugPS_)
++        {
++            // The mask as stamped, a quarter of the frame wide, in the top-left corner.
++            dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
++            dev->SetTexture(0, mask_.texture);
++            dev->SetPixelShader(debugPS_);
++            DrawQuad(dev, 0.0f, 0.0f, frame.Width * 0.25f, frame.Height * 0.25f);
++        }
++
+         dev->SetPixelShader(nullptr);
+         state.Restore();
+ 
+@@ -541,6 +569,7 @@
+         const int idx = FindTarget(static_cast<const CM2Model*>(a.model));
+         if (idx < 0) return;
+         if (!ShouldStampBatch()) return;
++        if (!DrawingIntoFrame(dev, mask_.width, mask_.height)) return;
+         StampSilhouette(dev, a, idx);
+     }
+ 
+@@ -589,7 +618,8 @@
+         if (!(spread > 0.0f))    spread = 1.5f;
+         if (!(intensity > 0.0f)) intensity = 2.0f;
+ 
+-        static Outline s_outline(spread, intensity);
++        const bool debug = IniInt("Outline", "Debug", 0) != 0;
++        static Outline s_outline(spread, intensity, debug);
+         wxl::LogCat("OUTLINE", "unit outline active on mouseover and target (spread %.2f, intensity %.2f)", spread, intensity);
+     }
+ }
+diff --git a/Engine/Source/WXLOutline/Outline.h b/Engine/Source/WXLOutline/Outline.h
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Outline.h
++++ b/Engine/Source/WXLOutline/Outline.h
+@@ -9,6 +9,8 @@
+ //     Spread=1.5
+ //     ; Halo opacity multiplier.
+ //     Intensity=2.0
++//     ; 1 = also draw the raw silhouette mask in the top-left corner (what was stamped, before blurring).
++//     Debug=0
+ //
+ // Red for hostile, yellow for neutral, green for friendly (the unit's own attitude toward the player). Players are
+ // outlined only where the scene does not hide them; NPCs show through walls. Read once, at startup.
+diff --git a/Engine/Source/WXLOutline/Hlsl.hpp b/Engine/Source/WXLOutline/Hlsl.hpp
+index 0000000..0000000 100644
+--- a/Engine/Source/WXLOutline/Hlsl.hpp
++++ b/Engine/Source/WXLOutline/Hlsl.hpp
+@@ -70,4 +70,12 @@
+         "  float3 col = blur.a > 0.001 ? blur.rgb / blur.a : float3(1,1,1);\n"
+         "  return float4(col, halo);\n"
+         "}\n";
++
++    // Debug view of the mask: the silhouette as stamped, in a corner of the frame. [Outline] Debug=1.
++    const char* kDebugHLSL =
++        "sampler2D s0 : register(s0);\n"
++        "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
++        "  float4 m = tex2D(s0, uv);\n"
++        "  return float4(m.rgb, 1.0);\n"
++        "}\n";
+ }

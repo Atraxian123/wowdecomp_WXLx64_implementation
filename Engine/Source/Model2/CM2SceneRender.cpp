@@ -1,3 +1,4 @@
+#include "Engine/Source/WXL/DrawContext.h"
 #include <cmath>
 #include <cstdint>
 #include "Engine/Source/Model2/ModernM2/ModernM2.h"
@@ -424,6 +425,10 @@ void CM2SceneRender::SetupMaterial() {
 // VERIFY: aeedaf63 manual
 // OFFSET: 0x008203B0
 void CM2SceneRender::DrawBatch() {
+    // WXL: names the model for the device's OnM2BatchDraw emit. Only the opaque pass: that is where a unit's solid
+    // geometry (alpha-key cutouts included) draws; the later passes carry blended effects, which are not silhouette.
+    wxl::events::ScopedM2Model wxlDrawModel(this->m_pass == M2PASS_0 ? this->m_curModel : nullptr);
+
     DebugLog("Batch: model=%s index=%d", this->m_curModel->m_shared->m_fileNameWithoutPath, this->m_curElement->m_index);
 
     M2Element* element = this->m_curElement;
