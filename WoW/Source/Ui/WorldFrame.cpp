@@ -87,7 +87,6 @@
 #include "WoW/Source/WorldClient/World.h"
 #include <cfloat>
 #include <cmath>
-#include "Engine/Source/WXL/WaterHooks.h"
 #include "WoW/Source/Ui/SpellBookFrame.h"
 
 // STATIC: 0x009F9864
@@ -1745,7 +1744,6 @@ void CGWorldFrame::OnWorldRender() {
     scene->SetFloat18(-CWorld::s_unk_CD7758);
     scene->m_passMask = CWorld::m_M2PassMask;
     scene->Draw(M2PASS_0);
-    wxl::waterhooks::OpaqueDone(); // WXL: the opaque world is in the depth buffer; the modern water captures the view here
 
     if (s_spellShadowStyle < 2) {
         DrawSpellCursorShadow(0x200122);
@@ -1793,7 +1791,6 @@ void CGWorldFrame::OnWorldRender() {
     GxXformSetViewport(minX, maxX, minY, maxY, minZ, maxZ);
     FFX::Finish();
     CVehiclePassenger_C::PostRenderUpdateAll();
-    wxl::waterhooks::FrameEnd(); // WXL: the world render is over
 }
 
 // VERIFY: 79b17fb9 manual

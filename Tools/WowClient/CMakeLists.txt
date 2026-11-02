@@ -65,7 +65,6 @@ target_link_libraries(WowClient
         WXLCore
         WXLEquip
         WXLOutline
-        WXLWater
         WXLApi
         Os
         Scrn
