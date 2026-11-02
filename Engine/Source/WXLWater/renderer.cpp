@@ -1,0 +1,1525 @@
+#include "renderer.h"
+
+#include "fog_data.h"
+#include "fog_model.h"
+#include "fullscreen_triangle.h"
+#include "noise_volume.h"
+#include "log.h"
+
+#include "ps_composite_low.h"
+#include "ps_composite_mid.h"
+#include "ps_composite_high.h"
+#include "ps_lit_composite_low.h"
+#include "ps_lit_composite_mid.h"
+#include "ps_lit_composite_high.h"
+#include "ps_lit_split_composite_high.h"
+#include "ps_lit_split_composite_low.h"
+#include "ps_lit_split_composite_mid.h"
+#include "ps_lit_march_high.h"
+#include "ps_lit_march_low.h"
+#include "ps_lit_march_mid.h"
+#include "ps_lit_noisy_march_high.h"
+#include "ps_lit_noisy_march_low.h"
+#include "ps_lit_noisy_march_mid.h"
+#include "ps_march_high.h"
+#include "ps_march_low.h"
+#include "ps_march_mid.h"
+#include "ps_noisy_composite_high.h"
+#include "ps_noisy_composite_low.h"
+#include "ps_noisy_composite_mid.h"
+#include "ps_noisy_march_high.h"
+#include "ps_noisy_march_low.h"
+#include "ps_noisy_march_mid.h"
+#include "ps_noisy_split_composite_high.h"
+#include "ps_noisy_split_composite_low.h"
+#include "ps_noisy_split_composite_mid.h"
+#include "ps_probe.h"
+#include "ps_ray_blur.h"
+#include "ps_ray_composite.h"
+#include "ps_ray_mask.h"
+#include "ps_silhouette_mask.h"
+#include "ps_split_composite_high.h"
+#include "ps_split_composite_low.h"
+#include "ps_split_composite_mid.h"
+#include "ps_temporal.h"
+#include "ps_history_depth.h"
+#include "vs_fullscreen.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <iterator>
+#include <limits>
+
+namespace
+{
+constexpr UINT kPixelConstants = 100;
+constexpr UINT kSampleSideRegister = 99;
+constexpr int kQualityLevels = 3;
+constexpr DWORD kAllStencilBits = 0xFF;
+constexpr DWORD kUnmarkedSamples = 0;
+constexpr DWORD kNearSamples = 1;
+constexpr DWORD kFarSamples = ~kUnmarkedSamples & kAllStencilBits;
+constexpr DWORD kStages = 11;
+constexpr UINT kLayerNoiseRegister = 36;
+constexpr DWORD kAuthoredNoiseStage = 10;
+constexpr double kMaxNoiseStepSeconds = 0.25;
+constexpr UINT kRayScale = 4;
+constexpr float kMinViewportDepthExtent = 0.01f;
+constexpr float kDeepestWorldDepthInFullRangeViewport = 0.9999995f;
+constexpr float kWorldDepthMargin = 2.0e-6f;
+constexpr float kSummarySeconds = 60.0f;
+constexpr float kProbeSeconds = 60.0f;
+constexpr float kProbeDebugSeconds = 30.0f;
+constexpr unsigned kProbeFirstFrame = 60;
+constexpr unsigned kInfoLevelProbeLimit = 5;
+constexpr int kProbeGridSide = 5;
+constexpr UINT kProbePoints = kProbeGridSide * kProbeGridSide;
+constexpr float kRayFalloff = 8.0f;
+constexpr float kRayThreshold = 0.12f;
+constexpr float kRayStep = 0.075f;
+constexpr float kRayDecay = 0.9f;
+constexpr int kRayTaps = 8;
+constexpr float kHistoryMaxSeconds = 0.25f;
+constexpr float kHistoryMaxMove = 30.0f;
+constexpr float kHistoryMinForwardDot = 0.70710678f;
+constexpr float kLoggedStormBlendSteps = 10.0f;
+constexpr unsigned kLocalLightSetSettleFrames = 30;
+constexpr uint64_t kLightIdMixMultiplier = 0x9E3779B97F4A7C15ull;
+constexpr unsigned kLightSetCaptureShift = 32;
+constexpr size_t kCaptureRejectionText = 80;
+
+const D3DRENDERSTATETYPE kRenderStates[] = {
+    D3DRS_ZENABLE,          D3DRS_ZWRITEENABLE,  D3DRS_ALPHATESTENABLE,   D3DRS_ALPHABLENDENABLE,
+    D3DRS_SRCBLEND,         D3DRS_DESTBLEND,     D3DRS_BLENDOP,           D3DRS_SEPARATEALPHABLENDENABLE,
+    D3DRS_CULLMODE,         D3DRS_STENCILENABLE, D3DRS_TWOSIDEDSTENCILMODE, D3DRS_SCISSORTESTENABLE,
+    D3DRS_COLORWRITEENABLE, D3DRS_SRGBWRITEENABLE, D3DRS_FOGENABLE,       D3DRS_CLIPPLANEENABLE,
+    D3DRS_FILLMODE,         D3DRS_ZFUNC,         D3DRS_STENCILFUNC,       D3DRS_STENCILREF,
+    D3DRS_STENCILMASK,      D3DRS_STENCILWRITEMASK, D3DRS_STENCILPASS,    D3DRS_STENCILFAIL,
+    D3DRS_STENCILZFAIL,
+};
+
+const D3DSAMPLERSTATETYPE kSamplerStates[] = {
+    D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV,  D3DSAMP_ADDRESSW,    D3DSAMP_MAGFILTER,
+    D3DSAMP_MINFILTER, D3DSAMP_MIPFILTER, D3DSAMP_SRGBTEXTURE, D3DSAMP_MAXMIPLEVEL,
+};
+
+struct Float4
+{
+    float x, y, z, w;
+};
+
+void LogShaderCaps(IDirect3DDevice9* device, LogLevel level)
+{
+    D3DCAPS9 caps = {};
+    const HRESULT result = device->GetDeviceCaps(&caps);
+    if (SUCCEEDED(result))
+        LogWrite(level, "shader caps: VS 0x%08lX PS 0x%08lX PS3 slots %lu executed %lu temps %d flow %d/%d",
+                 caps.VertexShaderVersion, caps.PixelShaderVersion, caps.MaxPixelShader30InstructionSlots,
+                 caps.MaxPShaderInstructionsExecuted, caps.PS20Caps.NumTemps,
+                 caps.PS20Caps.DynamicFlowControlDepth, caps.PS20Caps.StaticFlowControlDepth);
+    else
+        LogWrite(level, "shader caps unavailable: HRESULT 0x%08lX", static_cast<unsigned long>(result));
+}
+
+template <typename T>
+void SafeRelease(T*& p)
+{
+    if (p)
+    {
+        p->Release();
+        p = nullptr;
+    }
+}
+
+long long Ticks()
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+double TickSeconds(long long ticks)
+{
+    static LARGE_INTEGER freq = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return f;
+    }();
+    return static_cast<double>(ticks) / static_cast<double>(freq.QuadPart);
+}
+
+bool CreateTarget(IDirect3DDevice9* dev, UINT w, UINT h, D3DFORMAT fmt, IDirect3DTexture9** out)
+{
+    return SUCCEEDED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, fmt, D3DPOOL_DEFAULT, out, nullptr));
+}
+
+void SetTarget(IDirect3DDevice9* dev, IDirect3DTexture9* tex)
+{
+    IDirect3DSurface9* surface = nullptr;
+    if (SUCCEEDED(tex->GetSurfaceLevel(0, &surface)))
+    {
+        dev->SetRenderTarget(0, surface);
+        surface->Release();
+    }
+}
+
+void Normalize3(float* v)
+{
+    float len = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (len > 1e-6f)
+    {
+        v[0] /= len;
+        v[1] /= len;
+        v[2] /= len;
+    }
+}
+
+RECT ViewportRect(const D3DVIEWPORT9& vp)
+{
+    return {static_cast<LONG>(vp.X), static_cast<LONG>(vp.Y), static_cast<LONG>(vp.X + vp.Width),
+            static_cast<LONG>(vp.Y + vp.Height)};
+}
+
+bool WorldViewFromCameraRelative(const FrameInputs& in, float* viewToWorld, float* worldToView)
+{
+    if (!Invert4x4(in.cameraRelativeView, viewToWorld))
+        return false;
+    viewToWorld[12] = in.camPos[0];
+    viewToWorld[13] = in.camPos[1];
+    viewToWorld[14] = in.camPos[2];
+    return Invert4x4(viewToWorld, worldToView);
+}
+
+struct WorldDepthMapping
+{
+    float atInfinity;
+    float perInverseViewDepth;
+    float deepest;
+};
+
+WorldDepthMapping MapWorldDepth(const float* proj, const D3DVIEWPORT9& vp)
+{
+    const bool usableRange = vp.MaxZ - vp.MinZ > kMinViewportDepthExtent && vp.MinZ >= 0.0f && vp.MaxZ <= 1.0f;
+    const float worldMinZ = usableRange ? vp.MinZ : 0.0f;
+    const float worldExtent = usableRange ? vp.MaxZ - vp.MinZ : 1.0f;
+    const float worldMaxZ = worldMinZ + worldExtent;
+    return {worldMinZ + worldExtent * (1.0f + proj[10]) * 0.5f, worldExtent * proj[14] * 0.5f,
+            worldMaxZ >= kDeepestWorldDepthInFullRangeViewport ? kDeepestWorldDepthInFullRangeViewport
+                                                               : worldMaxZ + kWorldDepthMargin};
+}
+
+enum class FogBlend
+{
+    GammaFixedFunction,
+    LinearOverSceneCopy,
+    LinearFixedFunction,
+    GammaOverSceneCopy,
+};
+
+const char* FogBlendName(FogBlend blend)
+{
+    static const char* const kNames[] = {"gamma, fixed function", "linear over a scene copy",
+                                         "linear, fixed function (no scene copy)", "gamma over a scene copy"};
+    return kNames[static_cast<int>(blend)];
+}
+
+struct ProbeSample
+{
+    float rawDepth;
+    float viewDepthYards;
+    float fogOpacity;
+    float depthClass;
+};
+static_assert(sizeof(ProbeSample) == sizeof(Float4), "ProbeSample is one A32B32G32R32F probe texel");
+
+char DepthClassLetter(float depthClass)
+{
+    return depthClass > 1.5f ? 's' : (depthClass > 0.5f ? 'f' : 'w');
+}
+
+constexpr int kLoggedGradingInputs[] = {8, 16, 24};
+constexpr UINT kMinViewportSize = 16;
+constexpr float kMinGodRayStrength = 0.005f;
+
+bool g_fogParamsForced = false;
+FogParams g_forcedFogParams = {};
+
+FogParams FogParamsFor(const FrameInputs& in, const Config& cfg, const AuthoredFog* authored)
+{
+    return g_fogParamsForced ? g_forcedFogParams : BuildFogParams(in, cfg, authored);
+}
+
+const char* DrawnNoiseState(const LayerNoise& drawn, const Config& cfg)
+{
+    if (drawn.alpha > 0.0f)
+        return "";
+    return cfg.classicNoise ? " (at its mean: no noise volume)" : " (off: ClassicNoise=0)";
+}
+
+void LogAuthoredExtras(const AuthoredFog& fog, const FogParams& drawn, const Config& cfg)
+{
+    const float* curve = fog.gradingCurve;
+    VF_LOG_INFO("  Classic glow %.2f%s at coverage %.2f, grading curve%s at inputs %d/31 %d/31 %d/31: %.3f %.3f "
+                "%.3f (ForeverGlow %d, ColorGrading %.2f)",
+                fog.glow, fog.hasGlow ? "" : " (no glow data)", fog.coverage,
+                fog.hasGradingCurve ? "" : " (no graded light)", kLoggedGradingInputs[0], kLoggedGradingInputs[1],
+                kLoggedGradingInputs[2], curve[kLoggedGradingInputs[0]], curve[kLoggedGradingInputs[1]],
+                curve[kLoggedGradingInputs[2]], cfg.foreverGlow, cfg.colorGrading);
+    for (int i = 0; i < std::min(fog.layerCount, kSceneLayers); ++i)
+    {
+        const AuthoredNoise& n = fog.layers[i].noise;
+        if (n.presence <= 0.0f)
+            continue;
+        const LayerNoise& shown = drawn.noise[i];
+        VF_LOG_INFO("  classic layer %d noise: share %.2f, drawn alpha %.2f%s; octave shares %.2f/%.2f, tiles "
+                    "%.0f/%.0f yd, drift (%.1f %.1f %.1f)/(%.1f %.1f %.1f) yd/s, fade %.2f %.2f %.2f",
+                    i, n.presence, shown.alpha, DrawnNoiseState(shown, cfg), n.octaveShare[0], n.octaveShare[1],
+                    n.tileYards[0], n.tileYards[1], n.velocity[0][0], n.velocity[0][1], n.velocity[0][2],
+                    n.velocity[1][0], n.velocity[1][1], n.velocity[1][2], n.fade[0], n.fade[1], n.fade[2]);
+    }
+}
+
+uint64_t MixedLightId(uintptr_t nativeId)
+{
+    const uint64_t mixed = (static_cast<uint64_t>(nativeId) + 1) * kLightIdMixMultiplier;
+    return mixed ^ (mixed >> 29);
+}
+
+uint64_t UploadedLightSet(const LocalLightInputs& lights, uint32_t uploaded)
+{
+    uint64_t set = uploaded + (static_cast<uint64_t>(lights.capture) << kLightSetCaptureShift);
+    for (uint32_t i = 0; i < uploaded; ++i)
+        set += MixedLightId(lights.pointLights[i].nativeId);
+    return set;
+}
+
+void DescribeCaptureRejection(LocalLightCapture capture, char* text, size_t size)
+{
+    text[0] = 0;
+    if (capture != LocalLightCapture::Captured)
+        std::snprintf(text, size, ", capture rejected (%s)", engine::LocalLightCaptureName(capture));
+}
+
+float PeakUploadedColor(const LocalPointLight& light)
+{
+    return std::max({light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2]});
+}
+
+float CameraDistance(const LocalPointLight& light, const float* camera)
+{
+    const double dx = static_cast<double>(light.position[0]) - camera[0];
+    const double dy = static_cast<double>(light.position[1]) - camera[1];
+    const double dz = static_cast<double>(light.position[2]) - camera[2];
+    return static_cast<float>(std::sqrt(dx * dx + dy * dy + dz * dz));
+}
+
+void LogUploadedLight(uint32_t index, const LocalPointLight& light, const float* camera)
+{
+    VF_LOG_DEBUG("  local light %u: at (%.2f %.2f %.2f), %.1f yd; diffuse (%.4g %.4g %.4g), attenuation %.4g %.4g "
+                 "%.4g, enabled %u; uploaded (%.4g %.4g %.4g), reach %.1f yd",
+                 index, light.position[0], light.position[1], light.position[2], CameraDistance(light, camera),
+                 light.color[0], light.color[1], light.color[2], light.attenuation[0], light.attenuation[1],
+                 light.attenuation[2], light.enabled, light.uploadedColor[0], light.uploadedColor[1],
+                 light.uploadedColor[2], light.cutoff);
+}
+
+const char* UnusableTargets(IDirect3DSurface9* target, IDirect3DSurface9* boundDepth, const SceneDepth& depth,
+                            D3DSURFACE_DESC& depthDesc)
+{
+    D3DSURFACE_DESC rtDesc = {};
+    if (!target)
+        return "no render target";
+    if (!depth.texture || boundDepth != depth.bound)
+        return "fog depth surface not bound";
+    if (FAILED(target->GetDesc(&rtDesc)) || FAILED(depth.bound->GetDesc(&depthDesc)))
+        return "surface description failed";
+    if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
+        return "render target and depth sizes differ";
+    if (!SameSampleCount(rtDesc, depthDesc))
+        return "render target and depth sample counts differ";
+    return nullptr;
+}
+
+const char* ViewportOutsideTarget(const D3DVIEWPORT9& vp, const D3DSURFACE_DESC& depthDesc)
+{
+    if (vp.Width < kMinViewportSize || vp.Height < kMinViewportSize || vp.X + vp.Width > depthDesc.Width ||
+        vp.Y + vp.Height > depthDesc.Height)
+        return "world viewport outside the render target";
+    return nullptr;
+}
+}
+
+void ForceFogParams(const FogParams* fog)
+{
+    g_fogParamsForced = fog != nullptr;
+    g_forcedFogParams = fog ? *fog : FogParams{};
+}
+
+Renderer::~Renderer()
+{
+    ReleaseAll();
+}
+
+void Renderer::ReleaseDefaultPool()
+{
+    SafeRelease(m_marchTarget);
+    SafeRelease(m_history[0]);
+    SafeRelease(m_history[1]);
+    SafeRelease(m_historyDepth);
+    SafeRelease(m_rays[0]);
+    SafeRelease(m_rays[1]);
+    SafeRelease(m_sceneCopy);
+    SafeRelease(m_localLightData);
+    SafeRelease(m_densityNoise);
+    SafeRelease(m_authoredNoise);
+    DropPendingDepthProbe();
+    SafeRelease(m_probeTarget);
+    SafeRelease(m_probeReadback);
+    SafeRelease(m_probeCopied);
+    m_gpuTimer.Release();
+    m_lateGodRays = {};
+    SafeRelease(m_state);
+    m_lowW = m_lowH = m_rayW = m_rayH = 0;
+    m_sceneCopyW = m_sceneCopyH = 0;
+    m_sceneCopyFailed = false;
+    m_probeFailed = false;
+    m_historyValid = false;
+    m_adaptiveLightingHistory = false;
+    m_prevLocalLightCount = 0;
+}
+
+void Renderer::ReleaseAll()
+{
+    ReleaseDefaultPool();
+    m_unsupportedShaderDevice = nullptr;
+    m_drawnMarch = nullptr;
+    m_drawnComposite = nullptr;
+    m_drawnSplitComposite = nullptr;
+    SafeRelease(m_vs);
+    for (auto*& ps : m_march)
+        SafeRelease(ps);
+    for (auto*& ps : m_litMarch)
+        SafeRelease(ps);
+    for (auto*& ps : m_noisyMarch)
+        SafeRelease(ps);
+    for (auto*& ps : m_litNoisyMarch)
+        SafeRelease(ps);
+    SafeRelease(m_temporal);
+    SafeRelease(m_historyDepthShader);
+    for (auto*& ps : m_composite)
+        SafeRelease(ps);
+    for (auto*& ps : m_noisyComposite)
+        SafeRelease(ps);
+    for (auto*& ps : m_litComposite)
+        SafeRelease(ps);
+    ReleaseSplitComposites();
+    m_splitCompositesUnavailable = false;
+    SafeRelease(m_rayMask);
+    SafeRelease(m_rayBlur);
+    SafeRelease(m_rayComposite);
+    SafeRelease(m_probe);
+    SafeRelease(m_decl);
+}
+
+void Renderer::LogLightChange(const FrameInputs& in, const AuthoredFog& fog, bool authored)
+{
+    const LightParamsSelection& selection = in.lightParams;
+    const auto loggedStormStep = static_cast<uint32_t>(std::lround(selection.stormBlend * kLoggedStormBlendSteps));
+    uint32_t signature = authored ? 0x80000000u : 0u;
+    for (int i = 0; i < fog.lightCount; ++i)
+        signature = signature * 31u + fog.lightIds[i];
+    signature = signature * 31u + loggedStormStep;
+    signature = signature * 31u + static_cast<uint32_t>(selection.screenEffectSlot);
+    signature ^= static_cast<uint32_t>(in.mapId) << 20;
+    if (m_lightsLogged && signature == m_lightSignature)
+        return;
+    m_lightsLogged = true;
+    m_lightSignature = signature;
+    char lights[160] = {};
+    int used = 0;
+    for (int i = 0; i < fog.lightCount && used < static_cast<int>(sizeof(lights)) - 24; ++i)
+        used += std::snprintf(lights + used, sizeof(lights) - used, "%s%u:%.2f", i ? " " : "", fog.lightIds[i],
+                              fog.lightWeights[i]);
+    if (!authored && fog.lightCount == 0)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): no Classic fog data, derived layers", in.mapId, in.camPos[0],
+                    in.camPos[1], in.camPos[2]);
+        return;
+    }
+    if (!authored)
+    {
+        VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s (coverage %.2f) without Classic fog, derived layers",
+                    in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.coverage);
+        return;
+    }
+    VF_LOG_INFO("map %d at (%.0f %.0f %.0f): Classic lights %s, %d layers, storm %.1f, screen effect slot %d",
+                in.mapId, in.camPos[0], in.camPos[1], in.camPos[2], lights, fog.layerCount,
+                loggedStormStep / kLoggedStormBlendSteps, selection.screenEffectSlot);
+}
+
+void Renderer::LogFirstLocalLightRejection(LocalLightCapture capture)
+{
+    const uint32_t reason = 1u << static_cast<uint32_t>(capture);
+    if (capture == LocalLightCapture::Captured || (m_loggedLocalLightRejections & reason))
+        return;
+    m_loggedLocalLightRejections |= reason;
+    VF_LOG_INFO("local lights: capture rejected (%s), first on frame %u", engine::LocalLightCaptureName(capture),
+                m_frame);
+}
+
+void Renderer::LogUploadedLocalLights(const FrameInputs& in, const Config& cfg, uint32_t uploaded)
+{
+    if (!LogEnabled(LogLevel::Info))
+        return;
+    LogFirstLocalLightRejection(in.localLights.capture);
+    const uint64_t set = UploadedLightSet(in.localLights, uploaded);
+    if (set != m_pendingLocalLightSet)
+    {
+        m_pendingLocalLightSet = set;
+        m_pendingLocalLightFrames = 0;
+    }
+    const bool detailed = LogEnabled(LogLevel::Debug);
+    const bool alreadyLogged = set == m_loggedLocalLightSet && (m_loggedLocalLightDetail || !detailed);
+    if (alreadyLogged || ++m_pendingLocalLightFrames < kLocalLightSetSettleFrames)
+        return;
+    m_loggedLocalLightSet = set;
+    m_loggedLocalLightDetail = detailed || uploaded == 0;
+    if (uploaded == 0)
+    {
+        char rejection[kCaptureRejectionText];
+        DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+        VF_LOG_INFO("local lights: none uploaded%s%s", cfg.localLights ? "" : " (LocalLights=0)", rejection);
+        return;
+    }
+    const LocalPointLight* lights = in.localLights.pointLights;
+    uint32_t brightest = 0;
+    float nearest = std::numeric_limits<float>::infinity();
+    for (uint32_t i = 0; i < uploaded; ++i)
+    {
+        if (PeakUploadedColor(lights[i]) > PeakUploadedColor(lights[brightest]))
+            brightest = i;
+        nearest = std::min(nearest, CameraDistance(lights[i], in.camPos));
+    }
+    const float* colour = lights[brightest].uploadedColor;
+    VF_LOG_INFO("local lights: %u uploaded, brightest %s (%.4g %.4g %.4g), nearest %.1f yd", uploaded,
+                LocalLightUpload(cfg).linear ? "linear" : "gamma", colour[0], colour[1], colour[2], nearest);
+    if (detailed)
+        for (uint32_t i = 0; i < uploaded; ++i)
+            LogUploadedLight(i, lights[i], in.camPos);
+}
+
+bool Renderer::Skip(const char* reason)
+{
+    m_skip = reason;
+    m_historyValid = false;
+    return false;
+}
+
+bool Renderer::NotReady(const char* reason)
+{
+    m_skip = reason;
+    return false;
+}
+
+bool Renderer::EnsureShaders(IDirect3DDevice9* dev)
+{
+    if (m_unsupportedShaderDevice == dev)
+        return Skip("required shader unsupported");
+    if (m_vs)
+        return true;
+    struct PixelShaderRequest
+    {
+        const char* name;
+        const BYTE* code;
+        IDirect3DPixelShader9** output;
+    };
+    const PixelShaderRequest pixels[] = {
+        {"ps_march_low", g_ps_march_low, &m_march[0]},
+        {"ps_march_mid", g_ps_march_mid, &m_march[1]},
+        {"ps_march_high", g_ps_march_high, &m_march[2]},
+        {"ps_lit_march_low", g_ps_lit_march_low, &m_litMarch[0]},
+        {"ps_lit_march_mid", g_ps_lit_march_mid, &m_litMarch[1]},
+        {"ps_lit_march_high", g_ps_lit_march_high, &m_litMarch[2]},
+        {"ps_noisy_march_low", g_ps_noisy_march_low, &m_noisyMarch[0]},
+        {"ps_noisy_march_mid", g_ps_noisy_march_mid, &m_noisyMarch[1]},
+        {"ps_noisy_march_high", g_ps_noisy_march_high, &m_noisyMarch[2]},
+        {"ps_lit_noisy_march_low", g_ps_lit_noisy_march_low, &m_litNoisyMarch[0]},
+        {"ps_lit_noisy_march_mid", g_ps_lit_noisy_march_mid, &m_litNoisyMarch[1]},
+        {"ps_lit_noisy_march_high", g_ps_lit_noisy_march_high, &m_litNoisyMarch[2]},
+        {"ps_temporal", g_ps_temporal, &m_temporal},
+        {"ps_history_depth", g_ps_history_depth, &m_historyDepthShader},
+        {"ps_composite_low", g_ps_composite_low, &m_composite[0]},
+        {"ps_composite_mid", g_ps_composite_mid, &m_composite[1]},
+        {"ps_composite_high", g_ps_composite_high, &m_composite[2]},
+        {"ps_noisy_composite_low", g_ps_noisy_composite_low, &m_noisyComposite[0]},
+        {"ps_noisy_composite_mid", g_ps_noisy_composite_mid, &m_noisyComposite[1]},
+        {"ps_noisy_composite_high", g_ps_noisy_composite_high, &m_noisyComposite[2]},
+        {"ps_lit_composite_low", g_ps_lit_composite_low, &m_litComposite[0]},
+        {"ps_lit_composite_mid", g_ps_lit_composite_mid, &m_litComposite[1]},
+        {"ps_lit_composite_high", g_ps_lit_composite_high, &m_litComposite[2]},
+        {"ps_ray_mask", g_ps_ray_mask, &m_rayMask},
+        {"ps_ray_blur", g_ps_ray_blur, &m_rayBlur},
+        {"ps_ray_composite", g_ps_ray_composite, &m_rayComposite},
+    };
+    static const D3DVERTEXELEMENT9 kElements[] = {
+        {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        D3DDECL_END(),
+    };
+    const char* failedName = "vs_fullscreen";
+    HRESULT result = dev->CreateVertexShader(reinterpret_cast<const DWORD*>(g_vs_fullscreen), &m_vs);
+    if (SUCCEEDED(result))
+        for (const PixelShaderRequest& shader : pixels)
+        {
+            failedName = shader.name;
+            result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(shader.code), shader.output);
+            if (FAILED(result))
+                break;
+        }
+    if (SUCCEEDED(result))
+    {
+        failedName = "fullscreen vertex declaration";
+        result = dev->CreateVertexDeclaration(kElements, &m_decl);
+    }
+    if (FAILED(result))
+    {
+        const bool unsupported = (result == D3DERR_INVALIDCALL || result == D3DERR_NOTAVAILABLE ||
+                                  result == E_INVALIDARG) && dev->TestCooperativeLevel() == D3D_OK;
+        VF_LOG_ERROR("shader initialization failed: %s HRESULT 0x%08lX; %s", failedName,
+                     static_cast<unsigned long>(result), unsupported ? "unsupported on this device" : "will retry");
+        LogShaderCaps(dev, LogLevel::Error);
+        ReleaseAll();
+        if (unsupported)
+            m_unsupportedShaderDevice = dev;
+        return Skip(unsupported ? "required shader unsupported" : "shader creation failed");
+    }
+    LogShaderCaps(dev, LogLevel::Info);
+    return true;
+}
+
+void Renderer::ReleaseSplitComposites()
+{
+    SafeRelease(m_silhouetteMask);
+    for (auto*& ps : m_splitComposite)
+        SafeRelease(ps);
+    for (auto*& ps : m_noisySplitComposite)
+        SafeRelease(ps);
+    for (auto*& ps : m_litSplitComposite)
+        SafeRelease(ps);
+}
+
+bool Renderer::EnsureSplitComposites(IDirect3DDevice9* dev)
+{
+    if (m_silhouetteMask)
+        return true;
+    if (m_splitCompositesUnavailable)
+        return false;
+    const BYTE* const code[][kQualityLevels] = {
+        {g_ps_split_composite_low, g_ps_split_composite_mid, g_ps_split_composite_high},
+        {g_ps_noisy_split_composite_low, g_ps_noisy_split_composite_mid, g_ps_noisy_split_composite_high},
+        {g_ps_lit_split_composite_low, g_ps_lit_split_composite_mid, g_ps_lit_split_composite_high},
+    };
+    IDirect3DPixelShader9** const shaders[] = {m_splitComposite, m_noisySplitComposite, m_litSplitComposite};
+    static_assert(std::size(code) == std::size(shaders), "one split composite array per shader family");
+    HRESULT result = D3D_OK;
+    for (size_t family = 0; family < std::size(shaders) && SUCCEEDED(result); ++family)
+        for (int quality = 0; quality < kQualityLevels && SUCCEEDED(result); ++quality)
+            result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(code[family][quality]),
+                                            &shaders[family][quality]);
+    if (SUCCEEDED(result))
+        result = dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_silhouette_mask), &m_silhouetteMask);
+    if (SUCCEEDED(result))
+        return true;
+    ReleaseSplitComposites();
+    if (dev->TestCooperativeLevel() == D3D_OK)
+    {
+        m_splitCompositesUnavailable = true;
+        VF_LOG_ERROR("the sample-split composite could not be created (HRESULT 0x%08lX); multisampled silhouettes take "
+                     "the fog of one sample",
+                     static_cast<unsigned long>(result));
+    }
+    return false;
+}
+
+IDirect3DPixelShader9* Renderer::CompositeShader(const CompositeChoice& choice, bool splitSamples) const
+{
+    const int index = std::clamp(choice.quality, 1, kQualityLevels) - 1;
+    if (choice.lit)
+        return (splitSamples ? m_litSplitComposite : m_litComposite)[index];
+    if (choice.noisy)
+        return (splitSamples ? m_noisySplitComposite : m_noisyComposite)[index];
+    return (splitSamples ? m_splitComposite : m_composite)[index];
+}
+
+void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth, const D3DVIEWPORT9& vp)
+{
+    D3DVIEWPORT9 fullDepthRange = vp;
+    fullDepthRange.MinZ = 0.0f;
+    fullDepthRange.MaxZ = 1.0f;
+    const D3DRECT world = {static_cast<LONG>(vp.X), static_cast<LONG>(vp.Y), static_cast<LONG>(vp.X + vp.Width),
+                           static_cast<LONG>(vp.Y + vp.Height)};
+    DWORD colourWrites = 0;
+    dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colourWrites);
+    dev->SetDepthStencilSurface(sampleDepth);
+    dev->SetViewport(&fullDepthRange);
+    dev->Clear(1, &world, D3DCLEAR_STENCIL, 0, 1.0f, kUnmarkedSamples);
+    dev->SetPixelShader(m_silhouetteMask);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_TRUE);
+    dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESS);
+    dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    dev->SetRenderState(D3DRS_STENCILREF, kNearSamples);
+    dev->SetRenderState(D3DRS_STENCILMASK, kAllStencilBits);
+    dev->SetRenderState(D3DRS_STENCILWRITEMASK, kAllStencilBits);
+    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_INVERT);
+    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_REPLACE);
+    dev->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    DrawFullscreenTriangle(dev);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, colourWrites);
+    dev->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+    dev->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    dev->SetRenderState(D3DRS_STENCILWRITEMASK, 0);
+}
+
+void Renderer::DrawSamplesMarked(IDirect3DDevice9* dev, DWORD marker, IDirect3DPixelShader9* shader,
+                                 const float* side)
+{
+    dev->SetRenderState(D3DRS_STENCILREF, marker);
+    dev->SetPixelShader(shader);
+    if (side)
+        dev->SetPixelShaderConstantF(kSampleSideRegister, side, 1);
+    DrawFullscreenTriangle(dev);
+}
+
+void Renderer::DrawCompositeBySampleDepth(IDirect3DDevice9* dev, IDirect3DSurface9* sampleDepth,
+                                          const D3DVIEWPORT9& vp, const CompositeChoice& choice, bool overwrites)
+{
+    const float ownSideDrawn = overwrites ? 1.0f : 0.0f;
+    const Float4 nearSide = {0.0f, ownSideDrawn, 0.0f, 0.0f};
+    const Float4 farSide = {1.0f, ownSideDrawn, 0.0f, 0.0f};
+    MarkSilhouetteSamples(dev, sampleDepth, vp);
+    if (overwrites)
+    {
+        dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        dev->SetDepthStencilSurface(nullptr);
+        dev->SetPixelShader(CompositeShader(choice, false));
+        DrawFullscreenTriangle(dev);
+        dev->SetDepthStencilSurface(sampleDepth);
+        dev->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    }
+    else
+        DrawSamplesMarked(dev, kUnmarkedSamples, CompositeShader(choice, false), nullptr);
+    DrawSamplesMarked(dev, kNearSamples, CompositeShader(choice, true), &nearSide.x);
+    DrawSamplesMarked(dev, kFarSamples, CompositeShader(choice, true), &farSide.x);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetDepthStencilSurface(nullptr);
+    dev->SetViewport(&vp);
+}
+
+bool Renderer::EnsureStateBlock(IDirect3DDevice9* dev)
+{
+    if (m_state)
+        return true;
+    if (FAILED(dev->BeginStateBlock()))
+        return Skip("state block recording failed");
+    for (D3DRENDERSTATETYPE rs : kRenderStates)
+        dev->SetRenderState(rs, 0);
+    for (DWORD stage = 0; stage < kStages; ++stage)
+    {
+        dev->SetTexture(stage, nullptr);
+        for (D3DSAMPLERSTATETYPE ss : kSamplerStates)
+            dev->SetSamplerState(stage, ss, 0);
+    }
+    float zeros[kPixelConstants * 4] = {};
+    dev->SetVertexShader(nullptr);
+    dev->SetPixelShader(nullptr);
+    dev->SetPixelShaderConstantF(0, zeros, kPixelConstants);
+    dev->SetVertexDeclaration(m_decl);
+    dev->SetStreamSource(0, nullptr, 0, 0);
+    dev->SetStreamSourceFreq(0, 1);
+    D3DVIEWPORT9 vp = {0, 0, 1, 1, 0.0f, 1.0f};
+    dev->SetViewport(&vp);
+    RECT scissor = {0, 0, 1, 1};
+    dev->SetScissorRect(&scissor);
+    if (FAILED(dev->EndStateBlock(&m_state)) || !m_state)
+    {
+        m_state = nullptr;
+        return Skip("state block recording failed");
+    }
+    return true;
+}
+
+bool Renderer::EnsureTargets(IDirect3DDevice9* dev, UINT lowW, UINT lowH, UINT rayW, UINT rayH)
+{
+    if (m_marchTarget && m_lowW == lowW && m_lowH == lowH && m_rayW == rayW && m_rayH == rayH)
+        return true;
+    SafeRelease(m_marchTarget);
+    SafeRelease(m_history[0]);
+    SafeRelease(m_history[1]);
+    SafeRelease(m_historyDepth);
+    SafeRelease(m_rays[0]);
+    SafeRelease(m_rays[1]);
+    m_historyValid = false;
+
+    D3DFORMAT fogFormat = D3DFMT_A16B16G16R16F;
+    bool ok = CreateTarget(dev, lowW, lowH, fogFormat, &m_marchTarget);
+    if (!ok)
+    {
+        fogFormat = D3DFMT_A8R8G8B8;
+        ok = CreateTarget(dev, lowW, lowH, fogFormat, &m_marchTarget);
+    }
+    ok = ok && CreateTarget(dev, lowW, lowH, fogFormat, &m_history[0]) &&
+         CreateTarget(dev, lowW, lowH, fogFormat, &m_history[1]) &&
+         CreateTarget(dev, lowW, lowH, D3DFMT_A8R8G8B8, &m_historyDepth) &&
+         CreateTarget(dev, rayW, rayH, D3DFMT_A8R8G8B8, &m_rays[0]) &&
+         CreateTarget(dev, rayW, rayH, D3DFMT_A8R8G8B8, &m_rays[1]);
+    if (!ok)
+    {
+        VF_LOG_ERROR("render target creation failed (%ux%u)", lowW, lowH);
+        SafeRelease(m_marchTarget);
+        SafeRelease(m_history[0]);
+        SafeRelease(m_history[1]);
+        SafeRelease(m_historyDepth);
+        SafeRelease(m_rays[0]);
+        SafeRelease(m_rays[1]);
+        return Skip("render target creation failed");
+    }
+
+    m_lowW = lowW;
+    m_lowH = lowH;
+    m_rayW = rayW;
+    m_rayH = rayH;
+    VF_LOG_INFO("targets: fog %ux%u (%s), depth history rgba8, rays %ux%u", lowW, lowH,
+                fogFormat == D3DFMT_A16B16G16R16F ? "fp16" : "rgba8", rayW, rayH);
+    return true;
+}
+
+bool Renderer::EnsureSceneCopy(IDirect3DDevice9* dev, IDirect3DSurface9* target, UINT w, UINT h)
+{
+    if (m_sceneCopy && m_sceneCopyW == w && m_sceneCopyH == h)
+        return true;
+    SafeRelease(m_sceneCopy);
+    m_sceneCopyW = m_sceneCopyH = 0;
+    if (m_sceneCopyFailed)
+        return false;
+    D3DSURFACE_DESC desc = {};
+    target->GetDesc(&desc);
+    if (!CreateTarget(dev, w, h, desc.Format, &m_sceneCopy) &&
+        !CreateTarget(dev, w, h, D3DFMT_A8R8G8B8, &m_sceneCopy))
+    {
+        m_sceneCopyFailed = true;
+        VF_LOG_ERROR("scene copy creation failed (%ux%u); fog blends in gamma space", w, h);
+        return false;
+    }
+    m_sceneCopyW = w;
+    m_sceneCopyH = h;
+    return true;
+}
+
+bool Renderer::CopyWorldViewport(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp)
+{
+    if (!EnsureSceneCopy(dev, target, vp.Width, vp.Height))
+        return false;
+    const RECT world = ViewportRect(vp);
+    IDirect3DSurface9* sceneSurface = nullptr;
+    const bool copied = SUCCEEDED(m_sceneCopy->GetSurfaceLevel(0, &sceneSurface)) &&
+                        SUCCEEDED(dev->StretchRect(target, &world, sceneSurface, nullptr, D3DTEXF_POINT));
+    SafeRelease(sceneSurface);
+    return copied;
+}
+
+bool Renderer::DepthProbeDue(long long now) const
+{
+    const bool debugLog = LogEnabled(LogLevel::Debug);
+    const float probeIntervalSeconds = debugLog ? kProbeDebugSeconds : kProbeSeconds;
+    return LogEnabled(LogLevel::Info) && !m_probeFailed && !m_pendingProbe.issued && m_frame >= kProbeFirstFrame &&
+           (debugLog || m_probeAttempts < kInfoLevelProbeLimit) &&
+           (m_probeAttempts == 0 || TickSeconds(now - m_probeTicks) > probeIntervalSeconds);
+}
+
+bool Renderer::EnsureDepthProbe(IDirect3DDevice9* dev)
+{
+    if (m_probeFailed)
+        return false;
+    const bool ready =
+        (m_probe || SUCCEEDED(dev->CreatePixelShader(reinterpret_cast<const DWORD*>(g_ps_probe), &m_probe))) &&
+        (m_probeTarget || CreateTarget(dev, kProbePoints, 1, D3DFMT_A32B32G32R32F, &m_probeTarget)) &&
+        (m_probeReadback || SUCCEEDED(dev->CreateOffscreenPlainSurface(kProbePoints, 1, D3DFMT_A32B32G32R32F,
+                                                                        D3DPOOL_SYSTEMMEM, &m_probeReadback,
+                                                                        nullptr))) &&
+        (m_probeCopied || SUCCEEDED(dev->CreateQuery(D3DQUERYTYPE_EVENT, &m_probeCopied)));
+    if (ready)
+        return true;
+    SafeRelease(m_probeTarget);
+    SafeRelease(m_probeReadback);
+    SafeRelease(m_probeCopied);
+    m_probeFailed = true;
+    VF_LOG_INFO("depth probe unavailable (no probe shader, float render target or event query)");
+    return false;
+}
+
+void Renderer::IssueDepthProbe(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* fog,
+                               const D3DVIEWPORT9& vp, float deepestWorldDepth, float dayFraction)
+{
+    if (!EnsureDepthProbe(dev))
+        return;
+    SetTarget(dev, m_probeTarget);
+    D3DVIEWPORT9 probeVp = {0, 0, kProbePoints, 1, 0.0f, 1.0f};
+    dev->SetViewport(&probeVp);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->SetPixelShader(m_probe);
+    BindTexture(dev, 0, depthTexture, false);
+    BindTexture(dev, 1, fog, false);
+    DrawFullscreenTriangle(dev);
+
+    IDirect3DSurface9* surface = nullptr;
+    const bool copying = SUCCEEDED(m_probeTarget->GetSurfaceLevel(0, &surface)) &&
+                         SUCCEEDED(dev->GetRenderTargetData(surface, m_probeReadback)) &&
+                         SUCCEEDED(m_probeCopied->Issue(D3DISSUE_END));
+    SafeRelease(surface);
+    if (!copying)
+    {
+        VF_LOG_INFO("depth probe %u: readback failed", m_probeAttempts);
+        return;
+    }
+    m_pendingProbe = {true, m_probeAttempts, dayFraction, vp.MinZ, vp.MaxZ, deepestWorldDepth};
+}
+
+void Renderer::DropPendingDepthProbe()
+{
+    if (m_pendingProbe.issued)
+        VF_LOG_INFO("depth probe %u: readback dropped with the device resources", m_pendingProbe.attempt);
+    m_pendingProbe = {};
+}
+
+void Renderer::LogFinishedDepthProbe()
+{
+    if (!m_pendingProbe.issued)
+        return;
+    const HRESULT copied = m_probeCopied->GetData(nullptr, 0, 0);
+    if (copied == S_FALSE)
+        return;
+    const PendingDepthProbe probe = m_pendingProbe;
+    m_pendingProbe = {};
+    D3DLOCKED_RECT locked = {};
+    if (copied != S_OK || FAILED(m_probeReadback->LockRect(&locked, nullptr, D3DLOCK_READONLY)))
+    {
+        VF_LOG_INFO("depth probe %u: readback failed", probe.attempt);
+        return;
+    }
+    const auto* samples = static_cast<const ProbeSample*>(locked.pBits);
+    VF_LOG_INFO("depth probe %u: day %.4f, viewport depth %.4f..%.4f, world depth up to %.7f; per point raw depth / yd "
+                "/ fog opacity (w world, f beyond the far clip, s sky)",
+                probe.attempt, probe.dayFraction, probe.viewportMinZ, probe.viewportMaxZ, probe.deepestWorldDepth);
+    for (int row = 0; row < kProbeGridSide; ++row)
+    {
+        char line[256] = {};
+        int used = 0;
+        for (int col = 0; col < kProbeGridSide; ++col)
+        {
+            const ProbeSample& sample = samples[row * kProbeGridSide + col];
+            used += std::snprintf(line + used, sizeof(line) - used, "  %.7f/%.0f/%.2f %c", sample.rawDepth,
+                                  sample.viewDepthYards, sample.fogOpacity, DepthClassLetter(sample.depthClass));
+        }
+        VF_LOG_INFO("  row %d:%s", row, line);
+    }
+    m_probeReadback->UnlockRect();
+}
+
+void Renderer::BindTexture(IDirect3DDevice9* dev, DWORD stage, IDirect3DBaseTexture9* tex, bool linear)
+{
+    DWORD filter = linear ? D3DTEXF_LINEAR : D3DTEXF_POINT;
+    dev->SetTexture(stage, tex);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSW, D3DTADDRESS_CLAMP);
+    dev->SetSamplerState(stage, D3DSAMP_MAGFILTER, filter);
+    dev->SetSamplerState(stage, D3DSAMP_MINFILTER, filter);
+    dev->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    dev->SetSamplerState(stage, D3DSAMP_SRGBTEXTURE, FALSE);
+    dev->SetSamplerState(stage, D3DSAMP_MAXMIPLEVEL, 0);
+}
+
+void Renderer::BindWrappedVolume(IDirect3DDevice9* dev, DWORD stage, IDirect3DVolumeTexture9* volume)
+{
+    BindTexture(dev, stage, volume, true);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, D3DTADDRESS_WRAP);
+    dev->SetSamplerState(stage, D3DSAMP_ADDRESSW, D3DTADDRESS_WRAP);
+}
+
+FogParams Renderer::DrawableFog(IDirect3DDevice9* dev, const FogParams& fog)
+{
+    if (!AnyLayerNoise(fog))
+        return fog;
+    if (!m_authoredNoise && !CreateAuthoredNoise(dev, &m_authoredNoise))
+        return WithMeanNoise(fog);
+    return fog;
+}
+
+void Renderer::UploadLayerNoise(IDirect3DDevice9* dev, const FogParams& fog, const float* camera,
+                                long long now)
+{
+    const double elapsed = m_noiseTicks ? std::min(TickSeconds(now - m_noiseTicks), kMaxNoiseStepSeconds) : 0.0;
+    m_noiseTicks = now;
+    m_noiseScroll.Advance(fog, camera, elapsed);
+    LayerNoiseRegisters registers[kSceneLayers];
+    m_noiseScroll.Registers(fog, registers);
+    static_assert(sizeof(registers) == 4 * kSceneLayers * sizeof(Float4), "noise registers of the scene layers");
+    dev->SetPixelShaderConstantF(kLayerNoiseRegister, &registers[0].octaveOffsetAndInverseTile[0][0],
+                                 4 * kSceneLayers);
+    BindWrappedVolume(dev, kAuthoredNoiseStage, m_authoredNoise);
+}
+
+IDirect3DTexture9* Renderer::FilterWithHistory(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture,
+                                               const float* viewToPreviousClip, bool historyValid,
+                                               float historyWeight)
+{
+    const int write = m_historyIndex ^ 1;
+    SetTarget(dev, m_history[write]);
+    dev->SetPixelShader(m_temporal);
+    const Float4 temporal = {historyWeight, historyValid ? 1.0f : 0.0f, m_adaptiveLightingHistory ? 1.0f : 0.0f,
+                             0.0f};
+    dev->SetPixelShaderConstantF(9, viewToPreviousClip, 4);
+    dev->SetPixelShaderConstantF(13, &temporal.x, 1);
+    BindTexture(dev, 0, m_marchTarget, false);
+    BindTexture(dev, 1, m_history[m_historyIndex], false);
+    BindTexture(dev, 2, depthTexture, false);
+    BindTexture(dev, 3, m_historyDepth, false);
+    DrawFullscreenTriangle(dev);
+
+    BindTexture(dev, 3, nullptr, false);
+    SetTarget(dev, m_historyDepth);
+    dev->SetPixelShader(m_historyDepthShader);
+    BindTexture(dev, 0, depthTexture, false);
+    DrawFullscreenTriangle(dev);
+    m_historyIndex = write;
+    return m_history[write];
+}
+
+void Renderer::LogFrameSummary(IDirect3DDevice9* dev, long long now, const FrameInputs& in, const Config& cfg,
+                               const FogParams& fog, const AuthoredFog& authored, const D3DSURFACE_DESC& depthDesc,
+                               const float* viewToWorld, const float* toLightInView, const float* sunPx,
+                               float rayStrength)
+{
+    const D3DVIEWPORT9& vp = in.viewport;
+    const bool viewChanged = std::fabs(in.farClip - m_loggedFarClip) > 1.0f || vp.Width != m_loggedViewport.Width ||
+                             vp.Height != m_loggedViewport.Height || vp.MinZ != m_loggedViewport.MinZ ||
+                             vp.MaxZ != m_loggedViewport.MaxZ;
+    if (m_logged >= 1 && !viewChanged && TickSeconds(now - m_summaryTicks) <= kSummarySeconds &&
+        !(LogEnabled(LogLevel::Debug) && m_frame % 600u == 0))
+        return;
+    ++m_logged;
+    m_summaryTicks = now;
+    m_loggedFarClip = in.farClip;
+    m_loggedViewport = vp;
+    const float* proj = in.glProjection;
+    const float projectionNear = -proj[14] / (1.0f + proj[10]);
+    const float projectionFar = proj[14] / (1.0f - proj[10]);
+    char gpuTime[96] = {};
+    if (LogEnabled(LogLevel::Info))
+        DescribeGpuTime(m_gpuTimer, dev, gpuTime, sizeof(gpuTime));
+    VF_LOG_INFO("frame %u: viewport %lu,%lu %lux%lu of %ux%u depth %.4f..%.4f; near %.3f far %.1f (farclip %.1f) "
+                "maxdist %.0f%s%s",
+                m_frame, vp.X, vp.Y, vp.Width, vp.Height, depthDesc.Width, depthDesc.Height, vp.MinZ, vp.MaxZ,
+                projectionNear, projectionFar, in.farClip, fog.maxDistance, gpuTime[0] ? ", " : "", gpuTime);
+    VF_LOG_INFO("  camera (%.2f %.2f %.2f) inverse-view origin (%.2f %.2f %.2f) target (%.2f %.2f %.2f)",
+                in.camPos[0], in.camPos[1], in.camPos[2], viewToWorld[12], viewToWorld[13], viewToWorld[14],
+                in.camTarget[0], in.camTarget[1], in.camTarget[2]);
+    VF_LOG_INFO("  day %.4f %s toLight (%.3f %.3f %.3f) view (%.3f %.3f %.3f) vis %.2f above %.2f "
+                "sunPx (%.0f %.0f) rays %.2f",
+                in.dayFraction, in.lightIsMoon ? "moon" : "sun", in.toLight[0], in.toLight[1], in.toLight[2],
+                toLightInView[0], toLightInView[1], toLightInView[2], fog.lightVisibility, fog.lightAboveHorizon,
+                sunPx[0], sunPx[1], rayStrength);
+    VF_LOG_INFO("  map %d fog %08X start %.1f end %.1f zone %.1f sun %08X direct %08X ambient %08X refZ %.1f "
+                "glow %.2f, direct light vs Classic %.2f",
+                in.mapId, in.fogColor, in.fogStart, in.fogEnd, in.zoneFogDistance, in.sunColor, in.directColor,
+                in.ambientColor, fog.referenceZ, in.clientGlowAmount, fog.directLightMatch);
+    char localPoints[32] = "not captured";
+    if (cfg.localLights)
+        std::snprintf(localPoints, sizeof(localPoints), "%u", in.localLights.pointLightCount);
+    char rejection[kCaptureRejectionText];
+    DescribeCaptureRejection(in.localLights.capture, rejection, sizeof(rejection));
+    VF_LOG_INFO("  local points %s enabled %d%s; interior %d blend %.3f", localPoints, cfg.localLights, rejection,
+                in.localLights.cameraInterior, in.localLights.interiorBlend);
+    for (int i = 0; i < kFogLayers; ++i)
+    {
+        const FogLayer& l = fog.layers[i];
+        VF_LOG_INFO("  layer %d (%s): start %.0f density %.6f curve %.2f^%.2f g %.2f diffuse %.2f %.2f %.2f "
+                    "emissive %.2f %.2f %.2f upper %.1f/%.4f lower %.1f/%.4f shadowed %.0f limit %.0f",
+                    i, fog.authored && i < kSceneLayers ? "classic" : "derived", l.start, l.density, l.strength,
+                    l.exponent, l.g, l.diffuse[0], l.diffuse[1], l.diffuse[2], l.emissive[0], l.emissive[1],
+                    l.emissive[2], l.upperHeight, l.upperFalloff, l.lowerHeight, l.lowerFalloff, l.shadowed,
+                    std::min(l.endDistance, 99999.0f));
+    }
+    if (authored.lightCount > 0)
+        LogAuthoredExtras(authored, fog, cfg);
+}
+
+bool Renderer::ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, const D3DVIEWPORT9& vp)
+{
+    m_skip = "";
+    if (dev->TestCooperativeLevel() != D3D_OK)
+        return NotReady("device not ready");
+    if (!EnsureShaders(dev) || !EnsureStateBlock(dev))
+        return false;
+    IDirect3DSurface9* target = nullptr;
+    IDirect3DSurface9* boundDepth = nullptr;
+    dev->GetRenderTarget(0, &target);
+    dev->GetDepthStencilSurface(&boundDepth);
+    D3DSURFACE_DESC depthDesc = {};
+    const char* unusable = UnusableTargets(target, boundDepth, depth, depthDesc);
+    if (!unusable)
+        unusable = ViewportOutsideTarget(vp, depthDesc);
+    SafeRelease(target);
+    SafeRelease(boundDepth);
+    return unusable ? NotReady(unusable) : true;
+}
+
+template <typename Passes>
+bool Renderer::WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes)
+{
+    IDirect3DSurface9* saved[4] = {};
+    for (DWORD i = 0; i < 4; ++i)
+        dev->GetRenderTarget(i, &saved[i]);
+    IDirect3DSurface9* savedDepth = nullptr;
+    dev->GetDepthStencilSurface(&savedDepth);
+
+    bool ok = false;
+    D3DSURFACE_DESC depthDesc = {};
+    if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
+        Skip(unusable);
+    else
+    {
+        IDirect3DVertexBuffer9* stream = nullptr;
+        UINT streamOffset = 0;
+        UINT streamStride = 0;
+        dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
+        m_state->Capture();
+        for (DWORD i = 1; i < 4; ++i)
+            if (saved[i])
+                dev->SetRenderTarget(i, nullptr);
+        ok = passes(saved[0], depthDesc);
+        dev->SetRenderTarget(0, saved[0]);
+        for (DWORD i = 1; i < 4; ++i)
+            if (saved[i])
+                dev->SetRenderTarget(i, saved[i]);
+        m_state->Apply();
+        dev->SetDepthStencilSurface(savedDepth);
+        dev->SetStreamSource(0, stream, streamOffset, streamStride);
+        SafeRelease(stream);
+    }
+
+    for (auto*& s : saved)
+        SafeRelease(s);
+    SafeRelease(savedDepth);
+    return ok;
+}
+
+bool Renderer::Render(IDirect3DDevice9* dev, const SceneDepth& depth, const FrameInputs& in, const Config& cfg,
+                      FogPass pass)
+{
+    m_skip = "";
+    m_stockFogFit = {};
+    if (m_lateGodRays.pending)
+        m_gpuTimer.Cancel();
+    m_lateGodRays = {};
+    if (dev->TestCooperativeLevel() != D3D_OK)
+        return Skip("device not ready");
+    LogFinishedDepthProbe();
+    if (!EnsureShaders(dev) || !EnsureStateBlock(dev))
+        return false;
+    return WithClientStateSaved(dev, depth, [&](IDirect3DSurface9* target, const D3DSURFACE_DESC& depthDesc) {
+        return RenderPasses(dev, depth, target, depthDesc, in, cfg, pass);
+    });
+}
+
+bool Renderer::RenderGodRaysAfterWorld(IDirect3DDevice9* dev, const SceneDepth& depth)
+{
+    m_skip = "";
+    const GodRayFrame rays = m_lateGodRays;
+    m_lateGodRays = {};
+    if (!rays.pending)
+        return true;
+    if (dev->TestCooperativeLevel() != D3D_OK || !m_state)
+    {
+        m_gpuTimer.Cancel();
+        return Skip("device not ready");
+    }
+    m_gpuTimer.Resume();
+    const bool drawn =
+        WithClientStateSaved(dev, depth, [&](IDirect3DSurface9* target, const D3DSURFACE_DESC& depthDesc) {
+            return DrawGodRaysOverScene(dev, depth, target, depthDesc, rays);
+        });
+    if (drawn)
+        m_gpuTimer.End();
+    else
+        m_gpuTimer.Cancel();
+    return drawn;
+}
+
+void Renderer::PrepareFullscreenPasses(IDirect3DDevice9* dev)
+{
+    dev->SetDepthStencilSurface(nullptr);
+    dev->SetVertexShader(m_vs);
+    dev->SetVertexDeclaration(m_decl);
+    dev->SetStreamSourceFreq(0, 1);
+    dev->SetRenderState(D3DRS_ZENABLE, D3DZB_FALSE);
+    dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    dev->SetRenderState(D3DRS_TWOSIDEDSTENCILMODE, FALSE);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    dev->SetRenderState(D3DRS_CLIPPLANEENABLE, 0);
+    dev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+}
+
+void Renderer::CopySceneForGodRays(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DVIEWPORT9& vp)
+{
+    IDirect3DSurface9* raySurface = nullptr;
+    const RECT world = ViewportRect(vp);
+    if (SUCCEEDED(m_rays[0]->GetSurfaceLevel(0, &raySurface)))
+    {
+        dev->StretchRect(target, &world, raySurface, nullptr, D3DTEXF_LINEAR);
+        raySurface->Release();
+    }
+}
+
+void Renderer::DrawGodRayMask(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, const GodRayFrame& rays)
+{
+    const D3DVIEWPORT9& vp = rays.viewport;
+    SetTarget(dev, m_rays[1]);
+    dev->SetPixelShader(m_rayMask);
+    const Float4 mask[2] = {
+        {rays.toLightInView[0], rays.toLightInView[1], rays.toLightInView[2], kRayFalloff},
+        {0.0f, kRayThreshold, 1.0f / m_rayW, 1.0f / m_rayH},
+    };
+    dev->SetPixelShaderConstantF(9, &mask[0].x, 2);
+    BindTexture(dev, 0, depthTexture, false);
+    BindTexture(dev, 1, m_rays[0], true);
+    DrawFullscreenTriangle(dev);
+
+    float norm = 0.0f;
+    for (int k = 0; k < kRayTaps; ++k)
+        norm += std::pow(kRayDecay, static_cast<float>(k));
+    const float sunUv[2] = {(rays.sunPx[0] - vp.X) / vp.Width, (rays.sunPx[1] - vp.Y) / vp.Height};
+    dev->SetPixelShader(m_rayBlur);
+    float step = kRayStep;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        SetTarget(dev, m_rays[pass == 0 ? 0 : 1]);
+        const Float4 blur[2] = {
+            {sunUv[0], sunUv[1], step, 1.0f / norm},
+            {static_cast<float>(m_rayW), static_cast<float>(m_rayH), 1.0f / m_rayW, 1.0f / m_rayH},
+        };
+        dev->SetPixelShaderConstantF(9, &blur[0].x, 2);
+        BindTexture(dev, 0, m_rays[pass == 0 ? 1 : 0], true);
+        DrawFullscreenTriangle(dev);
+        step /= kRayTaps;
+    }
+}
+
+bool Renderer::DrawGodRaysOverScene(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
+                                    const D3DSURFACE_DESC& depthDesc, const GodRayFrame& rays)
+{
+    const D3DVIEWPORT9& vp = rays.viewport;
+    if (!m_rays[0] || !m_rays[1] || vp.X + vp.Width > depthDesc.Width || vp.Y + vp.Height > depthDesc.Height)
+        return Skip("god ray targets unavailable");
+    PrepareFullscreenPasses(dev);
+    dev->SetPixelShaderConstantF(0, &rays.common[0][0], 9);
+    DrawGodRayMask(dev, depth.texture, rays);
+    if (!CopyWorldViewport(dev, target, vp))
+        return Skip("no scene copy for the god rays");
+    const RECT world = ViewportRect(vp);
+    dev->SetRenderTarget(0, target);
+    dev->SetViewport(&vp);
+    dev->SetScissorRect(&world);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE,
+                        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    dev->SetPixelShader(m_rayComposite);
+    const Float4 composite[3] = {
+        {0.0f, rays.strength, 0.0f, 0.0f},
+        {rays.colour[0], rays.colour[1], rays.colour[2], 0.0f},
+        {rays.sunPx[0], rays.sunPx[1], 0.0f, rays.glowToCompensate},
+    };
+    dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
+    BindTexture(dev, 2, m_rays[1], true);
+    BindTexture(dev, 3, m_sceneCopy, false);
+    DrawFullscreenTriangle(dev);
+    return true;
+}
+
+bool Renderer::RenderPasses(IDirect3DDevice9* dev, const SceneDepth& depth, IDirect3DSurface9* target,
+                            const D3DSURFACE_DESC& depthDesc, const FrameInputs& in, const Config& cfg,
+                            FogPass pass)
+{
+    const D3DVIEWPORT9 vp = in.viewport;
+    if (const char* outside = ViewportOutsideTarget(vp, depthDesc))
+        return Skip(outside);
+
+    const UINT scale = cfg.quality == 1 ? 4u : 2u;
+    const UINT lowW = (vp.Width + scale - 1) / scale;
+    const UINT lowH = (vp.Height + scale - 1) / scale;
+    const UINT rayW = std::max(1u, static_cast<UINT>(vp.Width) / kRayScale);
+    const UINT rayH = std::max(1u, static_cast<UINT>(vp.Height) / kRayScale);
+    if (!EnsureTargets(dev, lowW, lowH, rayW, rayH))
+        return false;
+
+    float viewToWorld[16];
+    float worldToView[16];
+    if (!WorldViewFromCameraRelative(in, viewToWorld, worldToView))
+        return Skip("view matrix not invertible");
+
+    AuthoredFog authored = {};
+    const bool hasAuthored =
+        cfg.dataMode == 1 && GlobalFogData().Resolve(in.mapId, in.camPos, in.dayFraction, in.lightParams, authored);
+    const FogParams fog = DrawableFog(dev, FogParamsFor(in, cfg, hasAuthored ? &authored : nullptr));
+    const bool samplesNoise = AnyLayerNoise(fog);
+    LogLightChange(in, authored, hasAuthored);
+    const float* proj = in.glProjection;
+    const WorldDepthMapping worldDepth = MapWorldDepth(proj, vp);
+
+    float toLightInView[3];
+    TransformDirection(in.toLight, in.cameraRelativeView, toLightInView);
+    Normalize3(toLightInView);
+
+    float common[9][4] = {
+        {static_cast<float>(vp.X), static_cast<float>(vp.Y), static_cast<float>(vp.Width),
+         static_cast<float>(vp.Height)},
+        {static_cast<float>(scale), static_cast<float>(m_frame % 1024u), 1.0f / depthDesc.Width,
+         1.0f / depthDesc.Height},
+        {proj[0], proj[5], proj[8], proj[9]},
+        {worldDepth.atInfinity, worldDepth.perInverseViewDepth, fog.maxDistance, worldDepth.deepest},
+        {},
+        {},
+        {},
+        {},
+        {static_cast<float>(lowW), static_cast<float>(lowH), 1.0f / lowW, 1.0f / lowH},
+    };
+    std::memcpy(common[4], viewToWorld, sizeof(viewToWorld));
+
+    const long long now = Ticks();
+    const float dx = in.camPos[0] - m_prevCam[0];
+    const float dy = in.camPos[1] - m_prevCam[1];
+    const float dz = in.camPos[2] - m_prevCam[2];
+    const float forwardDot = worldToView[2] * m_prevWorldToView[2] +
+                             worldToView[6] * m_prevWorldToView[6] + worldToView[10] * m_prevWorldToView[10];
+    const bool historyValid = m_historyValid && cfg.temporal > 0.0f && m_prevScale == scale &&
+                              SameFogSettings(cfg, m_prevConfig) && in.mapId == m_prevMap &&
+                              in.lightParams.screenEffectSlot == m_prevLightSlot &&
+                              forwardDot > kHistoryMinForwardDot &&
+                              std::memcmp(m_prevProj, proj, sizeof(m_prevProj)) == 0 &&
+                              std::memcmp(&m_prevViewport, &vp, sizeof(vp)) == 0 &&
+                              TickSeconds(now - m_prevTicks) < kHistoryMaxSeconds &&
+                              dx * dx + dy * dy + dz * dz < kHistoryMaxMove * kHistoryMaxMove;
+    float reproj[16];
+    float prevViewProj[16];
+    Mul4x4(m_prevWorldToView, m_prevProj, prevViewProj);
+    Mul4x4(viewToWorld, prevViewProj, reproj);
+
+    float sunPx[2] = {};
+    bool sunInFront = toLightInView[2] > 0.05f;
+    float sunScreenFade = 0.0f;
+    if (sunInFront)
+    {
+        float ndcX = toLightInView[0] / toLightInView[2] * proj[0] + proj[8];
+        float ndcY = toLightInView[1] / toLightInView[2] * proj[5] + proj[9];
+        sunPx[0] = vp.X + (ndcX * 0.5f + 0.5f) * vp.Width;
+        sunPx[1] = vp.Y + (0.5f - ndcY * 0.5f) * vp.Height;
+        sunScreenFade = std::clamp(1.6f - std::max(std::fabs(ndcX), std::fabs(ndcY)), 0.0f, 1.0f);
+    }
+    const float rayStrength = cfg.godRays * fog.lightVisibility * sunScreenFade;
+    const bool rays = rayStrength > kMinGodRayStrength;
+    const bool raysAfterWorld = rays && pass == FogPass::BeforeTransparents;
+    const bool raysNow = rays && !raysAfterWorld;
+    GodRayFrame godRays;
+    std::memcpy(godRays.common, common, sizeof(common));
+    godRays.viewport = vp;
+    std::memcpy(godRays.toLightInView, toLightInView, sizeof(toLightInView));
+    std::memcpy(godRays.sunPx, sunPx, sizeof(sunPx));
+    godRays.strength = rayStrength;
+    std::memcpy(godRays.colour, fog.rayColor, sizeof(godRays.colour));
+    godRays.glowToCompensate = cfg.glowCompensation ? in.clientGlowAmount : 0.0f;
+
+    LogFrameSummary(dev, now, in, cfg, fog, authored, depthDesc, viewToWorld, toLightInView, sunPx, rayStrength);
+
+    if (LogEnabled(LogLevel::Info))
+        m_gpuTimer.Begin(dev);
+    if (!depth.Refresh(dev))
+    {
+        m_gpuTimer.Cancel();
+        return Skip("multisampled depth copy failed");
+    }
+    IDirect3DTexture9* const depthTexture = depth.texture;
+    PrepareFullscreenPasses(dev);
+    dev->SetPixelShaderConstantF(0, &common[0][0], 9);
+
+    SetTarget(dev, m_marchTarget);
+    const Float4 celestialLight = {toLightInView[0], toLightInView[1], toLightInView[2], fog.lightAboveHorizon};
+    const Float4 march = {cfg.temporal > 0.0f ? 1.0f : 0.0f, fog.maxDistance, fog.horizonStart, fog.farClip};
+    dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
+    dev->SetPixelShaderConstantF(11, &march.x, 1);
+    static_assert(sizeof(FogLayer) == 6 * sizeof(Float4), "FogLayer is six shader registers");
+    dev->SetPixelShaderConstantF(12, &fog.layers[0].start, 6 * kFogLayers);
+    uint32_t pointLightCount = cfg.localLights ? std::min(in.localLights.pointLightCount, kMaxLocalPointLights) : 0;
+    Float4 localConstants[32] = {};
+    for (uint32_t i = 0; i < pointLightCount; ++i)
+    {
+        const LocalPointLight& light = in.localLights.pointLights[i];
+        float relative[3] = {light.position[0] - in.camPos[0], light.position[1] - in.camPos[1],
+                              light.position[2] - in.camPos[2]};
+        float position[3];
+        TransformDirection(relative, in.cameraRelativeView, position);
+        localConstants[i * 3] = {position[0], position[1], position[2], light.cutoff};
+        localConstants[i * 3 + 1] = {light.uploadedColor[0], light.uploadedColor[1], light.uploadedColor[2], 0.0f};
+        localConstants[i * 3 + 2] = {light.attenuation[0], light.attenuation[1], light.attenuation[2], 0.0f};
+    }
+    if (pointLightCount > 0)
+    {
+        if (!m_localLightData)
+            dev->CreateTexture(32, 1, 1, 0, D3DFMT_A32B32G32R32F, D3DPOOL_MANAGED, &m_localLightData, nullptr);
+        D3DLOCKED_RECT locked = {};
+        if (m_localLightData && SUCCEEDED(m_localLightData->LockRect(0, &locked, nullptr, 0)))
+        {
+            std::memcpy(locked.pBits, localConstants, sizeof(localConstants));
+            m_localLightData->UnlockRect(0);
+        }
+        else
+            pointLightCount = 0;
+    }
+    float marchLightLimit = 0.0f;
+    for (uint32_t i = 0; i < pointLightCount; ++i)
+    {
+        const Float4& positionRadius = localConstants[i * 3];
+        const double x = positionRadius.x;
+        const double y = positionRadius.y;
+        const double z = positionRadius.z;
+        const float limit = static_cast<float>(std::sqrt(x * x + y * y + z * z) + positionRadius.w + 0.001);
+        marchLightLimit = std::max(marchLightLimit, std::nextafter(limit, std::numeric_limits<float>::infinity()));
+    }
+    LogUploadedLocalLights(in, cfg, pointLightCount);
+    const Float4 localControl = {static_cast<float>(pointLightCount), marchLightLimit, cfg.localLightPhase, 0.0f};
+    const bool marchesLocalLights = pointLightCount > 0;
+    IDirect3DPixelShader9* const* marches = marchesLocalLights ? (samplesNoise ? m_litNoisyMarch : m_litMarch)
+                                                               : (samplesNoise ? m_noisyMarch : m_march);
+    m_drawnMarch = marches[std::clamp(cfg.quality, 1, 3) - 1];
+    dev->SetPixelShader(m_drawnMarch);
+    dev->SetPixelShaderConstantF(53, &localControl.x, 1);
+    BindTexture(dev, 8, m_localLightData, false);
+    if (cfg.noiseAmount > 0.0f && !m_densityNoise)
+        CreateDensityNoise(dev, &m_densityNoise);
+    BindWrappedVolume(dev, 9, m_densityNoise);
+    UploadLayerNoise(dev, fog, in.camPos, now);
+    const double windPeriod = static_cast<double>(kDensityNoiseSize) / std::max(cfg.noiseScale, 0.001f);
+    const Float4 variation = {m_densityNoise ? cfg.noiseAmount : 0.0f, cfg.noiseScale,
+                              static_cast<float>(std::fmod(TickSeconds(now) * cfg.noiseWindSpeed, windPeriod)), 0.0f};
+    dev->SetPixelShaderConstantF(78, &variation.x, 1);
+    BindTexture(dev, 0, depthTexture, false);
+    DrawFullscreenTriangle(dev);
+
+    m_adaptiveLightingHistory =
+        pointLightCount > 0 || m_prevLocalLightCount > 0 || cfg.noiseAmount > 0.0f || samplesNoise;
+    const bool temporalFiltering = cfg.temporal > 0.0f;
+    IDirect3DTexture9* const fogResult =
+        temporalFiltering ? FilterWithHistory(dev, depthTexture, reproj, historyValid, cfg.temporal) : m_marchTarget;
+
+    if (rays)
+        CopySceneForGodRays(dev, target, vp);
+    if (raysNow)
+        DrawGodRayMask(dev, depthTexture, godRays);
+
+    FogBlend blend = FogBlend::GammaFixedFunction;
+    if (fog.linear)
+        blend = CopyWorldViewport(dev, target, vp) ? FogBlend::LinearOverSceneCopy : FogBlend::LinearFixedFunction;
+    else if (raysNow && CopyWorldViewport(dev, target, vp))
+        blend = FogBlend::GammaOverSceneCopy;
+    const bool sceneBlend = blend == FogBlend::LinearOverSceneCopy || blend == FogBlend::GammaOverSceneCopy;
+    const float blendMode = static_cast<float>(blend);
+    if (blendMode != m_loggedBlendMode)
+    {
+        m_loggedBlendMode = blendMode;
+        VF_LOG_INFO("fog blend: %s", FogBlendName(blend));
+    }
+
+    const RECT world = ViewportRect(vp);
+    dev->SetRenderTarget(0, target);
+    dev->SetViewport(&vp);
+    dev->SetScissorRect(&world);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, sceneBlend ? FALSE : TRUE);
+    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
+    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE,
+                        D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    const CompositeChoice compositeChoice = {marchesLocalLights, samplesNoise, cfg.quality};
+    const bool splitSamples = depth.Multisampled() && EnsureSplitComposites(dev);
+    m_drawnComposite = CompositeShader(compositeChoice, false);
+    m_drawnSplitComposite = splitSamples ? CompositeShader(compositeChoice, true) : nullptr;
+    dev->SetPixelShader(m_drawnComposite);
+    dev->SetPixelShaderConstantF(9, &celestialLight.x, 1);
+    dev->SetPixelShaderConstantF(11, &march.x, 1);
+    const FogParams compositeMarchFog = marchesLocalLights ? WithMeanNoise(fog) : fog;
+    dev->SetPixelShaderConstantF(12, &compositeMarchFog.layers[0].start, 6 * kFogLayers);
+    m_drawnGlowCompensation = cfg.glowCompensation && sceneBlend ? in.clientGlowAmount : 0.0f;
+    const Float4 composite[3] = {
+        {fog.authored ? cfg.classicExposure : cfg.exposure, raysNow && sceneBlend ? rayStrength : 0.0f,
+         static_cast<float>(cfg.debugView), blendMode},
+        {fog.rayColor[0], fog.rayColor[1], fog.rayColor[2], 0.0f},
+        {sunPx[0], sunPx[1], cfg.sunMarker && sunInFront ? 1.0f : 0.0f, m_drawnGlowCompensation},
+    };
+    dev->SetPixelShaderConstantF(96, &composite[0].x, 3);
+    BindTexture(dev, 0, depthTexture, false);
+    BindTexture(dev, 1, fogResult, false);
+    BindTexture(dev, 2, m_rays[1], true);
+    BindTexture(dev, 3, sceneBlend ? m_sceneCopy : nullptr, false);
+    BindTexture(dev, 4, m_marchTarget, false);
+    if (splitSamples)
+        DrawCompositeBySampleDepth(dev, depth.bound, vp, compositeChoice, sceneBlend);
+    else
+        DrawFullscreenTriangle(dev);
+    if (raysAfterWorld)
+    {
+        m_lateGodRays = godRays;
+        m_lateGodRays.pending = true;
+        m_gpuTimer.Pause();
+    }
+    else
+        m_gpuTimer.End();
+    if (pass == FogPass::BeforeTransparents)
+        m_stockFogFit = FitStockFog(fog, in, {composite[0].x, composite[2].w, pointLightCount, cfg.localLightPhase});
+
+    if (DepthProbeDue(now))
+    {
+        m_probeTicks = now;
+        ++m_probeAttempts;
+        IssueDepthProbe(dev, depthTexture, fogResult, vp, worldDepth.deepest, in.dayFraction);
+    }
+
+    std::memcpy(m_prevWorldToView, worldToView, sizeof(m_prevWorldToView));
+    std::memcpy(m_prevProj, in.glProjection, sizeof(m_prevProj));
+    std::memcpy(m_prevCam, in.camPos, sizeof(m_prevCam));
+    m_prevViewport = vp;
+    m_prevScale = scale;
+    m_prevConfig = cfg;
+    m_prevMap = in.mapId;
+    m_prevLightSlot = in.lightParams.screenEffectSlot;
+    m_prevLocalLightCount = pointLightCount;
+    m_prevTicks = now;
+    m_historyValid = temporalFiltering;
+    ++m_frame;
+    return true;
+}

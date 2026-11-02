@@ -116,6 +116,7 @@
 #include "Engine/Source/WXLApi/ApiHost.h"
 #include "Engine/Source/WXLEquip/Equip.h"
 #include "Engine/Source/WXLOutline/Outline.h"
+#include "Engine/Source/WXLWater/water_driver.h"
 
 namespace {
 
@@ -1743,6 +1744,7 @@ bool InitializeGlobal() {
     wxl::InitModules();
     wxl::equip::Init();
     wxl::outline::Init();
+    wxl::water::Init();
     wxl::api::LoadModules();   // WXL\Modules\*.dll, after the built-in extensions so their handlers run first
     EventInitialize(1, 0);
 

@@ -2722,6 +2722,7 @@ int32_t CGxDeviceD3d::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) {
                     this->m_context = 1;
                     this->m_intF5C = 0;
                     this->NotifyOnDeviceRestored();
+                    wxl::events::EmitIfAny(wxl::events::Event::OnDeviceReset, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
                     this->m_viewportDirty = 1;
                     break;
                 }
@@ -3211,6 +3212,7 @@ void CGxDeviceD3d::ISceneBegin() {
                 this->m_intF5C = 0;
                 this->m_d3dStereoDirty = 1;
                 this->NotifyOnDeviceRestored();
+                wxl::events::EmitIfAny(wxl::events::Event::OnDeviceReset, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
             }
         }
 
