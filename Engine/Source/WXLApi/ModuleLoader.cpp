@@ -285,7 +285,6 @@ namespace wxl::api
         wxl::LogCat("MODULE", "the module API is for the 64-bit client: no modules are loaded in this build");
     }
     void UnloadModules() {}
-    void RegisterWaterHost() {}
     std::vector<ModuleStatus> Modules() { return {}; }
 
 #endif

@@ -5,7 +5,7 @@
 file(GLOB_RECURSE PRIVATE_SOURCES CONFIGURE_DEPENDS "*.cpp")
 if (NOT WOWDECOMP_ARCH_64)
     # the module API is 64-bit only: a 32-bit client keeps just the loader's "no modules here" stub
-    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "(ApiTable|ModelAccess|WaterHost)\\.cpp$")
+    list(FILTER PRIVATE_SOURCES EXCLUDE REGEX "(ApiTable|ModelAccess)\\.cpp$")
 endif ()
 
 add_library(WXLApi STATIC
