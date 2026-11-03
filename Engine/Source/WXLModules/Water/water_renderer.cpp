@@ -852,29 +852,7 @@ bool WaterRenderer::UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEW
     if (!saved.colour[0])
         return Skip("no render target");
     if (saved.depth != depthSurface)
-    {
-        // WXL: say what is bound instead of the wrapper's INTZ depth, once per few frames
-        static unsigned s_mismatchLogged = 0;
-        if (s_mismatchLogged++ < 4)
-        {
-            D3DSURFACE_DESC boundDesc = {};
-            D3DSURFACE_DESC wantedDesc = {};
-            D3DSURFACE_DESC colourDesc = {};
-            if (saved.depth)
-                saved.depth->GetDesc(&boundDesc);
-            if (depthSurface)
-                depthSurface->GetDesc(&wantedDesc);
-            saved.colour[0]->GetDesc(&colourDesc);
-            VF_LOG_INFO("fog depth mismatch: bound depth %p (%ux%u fmt %d MS %d), expected INTZ %p (%ux%u fmt %d MS %d), "
-                        "render target %p (%ux%u fmt %d MS %d)",
-                        static_cast<void*>(saved.depth), boundDesc.Width, boundDesc.Height, static_cast<int>(boundDesc.Format),
-                        static_cast<int>(boundDesc.MultiSampleType), static_cast<void*>(depthSurface), wantedDesc.Width,
-                        wantedDesc.Height, static_cast<int>(wantedDesc.Format), static_cast<int>(wantedDesc.MultiSampleType),
-                        static_cast<void*>(saved.colour[0]), colourDesc.Width, colourDesc.Height,
-                        static_cast<int>(colourDesc.Format), static_cast<int>(colourDesc.MultiSampleType));
-        }
         return Skip("fog depth surface not bound");
-    }
     if (FAILED(saved.colour[0]->GetDesc(&rtDesc)) || FAILED(depthSurface->GetDesc(&depthDesc)))
         return Skip("surface description failed");
     if (rtDesc.Width != depthDesc.Width || rtDesc.Height != depthDesc.Height)
