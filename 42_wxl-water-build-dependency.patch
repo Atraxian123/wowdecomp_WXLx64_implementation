@@ -1,0 +1,13 @@
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index 0e41822..58530ac 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -39,7 +39,7 @@ target_include_directories(WowClient
+ target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+ 
+ # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
+-foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
++foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
+     if (TARGET ${wxl_module})
+         add_dependencies(WowClient ${wxl_module})
+     endif ()
