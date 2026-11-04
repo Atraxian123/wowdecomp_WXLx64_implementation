@@ -1,0 +1,55 @@
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+index 1b08090..49890d6 100644
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -1,9 +1,9 @@
+ # WXL module API (64-bit client)
+ 
+ A **module** is a DLL in `<client folder>\WXL\Modules\` that extends the client through `wxl_api.h` and nothing
+-else. Modules today (`Engine/Source/WXLModules/`): **physics**, **creature** and **weapon**. The equip extension
+-is still compiled into the client (its engine calls are the next additions to the table); it asks the weapon
+-module for what to attach to a hand through the `"weapon"` service.
++else. Modules today (`Engine/Source/WXLModules/`): **physics**, **creature**, **weapon** and **equip**. The equip
++module (`wxl_equip.dll`) asks the weapon module for what to attach to a hand through the `"weapon"` service.
++The client keeps only the native file reader and the virtual path provider (`Engine/Source/WXLEquip`).
+ 
+ ## Why this shape
+ 
+@@ -20,8 +20,9 @@ module for what to attach to a hand through the `"weapon"` service.
+ ## Loading
+ 
+ `wxl::api::LoadModules()` runs right after `wxl::equip::Init()`, so a module's handlers run **after** the
+-built-in extensions' (subscribers run in subscription order). DLLs load in file-name order (`10_x.dll` before
+-`20_y.dll`). For each DLL the loader reads the PE header (a 32-bit DLL is reported as such), loads it, checks
++built-in code's (subscribers run in subscription order). DLLs load in file-name order (`10_x.dll` before
++`20_y.dll`): `wxl_equip.dll` loads after `wxl_creature.dll` and before `wxl_physics.dll`, so on
++`OnBuildBonePalette` the equip bone remap and off-hand mirror still run before the physics step. For each DLL the loader reads the PE header (a 32-bit DLL is reported as such), loads it, checks
+ `WxlModuleAbiVersion()`, then calls `WxlModuleInit(api, info)`; a DLL that is not a module, has another ABI,
+ refuses (returns nonzero) or faults is logged (category `MODULE`) and skipped. Nothing is loaded by a 32-bit
+ build of the client.
+@@ -89,9 +90,14 @@ The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file
+ `WxlIni*` functions). The weapon and creature sources moved to modules by changing their `#include` lines to it
+ and nothing else; `Module.cpp` calls `wxl::module::Bind(api)` and then the extension's own `Create()`.
+ 
+-The equip extension still needs engine calls the table does not have yet (`CreateModel`, attach to a parent,
+-texture creation, the item/race display records): those are the next additions, behind the same kind of C
+-functions, and `EquipExtension.cpp` then moves the same way.
++The equip module needed engine calls, so the table has an "engine access" section after `fileExists`
++(`modelInfo`, `readBoneInfo`, `createModel`, `attachModel`, `copyRemappedBones`, `mirrorPalette`,
++`itemDisplayInfo`, `raceClientPrefix`, ... up to `vpathBuildKey`; check `WXL_API_HAS(api, vpathBuildKey)` once).
++They take plain numbers and opaque handles: the core (`Engine/Source/WXLApi/EquipHost.cpp`) reads the client's
++structures under SEH, so a freed instance gives an error or an empty answer and never a fault in the module.
++The equip sources include `EngineApi.hpp` (its own folder) where they used `EngineAccess.h`, and the five
++character-model events (`OnItemSlotChange`, `OnItemSlotClear`, `OnHandItemAttached`, `OnM2SkinFinalize`,
++`OnM2PerFrameUpdate`) are in `wxl_api.h`.
+ 
+ ## Tests
+ 
+@@ -104,6 +110,6 @@ with its build line; `stub/windows.h` is just enough of the Windows header to bu
+   and, through its lazy resolver, asks the core to bake display 33112 with geosets 0/101/201 and its four
+   texture layers.
+ * `weapon_service_test.cpp`: the weapon module registers its service in the core's real registry and the
+-  in-tree `WeaponService.cpp` (the equip side) gets a baked path back through it.
++  equip module's `WeaponService.cpp` gets a baked path back through it.
+ 
+ What cannot be tested off Windows is `WXLApi/ModelAccess.cpp` (it reads the real `CM2Model`) and the Win32 loader.

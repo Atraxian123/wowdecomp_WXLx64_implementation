@@ -38,6 +38,11 @@ target_include_directories(WowClient
 
 target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
 
+# The equipment extension is a module as well: wxl_equip.dll, loaded from WXL\Modules like the others.
+if (TARGET wxl_equip)
+    add_dependencies(WowClient wxl_equip)
+endif ()
+
 # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
 foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
     if (TARGET ${wxl_module})

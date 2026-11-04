@@ -1,14 +1,15 @@
 // Integration test of the weapon module and the in-tree side of its "weapon" service, end to end:
-//   equip extension side:  wxl::scripts::weaponextension::WeaponGetVirtualPath(...)        (WXLEquip/WeaponService.cpp)
+//   equip module side:  wxl::scripts::weaponextension::WeaponGetVirtualPath(...)        (WXLModules/Equip/WeaponService.cpp)
 //        -> core service registry (WXL/Services.cpp)  -> module's WxlWeaponService  -> its sidecar + the vpath table
 //
 //   R=<repo root>; M=$R/Engine/Source/WXLModules/Weapon; T=$R/Tools/WxlModuleTest
 //   g++ -std=c++17 -O1 -fPIC -shared -fvisibility=hidden -I $R/Engine/Source/WXL/Sdk -I $M -I $T/stub $M/*.cpp -o libwxl_weapon.so
-//   g++ -std=c++17 -O1 -I $R -I $R/Engine/Source/WXL/Sdk $T/weapon_service_test.cpp $R/Engine/Source/WXL/Services.cpp \
-//       $R/Engine/Source/WXL/Log.cpp $R/Engine/Source/WXLEquip/WeaponService.cpp -ldl -o weapon_service_test
+//   E=$R/Engine/Source/WXLModules/Equip
+//   g++ -std=c++17 -O1 -I $R -I $R/Engine/Source/WXL/Sdk -I $E $T/weapon_service_test.cpp $T/equip_bind.cpp $R/Engine/Source/WXL/Services.cpp \
+//       $R/Engine/Source/WXL/Log.cpp $E/WeaponService.cpp -ldl -o weapon_service_test
 //   ./weapon_service_test ./libwxl_weapon.so      (run it where data/WXLWeaponModels.csv exists: see make_weapon_data below)
 #include "Engine/Source/WXL/Services.h"
-#include "Engine/Source/WXLEquip/WeaponService.hpp"
+#include "WeaponService.hpp"
 
 #include "wxl_api.h"
 
@@ -91,10 +92,17 @@ namespace
     }
 }
 
+void BindEquipModuleApi(const WxlApi* api);
+
 int main(int argc, char** argv)
 {
     namespace wx = wxl::scripts::weaponextension;
     const char* path = argc > 1 ? argv[1] : "./libwxl_weapon.so";
+
+    // The equip module reaches the weapon module through the module API, so the test binds the same table the core
+    // would hand every module (equip_bind.cpp is the equip module's wxl_module.hpp view of it).
+    static WxlApi api = MakeApi();
+    BindEquipModuleApi(&api);
 
     std::printf("1. before the module is loaded\n");
     char out[300] = {};
@@ -105,7 +113,6 @@ int main(int argc, char** argv)
     void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     if (!h) { std::printf("dlopen failed: %s\n", dlerror()); return 1; }
     auto init = reinterpret_cast<WxlModuleInitFn>(dlsym(h, "WxlModuleInit"));
-    WxlApi api = MakeApi();
     WxlModuleInfo info = {}; info.structSize = sizeof(info);
     Check(init && init(&api, &info) == 0 && std::strcmp(info.name, "weapon") == 0, "WxlModuleInit succeeds");
     size_t size = 0;

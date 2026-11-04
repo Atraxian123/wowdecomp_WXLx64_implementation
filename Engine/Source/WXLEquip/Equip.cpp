@@ -4,7 +4,6 @@
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
-#include "Engine/Source/WXLEquip/EquipExtension.hpp"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
 #include <cstdint>
@@ -103,15 +102,13 @@ namespace wxl::equip
 
     void Init()
     {
-        wxl::LogCat("EQUIP", "Init: installing native reader, virtual path provider and the equip extension");
+        wxl::LogCat("EQUIP", "Init: installing native reader and virtual path provider");
         wxl::storage::SetNativeReader(&ReadThroughSFile);
         wxl::storage::SetNativeExists(&ExistsThroughSFile);
         wxl::scripts::equipextension::VPathRegister();
-        wxl::scripts::equipextension::Create();
-        // Weapon, creature and physics are modules now (WXL\Modules\wxl_weapon.dll, wxl_creature.dll,
-        // wxl_physics.dll), loaded by wxl::api::LoadModules() right after this. They subscribe after the
-        // equip extension, as they did when they were created after it; equip reaches the weapon module
-        // through the "weapon" service (WeaponService.hpp).
+        // The equip extension, weapon, creature and physics are modules (WXL\Modules\wxl_equip.dll, wxl_weapon.dll,
+        // wxl_creature.dll, wxl_physics.dll), loaded by wxl::api::LoadModules() right after this. wxl_equip.dll
+        // reaches the weapon module through the "weapon" service (Modules\Equip\WeaponService.hpp).
         ReportSidecarsOnDisk();
 
         // One glance at which events have handlers; "fired" counts follow once the game reaches each hook.

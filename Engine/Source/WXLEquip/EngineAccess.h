@@ -1,4 +1,5 @@
-// Typed access to the engine objects the equip extension drives.
+// Typed access to the engine objects the equip extension drives. Used by the core side of the equip module's
+// engine access (Engine/Source/WXLApi/EquipHost.cpp): the module itself (WXLModules/Equip) sees none of this.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
 // The injected build reached these objects through raw 32-bit offsets (cmo+0x38, inst+0x2C, hdr+0x30 ...)

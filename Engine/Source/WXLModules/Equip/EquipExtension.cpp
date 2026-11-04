@@ -14,17 +14,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#include "Engine/Source/WXLEquip/EquipExtension.hpp"
-#include "Engine/Source/WXLEquip/WeaponService.hpp"
-#include "Engine/Source/WXLEquip/EngineAccess.h"
-#include "Engine/Source/WXLEquip/VirtualPath.hpp"
-#include "Engine/Source/WXL/Event.h"
-#include "Engine/Source/WXL/HandItem.h"
-#include "Engine/Source/WXL/Log.h"
-#include "Engine/Source/WXL/Storage.h"
-#include "WoW/Source/DB/DBClient/DBClient.h"
-#include "WoW/Source/DB/Rec/ChrRacesRec.h"
-#include "WoW/Source/DB/Rec/ItemDisplayInfoRec.h"
+#include "EquipExtension.hpp"
+#include "EngineApi.hpp"
+#include "WeaponService.hpp"
+#include "wxl_module.hpp"
 
 #include <windows.h>
 
@@ -474,17 +467,10 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                    remap.characterModel;
     }
 
+    /// Bones in the instance's loaded model, 0 when it is gone or not loaded (the core reads it under SEH).
     static uint32_t RenderCtxBoneCountGuarded(void* renderCtx) noexcept
     {
-        if (!renderCtx) return 0;
-        __try
-        {
-            const M2Data* header = eng::ModelHeader(renderCtx);
-            if (!header) return 0;
-            const uint32_t count = header->m_bones.m_count;
-            return count <= 65535 ? count : 0;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+        return eng::ModelBoneCount(renderCtx);
     }
 
     static bool CopyRemappedBonesGuarded(uint8_t* dstBuf,
@@ -498,142 +484,36 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         // The palette is allocated as modelBoneCount * 0x40 by the engine. A stale render-context
         // address can be recycled for a smaller model while g_attached still holds the old remap;
         // an unguarded copy loop would then write beyond that new palette and corrupt the heap.
-        // Require the live destination model to have the exact count the remap was built for and
-        // independently bind every source index to the live character model.
+        // The core does the copy (EquipHost.cpp CopyRemappedBones) and refuses unless the destination
+        // model has the exact count the remap was built for and both instances still hold the models
+        // the remap was built for. The palette pointers are opaque here: only checked for presence.
         if (!dstBuf || !srcBuf || dstBuf == srcBuf || !dstRenderCtx || !srcRenderCtx ||
             remap.count == 0 || remap.count > 65535 ||
             dstBoneCount == 0 || srcBoneCount == 0 ||
             remap.count != dstBoneCount || srcBoneCount > 65535 ||
-            !remap.collectionModel || !remap.characterModel ||
-            eng::ModelShared(dstRenderCtx) !=
-                remap.collectionModel ||
-            eng::ModelShared(srcRenderCtx) !=
-                remap.characterModel)
+            !remap.collectionModel || !remap.characterModel)
             return false;
 
-        __try
-        {
-            for (uint32_t bi = 0; bi < remap.count; ++bi)
-            {
-                uint8_t ci = remap.collToChar[bi];
-                if (ci == 0xFF) continue;
-                if (ci >= srcBoneCount) continue;
-                std::memcpy(dstBuf + bi * eng::kBonePaletteStride,
-                            srcBuf + ci * eng::kBonePaletteStride,
-                            eng::kBonePaletteStride);
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return false;
-        }
-        return true;
+        return eng::CopyRemappedBones(dstRenderCtx, srcRenderCtx, remap.collToChar, remap.count,
+                                      remap.collectionModel, remap.characterModel);
     }
 
-    // Negates the first row (m00..m03) of every bone matrix in renderCtx's own freshly-built bone
-    // palette. For a row-vector, row-major 4x4 (v' = v * M -- this client's convention, matching
-    // every other raw matrix consumer in this file), left-multiplying M by diag(-1,1,1,1) negates
-    // exactly that one row, which is algebraically identical to mirroring the source vertex across
-    // local-space X BEFORE M is applied: v' = (v * diag(-1,1,1,1)) * M. Because it's a local-space
-    // mirror folded into the already-computed world matrices rather than a world-space one, the
-    // model's attach-point position/orientation are completely unaffected -- only its own shape
-    // flips, exactly like the old vertex/normal/winding mirror bake used to produce, but recomputed
-    // fresh from unmodified mainhand mesh bytes every single frame instead of needing a separate
-    // (and crash-prone) pre-mirrored copy of the model on disk. Reuses RenderCtxBoneCountGuarded's
-    // own model/header validation, so a stale renderCtx recycled for a smaller/unrelated model
-    // safely bails out (count 0) instead of writing past the live palette's real size.
-    // Returns true if the palette was (re)built by the engine during THIS frame. The OnBuildBonePalette
-    // event fires on EXIT of CM2Model::AnimateMT, including its early-return paths (animation data not
-    // ready, or m_frameStamp already == scene frame stamp). On those paths the palette was NOT rebuilt,
-    // so mirroring again would un-mirror (double flip) or touch a palette that was never filled.
+    // True if the engine rebuilt the palette during THIS frame. The OnBuildBonePalette event fires on EXIT of
+    // CM2Model::AnimateMT, including its early-return paths (animation data not ready, or m_frameStamp already
+    // equal to the scene frame stamp). On those paths the palette was NOT rebuilt, so mirroring again would
+    // un-mirror (double flip) or touch a palette that was never filled. The check is made by the core.
     static bool PaletteBuiltThisFrameGuarded(void* renderCtx, uint32_t& stampOut) noexcept
     {
-        __try
-        {
-            auto* m = static_cast<CM2Model*>(renderCtx);
-            if (!m || !m->m_scene || !m->m_shared || !m->m_shared->m_data) return false;
-            if (!(m->m_fFlags & 1)) return false;                   // animation data not ready yet
-            if (!m->m_boneMatrices) return false;
-            stampOut = m->m_scene->m_frameStamp;
-            return m->m_frameStamp == stampOut;                      // built this frame
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return eng::PaletteBuiltThisFrame(renderCtx, stampOut);
     }
 
-    // Mirrors the weapon across the model's local Y axis, bone by bone, on the freshly built palette.
-    //
-    // A palette matrix maps a model-space vertex to view space: M_b = L_b * W, where L_b is the bone's
-    // posed local transform and W = m_matrixF4 (world * view). The correct mirrored model is the posed
-    // model reflected in model space: v' = (v * L_b) * S * W, S = diag(1,-1,1). That is NOT S * M_b
-    // (reflect the vertex first): that only holds for bones lying on the mirror plane, and displaced every
-    // bone whose pivot has y != 0. So:
-    //
-    //   regular bone   : M_b' = M_b * Q,  Q = W^-1 * S * W      (one Q per model per frame)
-    //
-    //   billboard bone : the engine rebuilds these from the CAMERA every frame (rotation rows replaced by
-    //                    view-aligned ones, translation re-pinned so the bone pivot p stays at
-    //                    pivot_view = p * M_b). Applying Q to the rotation would turn the quad away from
-    //                    the camera, and reflecting vertices around the model origin (the previous code)
-    //                    moves the pivot. Instead: reflect the quad in its LOCAL Y about its own pivot
-    //                    (negate row b, and d += 2*p.y*rowB_old -- this keeps p fixed), so it still faces
-    //                    the camera but has the reversed winding the swapped cull mode expects, then move
-    //                    the pivot to where the mirrored skeleton puts it: pivot_view * Q.
-    //
-    // Billboard test is the engine's own (CM2Model::AnimateMT): (boneData->m_flags | bone->m_flags) & 0x78.
-    // Children of a billboard bone are mirrored by the regular rule (positions right, orientation not
-    // re-billboarded).
-    static void MirrorPaletteImpl(CM2Model* m, uint32_t boneCount) noexcept
-    {
-        M2Data* data = m->m_shared->m_data;
-        const C44Matrix W = m->m_matrixF4;
-        const bool haveQ = std::fabs(W.Determinant()) > 1e-12f;
-        C44Matrix Q;
-        Q.Identity();
-        if (haveQ)
-        {
-            C44Matrix S;
-            S.Identity();
-            S.b1 = -1.0f;
-            Q = W.Inverse() * S * W;
-        }
-
-        for (uint32_t bi = 0; bi < boneCount; ++bi)
-        {
-            C44Matrix& M = m->m_boneMatrices[bi];
-            const uint32_t flags = data->m_bones[bi].m_flags | (m->m_bones ? m->m_bones[bi].m_flags : 0u);
-
-            if (flags & 0x78) // billboard bone
-            {
-                const C3Vector p = data->m_bones[bi].m_pivot;
-                const C3Vector pv = p * M;                         // where the engine pinned the pivot
-                const C3Vector pq = haveQ ? (pv * Q) : pv;         // where the mirrored skeleton needs it
-                const float ob0 = M.b0, ob1 = M.b1, ob2 = M.b2;
-                M.b0 = -ob0; M.b1 = -ob1; M.b2 = -ob2;             // local-Y reflection (keeps camera facing)
-                M.d0 += 2.0f * p.y * ob0 + (pq.x - pv.x);
-                M.d1 += 2.0f * p.y * ob1 + (pq.y - pv.y);
-                M.d2 += 2.0f * p.y * ob2 + (pq.z - pv.z);
-            }
-            else if (haveQ)
-            {
-                M = M * Q;
-            }
-            else
-            {
-                M.b0 = -M.b0; M.b1 = -M.b1; M.b2 = -M.b2; M.b3 = -M.b3; // degenerate world matrix fallback
-            }
-        }
-    }
-
+    // Mirrors the weapon across the model's local Y axis, bone by bone, on the freshly built palette. The matrix
+    // math (a Q = W^-1 * S * W reflection per model, billboard bones reflected about their own pivot) is the
+    // core's: EquipHost.cpp MirrorPalette. A stale renderCtx recycled for a smaller or unrelated model bails out
+    // there (count 0) instead of writing past the live palette.
     static void ApplyOffhandAutoMirrorGuarded(void* renderCtx) noexcept
     {
-        if (!renderCtx) return;
-        const uint32_t boneCount = RenderCtxBoneCountGuarded(renderCtx);
-        if (boneCount == 0) return;
-        auto* m = static_cast<CM2Model*>(renderCtx);
-        if (!m->m_boneMatrices || !m->m_shared || !m->m_shared->m_data) return;
-
-        __try { MirrorPaletteImpl(m, boneCount); }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        if (renderCtx) eng::MirrorPalette(renderCtx);
     }
 
     // SEH-only wrapper: no C++ objects in this function, __try is safe.
@@ -743,18 +623,21 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         EquipLog("  BoneRemap: %u bones -> by CRC=%u, by key bone id=%u, by key lookup=%u, inherited from parent=%u, UNMATCHED=%u",
                  (uint32_t)r.count, byHow[1], byHow[2], byHow[3], byHow[4], unmatched);
 
-        const M2Data* collHdr = eng::ModelHeader(collRc);
-        if (!collHdr) return;
-        const uint32_t collN = collHdr->m_bones.m_count < 256 ? collHdr->m_bones.m_count : 256;
-        const M2CompBone* cb = collN ? collHdr->m_bones.Data() : nullptr;
+        WxlBoneInfo bones[256] = {};
+        WxlBoneRead read = {};
+        read.structSize = sizeof(read);
+        read.maxBones   = 256;
+        read.bones      = bones;
+        if (eng::ReadBones(collRc, read) != 0 || !read.bonesOk) return;
+        const uint32_t collN = read.boneCount < 256 ? read.boneCount : 256;
+        const WxlBoneInfo* cb = collN ? bones : nullptr;
         if (!cb) return;
         static const char* const kHow[5] = { "none", "crc", "key", "lookup", "parent" };
         for (uint32_t i = 0; i < collN; ++i)
         {
             const uint32_t to = r.collToChar[i];
             EquipLog("    bone %2u (crc=0x%08X keyId=%d parent=%d) -> char bone %s%u (%s)",
-                     i, cb[i].m_boneNameCRC, static_cast<int32_t>(cb[i].m_boneId),
-                     static_cast<int16_t>(cb[i].m_parentIndex),
+                     i, cb[i].nameCrc, cb[i].boneId, static_cast<int16_t>(cb[i].parent),
                      to == 0xFF ? "NONE " : "", to == 0xFF ? 0u : to,
                      kHow[r.how[i] < 5 ? r.how[i] : 0]);
         }
@@ -768,15 +651,6 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         return s_value;
     }
 
-    /// True once a CM2Shared has finished loading AND parsing (FinishLoading ran M2Init and set m_flags bit 0),
-    /// i.e. its header's M2Array members are relocated and safe to read through Data().
-    static bool SharedFullyParsed(void* shared) noexcept
-    {
-        if (!shared) return false;
-        const auto* sh = static_cast<const CM2Shared*>(shared);
-        return (sh->m_flags & 1u) != 0 && sh->m_data != nullptr;
-    }
-
     static BoneRemap BuildBoneRemapCore(void* collRc, void* charRc) noexcept
     {
         BoneRemap r = {};
@@ -784,40 +658,53 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         __try
         {
             // Live models of the two instances. A remap is only valid for the exact pair it was built for.
-            void* collM2 = eng::ModelShared(collRc);
-            void* charM2 = eng::ModelShared(charRc);
+            WxlModelInfo collInfo, charInfo;
+            if (!eng::Info(collRc, collInfo) || !eng::Info(charRc, charInfo)) return r;
+            void* collM2 = collInfo.shared;
+            void* charM2 = charInfo.shared;
             if (!collM2 || !charM2) return r;
 
-            // CM2Shared::Load allocates m_data up front and fills it from an async read; M2Init (which turns the
-            // self-relative M2Array offsets into usable ones) only runs in FinishLoading, which then sets
-            // m_flags bit 0. Until that bit is set m_bones.m_count can already look valid while m_bones.Data()
-            // points at unrelocated/uninitialised memory -- every bone then reads as the same garbage record
-            // and the remap gets built (and cached) from it. Wait for both models; callers retry on !resolved.
-            if (!SharedFullyParsed(collM2) || !SharedFullyParsed(charM2))
+            // The model file allocates its header up front and fills it from an async read; the self-relative
+            // arrays are only usable once loading finished and the file was parsed (WxlModelInfo::parsed).
+            // Until then the bone count can already look valid while the table points at unrelocated memory --
+            // every bone then reads as the same garbage record and the remap gets built (and cached) from it.
+            // Wait for both models; callers retry on !resolved.
+            if (!collInfo.parsed || !charInfo.parsed)
             {
                 if (wxl::LogThrottle("equip.boneRemap.notReady", 12, 500))
                     EquipLog("  BuildBoneRemap: deferred, model not fully parsed yet (coll=%d char=%d)",
-                             SharedFullyParsed(collM2) ? 1 : 0, SharedFullyParsed(charM2) ? 1 : 0);
+                             collInfo.parsed ? 1 : 0, charInfo.parsed ? 1 : 0);
                 return r;
             }
             r.collectionModel = collM2;
             r.characterModel  = charM2;
             r.resolved        = true;
 
-            // The parsed .m2 headers. M2Array members are self-relative, so the bone and lookup arrays are
-            // reached with Data() instead of a stored raw pointer.
-            const M2Data* collHdr = eng::ModelHeader(collRc);
-            const M2Data* charHdr = eng::ModelHeader(charRc);
-            if (!collHdr || !charHdr) return r;
+            // The bone tables of the two models, read by the core. Up to 256 bones each (a char bone index must
+            // fit in a byte below 0xFF) and the first 2048 entries of the key-bone lookup.
+            WxlBoneInfo collBones[256] = {};
+            WxlBoneInfo charBones[256] = {};
+            uint16_t    charLutBuf[2048] = {};
+            WxlBoneRead collRead = {};
+            WxlBoneRead charRead = {};
+            collRead.structSize = sizeof(collRead);
+            collRead.maxBones   = 256;
+            collRead.bones      = collBones;
+            charRead.structSize = sizeof(charRead);
+            charRead.maxBones   = 256;
+            charRead.bones      = charBones;
+            charRead.maxLookup  = 2048;
+            charRead.lookup     = charLutBuf;
+            if (eng::ReadBones(collRc, collRead) != 0 || eng::ReadBones(charRc, charRead) != 0) return r;
 
             // collToChar holds 256 entries, and a char bone index must fit in a byte below 0xFF.
-            const uint32_t collN = collHdr->m_bones.m_count < 256 ? collHdr->m_bones.m_count : 256;
-            const uint32_t charN = charHdr->m_bones.m_count;
-            const M2CompBone* collBase = collN ? collHdr->m_bones.Data() : nullptr;
-            const M2CompBone* charBase = charN ? charHdr->m_bones.Data() : nullptr;
+            const uint32_t collN = collRead.boneCount < 256 ? collRead.boneCount : 256;
+            const uint32_t charN = charRead.boneCount;
+            const WxlBoneInfo* collBase = (collN && collRead.bonesOk) ? collBones : nullptr;
+            const WxlBoneInfo* charBase = (charN && charRead.bonesOk) ? charBones : nullptr;
 
-            const uint32_t  charLutN = charHdr->m_boneIndicesById.m_count;
-            const uint16_t* charLut  = charLutN ? charHdr->m_boneIndicesById.Data() : nullptr;
+            const uint32_t  charLutN = charRead.lookupCount < 2048 ? charRead.lookupCount : 2048;
+            const uint16_t* charLut  = (charRead.lookupCount && charRead.lookupOk) ? charLutBuf : nullptr;
 
             EquipLog("  BuildBoneRemap: collN=%u charN=%u collBase=%p charBase=%p charLut=%p",
                      collN, charN, static_cast<const void*>(collBase), static_cast<const void*>(charBase),
@@ -836,11 +723,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
             {
                 for (uint32_t i = 0; i < collN; ++i)
                 {
-                    const uint32_t collCrc = collBase[i].m_boneNameCRC;
+                    const uint32_t collCrc = collBase[i].nameCrc;
                     if (collCrc == 0) continue;
                     for (uint32_t j = 0; j < charN && j < 255; ++j)
                     {
-                        if (charBase[j].m_boneNameCRC == collCrc) { r.collToChar[i] = static_cast<uint8_t>(j); r.how[i] = 1; break; }
+                        if (charBase[j].nameCrc == collCrc) { r.collToChar[i] = static_cast<uint8_t>(j); r.how[i] = 1; break; }
                     }
                 }
             }
@@ -851,11 +738,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 for (uint32_t i = 0; i < collN; ++i)
                 {
                     if (s_crcPrimary && r.collToChar[i] != 0xFF) continue;
-                    const int32_t key = static_cast<int32_t>(collBase[i].m_boneId);
+                    const int32_t key = collBase[i].boneId;
                     if (key < 0) continue;
                     for (uint32_t j = 0; j < charN && j < 255; ++j)
                     {
-                        if (static_cast<int32_t>(charBase[j].m_boneId) == key)
+                        if (charBase[j].boneId == key)
                         {
                             r.collToChar[i] = static_cast<uint8_t>(j);
                             r.how[i] = 2; // (replaces a CRC match for this bone unless CrcPrimary)
@@ -871,7 +758,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 for (uint32_t i = 0; i < collN; ++i)
                 {
                     if (r.collToChar[i] != 0xFF) continue;
-                    const int32_t key = static_cast<int32_t>(collBase[i].m_boneId);
+                    const int32_t key = collBase[i].boneId;
                     if (key < 0 || static_cast<uint32_t>(key) >= charLutN) continue;
                     const int16_t ci = static_cast<int16_t>(charLut[key]);
                     if (ci >= 0 && static_cast<uint32_t>(ci) < charN && ci < 255)
@@ -889,7 +776,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                 for (uint32_t i = 0; i < collN; ++i)
                 {
                     if (r.collToChar[i] != 0xFF) continue;
-                    const int16_t parent = static_cast<int16_t>(collBase[i].m_parentIndex);
+                    const int16_t parent = static_cast<int16_t>(collBase[i].parent);
                     if (parent < 0 || static_cast<uint32_t>(parent) >= collN) continue;
                     if (r.collToChar[parent] != 0xFF)
                     {
@@ -1951,59 +1838,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     // Must run before kFinalizeSkin builds the D3D index buffer — the GPU IB is static after
     // that point. Called from OnM2SkinFinalize (the primary path) and Phase3 (fallback for
     // the rare sync-load case where the model is already available at equip time).
-    static void ApplyRawTriFilter(M2SkinProfile* skin, const GeosetFilter& filter) noexcept
+    static void ApplyRawTriFilter(void* skin, const GeosetFilter& filter) noexcept
     {
+        // The core collapses the triangles of every submesh whose id is not listed (EquipHost.cpp FilterSkin).
         if (!skin || filter.count == 0) return;
-        __try
-        {
-            const uint32_t indexCount   = skin->m_indices.m_count;
-            const uint32_t submeshCount = skin->m_skinSections.m_count;
-            if (indexCount == 0 || submeshCount == 0) return;
-
-            uint16_t*             indices = skin->m_indices.Data();
-            const M2SkinSection*  subs    = skin->m_skinSections.Data();
-
-            EquipLog("  ApplyRawTriFilter: submeshCount=%u indexCount=%u filter=[%u %u %u %u](n=%u)",
-                     submeshCount, indexCount,
-                     filter.count > 0 ? filter.ids[0] : 0,
-                     filter.count > 1 ? filter.ids[1] : 0,
-                     filter.count > 2 ? filter.ids[2] : 0,
-                     filter.count > 3 ? filter.ids[3] : 0,
-                     filter.count);
-            for (uint32_t si = 0; si < submeshCount; ++si)
-            {
-                // The decomp keeps the section id and the level together in one uint32.
-                const uint16_t secId   = static_cast<uint16_t>(subs[si].m_skinSectionId & 0xFFFF);
-                const uint16_t lvl     = static_cast<uint16_t>(subs[si].m_skinSectionId >> 16);
-                const uint16_t start16 = subs[si].m_indexStart;
-                const uint16_t count16 = subs[si].m_indexCount;
-                bool visible = false;
-                for (uint32_t fi = 0; fi < filter.count; ++fi)
-                    if (filter.ids[fi] == secId) { visible = true; break; }
-                EquipLog("    submesh[%u]: skinSectionId=%u level=%u indexStart=%u indexCount=%u -> %s",
-                         si, (uint32_t)secId, (uint32_t)lvl, (uint32_t)start16, (uint32_t)count16,
-                         visible ? "KEEP" : "ZERO");
-                if (!visible)
-                {
-                    uint32_t count = count16;
-                    if (count == 0) continue;
-
-                    uint32_t start = (static_cast<uint32_t>(lvl) << 16) | start16;
-                    if (start > indexCount || count > indexCount - start)
-                    {
-                        start = start16;
-                        if (start > indexCount || count > indexCount - start) continue;
-                    }
-
-                    // (v,v,v) on the section's own first vertex rather than vertex 0: see VirtualPath.cpp's
-                    // ApplySkinByteFilter -- the cursor hit test needs every index inside the section.
-                    const uint16_t fill = subs[si].m_vertexCount ? subs[si].m_vertexStart : static_cast<uint16_t>(0);
-                    for (uint32_t k = 0; k < count; ++k)
-                        indices[start + k] = fill;
-                }
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        eng::FilterSkin(skin, filter.ids, filter.count);
     }
 
     // ─── Detach / rebuild ─────────────────────────────────────────────────────────
@@ -2433,36 +2272,9 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
     // ignored). The hand-item resolver already makes vanilla load the virtual offhand key, so that instance
     // is the right model AND carries all the setup AddLink performs (texture binding, item visual, flags).
     // Replacing it with a bare CreateModel+AttachToParent instance skipped that setup.
-    static bool NameStemEqualsNoCase(const char* a, const char* b) noexcept
-    {
-        auto stem = [](const char* p, char* out, size_t cap) {
-            const char* last = p;
-            for (const char* c = p; *c; ++c) if (*c == '\\' || *c == '/') last = c + 1;
-            size_t n = 0;
-            for (const char* c = last; *c && n + 1 < cap; ++c) out[n++] = (char)tolower((unsigned char)*c);
-            out[n] = 0;
-            char* dot = strrchr(out, '.');
-            if (dot) *dot = 0;
-        };
-        char sa[260], sb[260];
-        stem(a, sa, sizeof(sa)); stem(b, sb, sizeof(sb));
-        return sa[0] && strcmp(sa, sb) == 0;
-    }
-
     static void* FindAttachedChildByNameGuarded(void* parent, uint32_t attachId, const char* vpath) noexcept
     {
-        if (!parent || !vpath) return nullptr;
-        __try
-        {
-            uint32_t guard = 0;
-            for (CM2Model* c = static_cast<CM2Model*>(parent)->m_attachList; c && guard < 256; c = c->m_attachNext, ++guard)
-            {
-                if (c->m_attachmentId != attachId || !c->m_shared) continue;
-                if (NameStemEqualsNoCase(c->m_shared->m_fileName, vpath)) return c;
-            }
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER) {}
-        return nullptr;
+        return eng::FindAttachedChild(parent, attachId, vpath);   // the core walks the attach list under SEH
     }
 
     // Renderer query (see wxl::hooks::IsModelMirrored): true for instances whose palette we mirror at runtime,
@@ -2588,7 +2400,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
                                 // already happens for this slot -- falls through to the cutoff after.
         {
             void* subObjEarly = eng::CmoModel(a.charModelObj);
-            uint32_t displayIdEarly = a.itemDataPtr ? GuardedReadU32(a.itemDataPtr) : 0;
+            uint32_t displayIdEarly = a.itemDataPtr ? eng::ItemDataDisplayId(a.itemDataPtr) : 0;
             HandleOffhandWeaponOverride(a.charModelObj, subObjEarly, displayIdEarly);
         }
         if (a.modelSlot >= 14) return;
@@ -2600,7 +2412,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         // Unequip path: display_id == 0 when the slot is being cleared via the equip hook.
         uint32_t displayId = 0;
         if (a.itemDataPtr)
-            displayId = GuardedReadU32(a.itemDataPtr);
+            displayId = eng::ItemDataDisplayId(a.itemDataPtr);
 
         EquipLog("--- OnItemSlotChange cmo=0x%p slot=%u idp=0x%p displayId=%u subObj=0x%p",
                  cmo, a.modelSlot, a.itemDataPtr, displayId, subObj);
@@ -2621,8 +2433,8 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         // reading the fixed-base image -- not a hook, so no HookAttach/original chain is involved.
         // Needs the true native fields, not whatever a weapon-slot override may have substituted for
         // some other display id, same reasoning as PatchWeaponModelByDisplayId above.
-        ItemDisplayInfoRec dispRec;
-        const bool ok = g_itemDisplayInfoDB.GetRecord(static_cast<int32_t>(displayId), &dispRec);
+        WxlItemDisplayInfo dispRec;
+        const bool ok = eng::ItemDisplayInfo(displayId, dispRec);
         const char* modelName1 = nullptr;
         const char* modelName2 = nullptr;
         const char* texName1   = nullptr;
@@ -2630,11 +2442,11 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         const char* icon2str   = nullptr;
         if (ok)
         {
-            modelName1 = dispRec.m_modelName[0];
-            modelName2 = dispRec.m_modelName[1];
-            texName1   = dispRec.m_modelTexture[0];
-            texName2   = dispRec.m_modelTexture[1];
-            icon2str   = dispRec.m_inventoryIcon[1];
+            modelName1 = dispRec.modelName[0][0]    ? dispRec.modelName[0]    : nullptr;
+            modelName2 = dispRec.modelName[1][0]    ? dispRec.modelName[1]    : nullptr;
+            texName1   = dispRec.modelTexture[0][0] ? dispRec.modelTexture[0] : nullptr;
+            texName2   = dispRec.modelTexture[1][0] ? dispRec.modelTexture[1] : nullptr;
+            icon2str   = dispRec.icon2[0]           ? dispRec.icon2           : nullptr;
             EquipLog("  DBC ok: model1='%s' model2='%s' tex1='%s' tex2='%s' icon2ptr=0x%p icon2='%s'",
                      modelName1 ? modelName1 : "(null)", modelName2 ? modelName2 : "(null)",
                      texName1 ? texName1 : "(null)", texName2 ? texName2 : "(null)",
@@ -2675,13 +2487,15 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
 
         // ChrRaces lookup for race code and gender string.
         uint32_t raceId = eng::CmoRace(cmo);
-        if (static_cast<int32_t>(raceId) < 0 || static_cast<int32_t>(raceId) > g_chrRacesDB.m_maxID)
+        char    raceCodeBuf[64] = {};
+        int32_t maxRaceId = -1;
+        const int raceStatus = eng::RaceClientPrefix(raceId, raceCodeBuf, sizeof(raceCodeBuf), maxRaceId);
+        if (raceStatus == 1)
         {
-            EquipLog("  raceId=%u out of range [0,%d], bail", raceId, g_chrRacesDB.m_maxID);
+            EquipLog("  raceId=%u out of range [0,%d], bail", raceId, maxRaceId);
             return;
         }
-        ChrRacesRec* chrRec = g_chrRacesDB.GetRecord(static_cast<int32_t>(raceId));
-        if (!chrRec)
+        if (raceStatus == 2)
         {
             EquipLog("  chrRec null for raceId=%u, bail", raceId);
             return;
@@ -2691,7 +2505,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         // client uses for its own helm paths (s_fileDecorations at 0x00AC46A0 = { "M", "F", "U" }). The old offsets
         // file mislabelled that address "Male"/"Female", which produced names no file has (_Be_Female.mdx).
         static const char* const kGenderStrings[2] = { "M", "F" };
-        const char* raceCode  = chrRec->m_clientPrefix;
+        const char* raceCode  = raceStatus == 0 ? raceCodeBuf : nullptr;
         uint32_t    genderIdx = eng::CmoGender(cmo);
         const char* genderStr = genderIdx < 2 ? kGenderStrings[genderIdx] : nullptr;
         if (!raceCode || !genderStr)
@@ -3650,13 +3464,26 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         }
     }
 
+    namespace
+    {
+        // The module API's hooks are C functions returning int.
+        int HandItemResolverC(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize)
+        {
+            return ResolveHandItemModelFile(displayId, invSlot, out, outSize) ? 1 : 0;
+        }
+
+        int MirroredModelQueryC(const void* model)
+        {
+            return IsOffhandRuntimeMirrored(model) ? 1 : 0;
+        }
+    }
+
     void Create()
     {
-        // Constructed explicitly from wxl::equip::Init(): a file-scope instance in a static library is
-        // discarded by the linker, and its handlers would silently never bind.
+        // Constructed explicitly from WxlModuleInit (Module.cpp), after the module API is bound.
         static EquipExtension s_equipExtension;
         (void)s_equipExtension;
-        wxl::hooks::SetHandItemModelResolver(&ResolveHandItemModelFile);
-        wxl::hooks::SetMirroredModelQuery(&IsOffhandRuntimeMirrored);
+        eng::SetHandItemModelResolver(&HandItemResolverC);
+        eng::SetMirroredModelQuery(&MirroredModelQueryC);
     }
 }

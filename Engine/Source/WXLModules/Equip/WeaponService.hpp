@@ -1,4 +1,4 @@
-// The equip extension's view of the weapon module (a DLL, WXL\Modules\wxl_weapon.dll).
+// The equip module's view of the weapon module (both DLLs in WXL\Modules\).
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
 // The weapon module decides which model a weapon gets and bakes it; the equip extension, which attaches the
