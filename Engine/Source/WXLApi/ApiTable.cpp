@@ -12,6 +12,7 @@
 #include "Engine/Source/WXL/ModuleRegistry.h"
 #include "Engine/Source/WXL/Services.h"
 #include "Engine/Source/WXL/Storage.h"
+#include "Engine/Source/WXLApi/EquipHost.h"
 #include "Engine/Source/WXLApi/ModelAccess.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
@@ -186,6 +187,33 @@ namespace wxl::api
             &RegisterFileProvider,
             &RegisterVirtualKeyQuery,
             &FileExists,
+            // engine access for the equip module (EquipHost.cpp)
+            &wxl::api::equiphost::ModelInfo,
+            &wxl::api::equiphost::ReadBoneInfo,
+            &wxl::api::equiphost::SharedPath,
+            &wxl::api::equiphost::SharedSkin,
+            &wxl::api::equiphost::FilterSkin,
+            &wxl::api::equiphost::CmoInfo,
+            &wxl::api::equiphost::CreateModel,
+            &wxl::api::equiphost::AttachModel,
+            &wxl::api::equiphost::DetachSlot,
+            &wxl::api::equiphost::ReleaseModel,
+            &wxl::api::equiphost::BindTexture,
+            &wxl::api::equiphost::LoadTexture,
+            &wxl::api::equiphost::FindAttachedChild,
+            &wxl::api::equiphost::HasSequence,
+            &wxl::api::equiphost::BoneSequenceId,
+            &wxl::api::equiphost::SetBoneSequence,
+            &wxl::api::equiphost::SeqStartAnchor,
+            &wxl::api::equiphost::CopyRemappedBones,
+            &wxl::api::equiphost::PaletteBuiltThisFrame,
+            &wxl::api::equiphost::MirrorPalette,
+            &wxl::api::equiphost::ItemDisplayInfo,
+            &wxl::api::equiphost::RaceClientPrefix,
+            &wxl::api::equiphost::ItemDataDisplayId,
+            &wxl::api::equiphost::SetHandItemModelResolver,
+            &wxl::api::equiphost::SetMirroredModelQuery,
+            &wxl::api::equiphost::VPathBuildKey,
         };
     }
 

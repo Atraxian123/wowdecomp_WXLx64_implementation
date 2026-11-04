@@ -57,23 +57,73 @@ namespace wxl
             return t;
         }
 
-        // [Log] Enabled in WXLExtendedEquipment.ini, which sits beside the client executable (the same file
-        // the equip modules read; WXLCore cannot call their helper, so the lookup is repeated here, kept
-        // free of any logging so it cannot recurse). Missing file, section or key: off.
-        bool IniEnabled()
+        // WXLExtendedEquipment.ini sits beside the client executable (the same file the equip modules read;
+        // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
+        // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
+        bool IniLogFlag(const char* key, bool fallback)
         {
 #ifdef _WIN32
             char path[MAX_PATH] = {};
             const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
-            if (n == 0 || n >= sizeof(path)) return false;
+            if (n == 0 || n >= sizeof(path)) return fallback;
             char* slash = std::strrchr(path, '\\');
             const char* name = "WXLExtendedEquipment.ini";
-            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return false;
+            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
             std::strcpy(slash + 1, name);
-            return GetPrivateProfileIntA("Log", "Enabled", 0, path) != 0;
+            return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, path) != 0;
 #else
-            return false;
+            (void)key;
+            return fallback;
 #endif
+        }
+
+        // [Log] Enabled: off unless set.
+        bool IniEnabled()
+        {
+            return IniLogFlag("Enabled", false);
+        }
+
+        // The modules that have their own [Log] switch, and the categories each one writes under.
+        enum class Area { None, ModernM2, Equip, Physics, Creature, Weapon };
+
+        Area AreaOf(const char* category)
+        {
+            if (!category) return Area::None;
+            if (!std::strcmp(category, "M2")) return Area::ModernM2;
+            if (!std::strcmp(category, "EQUIP") || !std::strcmp(category, "SIDECAR") || !std::strcmp(category, "VPATH"))
+                return Area::Equip;
+            if (!std::strcmp(category, "PHYS")) return Area::Physics;
+            if (!std::strcmp(category, "CREATURE")) return Area::Creature;
+            if (!std::strcmp(category, "WEAPON")) return Area::Weapon;
+            return Area::None;
+        }
+
+        // Read once, on the first line a module writes; every key defaults to on.
+        struct AreaFlags
+        {
+            bool modernM2 = true, equip = true, physics = true, creature = true, weapon = true;
+            AreaFlags()
+            {
+                modernM2 = IniLogFlag("ModernM2", true);
+                equip    = IniLogFlag("Equip", true);
+                physics  = IniLogFlag("Physics", true);
+                creature = IniLogFlag("Creature", true);
+                weapon   = IniLogFlag("Weapon", true);
+            }
+        };
+
+        bool AreaEnabled(Area area)
+        {
+            static const AreaFlags flags;
+            switch (area)
+            {
+                case Area::ModernM2: return flags.modernM2;
+                case Area::Equip:    return flags.equip;
+                case Area::Physics:  return flags.physics;
+                case Area::Creature: return flags.creature;
+                case Area::Weapon:   return flags.weapon;
+                default:             return true;
+            }
         }
 
         bool DecideEnabled()
@@ -111,7 +161,7 @@ namespace wxl
             {
                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
                 if (!sink.file) { sink.capped = true; return; }
-                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1) ====\n");
+                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
             }
 
             const Timestamp t = Now();
@@ -138,9 +188,14 @@ namespace wxl
         return enabled;
     }
 
+    bool LogCategoryEnabled(const char* category)
+    {
+        return LogEnabled() && AreaEnabled(AreaOf(category));
+    }
+
     void LogCatV(const char* category, const char* format, va_list args)
     {
-        if (!LogEnabled()) return;
+        if (!LogCategoryEnabled(category)) return;
         WriteLine(category ? category : "WXL", format, args);
     }
 

@@ -14,6 +14,20 @@
 // The environment variable WXL_LOG overrides the ini for one run: WXL_LOG=1 forces logging on,
 // WXL_LOG=0 forces it off. The choice is made once, on the first line any module tries to write.
 //
+// With logging on, each module can be switched off on its own in the same [Log] section. Every key
+// defaults to 1 (on); set one to 0 to drop that module's lines:
+//
+//     [Log]
+//     Enabled=1
+//     ModernM2=1      ; category M2
+//     Equip=1         ; categories EQUIP, SIDECAR, VPATH
+//     Physics=1       ; category PHYS
+//     Creature=1      ; category CREATURE
+//     Weapon=1        ; category WEAPON
+//
+// Every other category (WXL, MODULE, EVENT, STORAGE, BLP, CULL, ANIM, OUTLINE, CRASH ...) is governed by
+// Enabled alone. The per-module keys only narrow what Enabled lets through: they never switch logging on.
+//
 // Line format:  [HH:MM:SS.mmm] [T<thread id>] [CATEGORY] message
 #pragma once
 
@@ -24,6 +38,11 @@ namespace wxl
     /// Whether logging is on for this run (decided once, on first use): env WXL_LOG, else the ini's
     /// [Log] Enabled, else off.
     bool LogEnabled();
+
+    /// Whether a line in this category would be written: logging is on and the module the category belongs
+    /// to (see the [Log] keys above) has not been switched off. Lets a caller skip building an expensive
+    /// message. LogCat and LogCatV already apply the same test, so a plain call needs no check.
+    bool LogCategoryEnabled(const char* category);
 
     /// printf-style line in category "WXL".
     void Log(const char* format, ...);

@@ -1,0 +1,160 @@
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+--- a/Engine/Source/WXL/Log.h
++++ b/Engine/Source/WXL/Log.h
+@@ -14,6 +14,20 @@
+ // The environment variable WXL_LOG overrides the ini for one run: WXL_LOG=1 forces logging on,
+ // WXL_LOG=0 forces it off. The choice is made once, on the first line any module tries to write.
+ //
++// With logging on, each module can be switched off on its own in the same [Log] section. Every key
++// defaults to 1 (on); set one to 0 to drop that module's lines:
++//
++//     [Log]
++//     Enabled=1
++//     ModernM2=1      ; category M2
++//     Equip=1         ; categories EQUIP, SIDECAR, VPATH
++//     Physics=1       ; category PHYS
++//     Creature=1      ; category CREATURE
++//     Weapon=1        ; category WEAPON
++//
++// Every other category (WXL, MODULE, EVENT, STORAGE, BLP, CULL, ANIM, OUTLINE, CRASH ...) is governed by
++// Enabled alone. The per-module keys only narrow what Enabled lets through: they never switch logging on.
++//
+ // Line format:  [HH:MM:SS.mmm] [T<thread id>] [CATEGORY] message
+ #pragma once
+ 
+@@ -25,6 +39,11 @@
+     /// [Log] Enabled, else off.
+     bool LogEnabled();
+ 
++    /// Whether a line in this category would be written: logging is on and the module the category belongs
++    /// to (see the [Log] keys above) has not been switched off. Lets a caller skip building an expensive
++    /// message. LogCat and LogCatV already apply the same test, so a plain call needs no check.
++    bool LogCategoryEnabled(const char* category);
++
+     /// printf-style line in category "WXL".
+     void Log(const char* format, ...);
+ 
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+--- a/Engine/Source/WXL/Log.cpp
++++ b/Engine/Source/WXL/Log.cpp
+@@ -57,25 +57,75 @@
+             return t;
+         }
+ 
+-        // [Log] Enabled in WXLExtendedEquipment.ini, which sits beside the client executable (the same file
+-        // the equip modules read; WXLCore cannot call their helper, so the lookup is repeated here, kept
+-        // free of any logging so it cannot recurse). Missing file, section or key: off.
+-        bool IniEnabled()
++        // WXLExtendedEquipment.ini sits beside the client executable (the same file the equip modules read;
++        // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
++        // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
++        bool IniLogFlag(const char* key, bool fallback)
+         {
+ #ifdef _WIN32
+             char path[MAX_PATH] = {};
+             const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
+-            if (n == 0 || n >= sizeof(path)) return false;
++            if (n == 0 || n >= sizeof(path)) return fallback;
+             char* slash = std::strrchr(path, '\\');
+             const char* name = "WXLExtendedEquipment.ini";
+-            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return false;
++            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
+             std::strcpy(slash + 1, name);
+-            return GetPrivateProfileIntA("Log", "Enabled", 0, path) != 0;
++            return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, path) != 0;
+ #else
+-            return false;
++            (void)key;
++            return fallback;
+ #endif
+         }
+ 
++        // [Log] Enabled: off unless set.
++        bool IniEnabled()
++        {
++            return IniLogFlag("Enabled", false);
++        }
++
++        // The modules that have their own [Log] switch, and the categories each one writes under.
++        enum class Area { None, ModernM2, Equip, Physics, Creature, Weapon };
++
++        Area AreaOf(const char* category)
++        {
++            if (!category) return Area::None;
++            if (!std::strcmp(category, "M2")) return Area::ModernM2;
++            if (!std::strcmp(category, "EQUIP") || !std::strcmp(category, "SIDECAR") || !std::strcmp(category, "VPATH"))
++                return Area::Equip;
++            if (!std::strcmp(category, "PHYS")) return Area::Physics;
++            if (!std::strcmp(category, "CREATURE")) return Area::Creature;
++            if (!std::strcmp(category, "WEAPON")) return Area::Weapon;
++            return Area::None;
++        }
++
++        // Read once, on the first line a module writes; every key defaults to on.
++        struct AreaFlags
++        {
++            bool modernM2 = true, equip = true, physics = true, creature = true, weapon = true;
++            AreaFlags()
++            {
++                modernM2 = IniLogFlag("ModernM2", true);
++                equip    = IniLogFlag("Equip", true);
++                physics  = IniLogFlag("Physics", true);
++                creature = IniLogFlag("Creature", true);
++                weapon   = IniLogFlag("Weapon", true);
++            }
++        };
++
++        bool AreaEnabled(Area area)
++        {
++            static const AreaFlags flags;
++            switch (area)
++            {
++                case Area::ModernM2: return flags.modernM2;
++                case Area::Equip:    return flags.equip;
++                case Area::Physics:  return flags.physics;
++                case Area::Creature: return flags.creature;
++                case Area::Weapon:   return flags.weapon;
++                default:             return true;
++            }
++        }
++
+         bool DecideEnabled()
+         {
+             // the environment wins for a single run: WXL_LOG=1 forces on, WXL_LOG=0 (or n/f) forces off
+@@ -111,7 +161,7 @@
+             {
+                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
+                 if (!sink.file) { sink.capped = true; return; }
+-                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1) ====\n");
++                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
+             }
+ 
+             const Timestamp t = Now();
+@@ -138,9 +188,14 @@
+         return enabled;
+     }
+ 
++    bool LogCategoryEnabled(const char* category)
++    {
++        return LogEnabled() && AreaEnabled(AreaOf(category));
++    }
++
+     void LogCatV(const char* category, const char* format, va_list args)
+     {
+-        if (!LogEnabled()) return;
++        if (!LogCategoryEnabled(category)) return;
+         WriteLine(category ? category : "WXL", format, args);
+     }
+ 
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -63,7 +63,7 @@
+ 
+ | Area | Members |
+ |---|---|
+-| Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`) |
++| Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`; with it on, `ModernM2`, `Equip`, `Physics`, `Creature` and `Weapon` in the same section, each defaulting to 1, switch one module's lines off) |
+ | Events | `subscribe` (by name). Args structs for `OnBuildBonePalette`, `OnUpdate`, `OnWorldEnter/Leave` are in the header |
+ | Ini | `iniGetString/Int/Bool`, `iniStamp` (WXLExtendedEquipment.ini) |
+ | Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |

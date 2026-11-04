@@ -88,7 +88,11 @@ namespace wxl::storage
 namespace wxl::events
 {
     /// The events a module can bind with EventScript::on<>. Names are what the core knows them by.
-    enum class Event : uint32_t { OnModelLoadPre, OnModelLoad, OnBuildBonePalette, OnUpdate, OnWorldEnter, OnWorldLeave };
+    enum class Event : uint32_t
+    {
+        OnModelLoadPre, OnModelLoad, OnBuildBonePalette, OnUpdate, OnWorldEnter, OnWorldLeave,
+        OnItemSlotChange, OnItemSlotClear, OnHandItemAttached, OnM2SkinFinalize, OnM2PerFrameUpdate
+    };
 
     inline const char* EventName(Event e)
     {
@@ -100,16 +104,30 @@ namespace wxl::events
             case Event::OnUpdate:          return WXL_EVENT_UPDATE;
             case Event::OnWorldEnter:      return WXL_EVENT_WORLD_ENTER;
             case Event::OnWorldLeave:      return WXL_EVENT_WORLD_LEAVE;
+            case Event::OnItemSlotChange:  return WXL_EVENT_ITEM_SLOT_CHANGE;
+            case Event::OnItemSlotClear:   return WXL_EVENT_ITEM_SLOT_CLEAR;
+            case Event::OnHandItemAttached:return WXL_EVENT_HAND_ITEM_ATTACHED;
+            case Event::OnM2SkinFinalize:  return WXL_EVENT_M2_SKIN_FINALIZE;
+            case Event::OnM2PerFrameUpdate:return WXL_EVENT_M2_PER_FRAME;
         }
         return "";
     }
 
     struct ModelLoadArgs         { void* model; };
-    struct BuildBonePaletteArgs  { void* instance; };
+    // the in-tree code called the instance `renderCtx`, the C header calls it `instance`: both names work
+    struct BuildBonePaletteArgs  { union { void* instance; void* renderCtx; }; };
     struct UpdateArgs            { float dt; uint32_t timeMs; };
     struct WorldArgs             { uint32_t mapId; };
+    struct ItemSlotChangeArgs    { void* charModelObj; uint32_t modelSlot; void* itemDataPtr; };
+    struct ItemSlotClearArgs     { void* charModelObj; uint32_t equipSlotWow; };
+    struct HandItemAttachedArgs  { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; bool sheathed; bool removed; };
+    struct M2SkinFinalizeArgs    { void* model; };
+    struct M2PerFrameUpdateArgs  { void* renderCtx; };
     static_assert(sizeof(ModelLoadArgs) == sizeof(WxlModelLoadArgs) && sizeof(BuildBonePaletteArgs) == sizeof(WxlBuildBonePaletteArgs) &&
                   sizeof(UpdateArgs) == sizeof(WxlUpdateArgs) && sizeof(WorldArgs) == sizeof(WxlWorldArgs), "args mirror the C structs");
+    static_assert(sizeof(ItemSlotChangeArgs) == sizeof(WxlItemSlotChangeArgs) && sizeof(ItemSlotClearArgs) == sizeof(WxlItemSlotClearArgs) &&
+                  sizeof(HandItemAttachedArgs) == sizeof(WxlHandItemAttachedArgs) && sizeof(M2SkinFinalizeArgs) == sizeof(WxlM2SkinFinalizeArgs) &&
+                  sizeof(M2PerFrameUpdateArgs) == sizeof(WxlM2PerFrameUpdateArgs), "the character-model args mirror the C structs");
 
     namespace detail
     {

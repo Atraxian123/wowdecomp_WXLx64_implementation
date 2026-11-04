@@ -73,6 +73,11 @@ typedef void (*WxlEventHandler)(void* user, const void* args);
 #define WXL_EVENT_UPDATE             "OnUpdate"
 #define WXL_EVENT_WORLD_ENTER        "OnWorldEnter"
 #define WXL_EVENT_WORLD_LEAVE        "OnWorldLeave"
+#define WXL_EVENT_ITEM_SLOT_CHANGE   "OnItemSlotChange"
+#define WXL_EVENT_ITEM_SLOT_CLEAR    "OnItemSlotClear"
+#define WXL_EVENT_HAND_ITEM_ATTACHED "OnHandItemAttached"
+#define WXL_EVENT_M2_SKIN_FINALIZE   "OnM2SkinFinalize"
+#define WXL_EVENT_M2_PER_FRAME       "OnM2PerFrameUpdate"
 
 /* OnModelLoadPre (a model's raw bytes are read, before parse) and OnModelLoad (parsed): `model` is the
  * engine's model object, an opaque handle. */
@@ -85,6 +90,20 @@ typedef struct WxlBuildBonePaletteArgs { void* instance; } WxlBuildBonePaletteAr
 typedef struct WxlUpdateArgs { float dt; uint32_t timeMs; } WxlUpdateArgs;
 /* OnWorldEnter / OnWorldLeave */
 typedef struct WxlWorldArgs { uint32_t mapId; } WxlWorldArgs;
+
+/* The character-model events (used by the equip module). `charModelObj` / `cmo` is the client's character
+ * component, an opaque handle: ask cmoInfo for what a module may know about it. */
+/* OnItemSlotChange: a character model slot received an item. itemDataPtr is opaque: itemDataDisplayId reads it. */
+typedef struct WxlItemSlotChangeArgs { void* charModelObj; uint32_t modelSlot; void* itemDataPtr; } WxlItemSlotChangeArgs;
+/* OnItemSlotClear: a character model equipment slot was cleared; equipSlotWow is the WoW slot index 0-18. */
+typedef struct WxlItemSlotClearArgs { void* charModelObj; uint32_t equipSlotWow; } WxlItemSlotClearArgs;
+/* OnHandItemAttached: a held item was attached or removed. model is the character's own instance; invSlot 15 main
+ * hand, 16 off hand, 17 ranged; attachLink 0 shield, 1 right hand, 2 left hand, 26+ sheath points, -1 none. */
+typedef struct WxlHandItemAttachedArgs { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; uint8_t sheathed; uint8_t removed; } WxlHandItemAttachedArgs;
+/* OnM2SkinFinalize: a loaded model's skin profile is about to be finalized (the window to filter geosets). */
+typedef struct WxlM2SkinFinalizeArgs { void* model; } WxlM2SkinFinalizeArgs;
+/* OnM2PerFrameUpdate: the per-frame scene-graph tick of one model instance. */
+typedef struct WxlM2PerFrameUpdateArgs { void* instance; } WxlM2PerFrameUpdateArgs;
 
 /* ---- files ------------------------------------------------------------------------------------ */
 
@@ -175,6 +194,69 @@ typedef struct WxlVPathGlobal
     const char*     keySuffix;           /* NULL for none */
 } WxlVPathGlobal;
 
+/* ---- engine access (for the equip module) ----------------------------------------------------- */
+
+/* Everything here is a plain number or an opaque handle. The core reads the client's structures under SEH and
+ * answers with a status; a handle that has died (a freed instance) gives an error or an empty answer, never a fault. */
+
+typedef struct WxlModelInfo
+{
+    uint32_t    structSize;        /* sizeof(WxlModelInfo), set by the caller */
+    uint32_t    flags;             /* the instance's init flags: bit 0 = animation data ready, bit 18 = attached with force */
+    uint32_t    boneCount;         /* bones in the loaded model; 0 when it is not loaded yet or the count is implausible */
+    uint32_t    parsed;            /* 1 when the model file is completely loaded and parsed */
+    void*       shared;            /* opaque id of the loaded model file; NULL once the instance is dead */
+    void*       scene;             /* opaque: the scene that owns the instance (createModel is called on it) */
+    void*       parent;            /* opaque: the instance this one is attached to; NULL for a root */
+    const void* palette;           /* opaque: the live bone palette, NULL before it exists. Never dereference it */
+} WxlModelInfo;
+
+typedef struct WxlBoneInfo
+{
+    uint32_t nameCrc;
+    int32_t  boneId;               /* the key-bone id, -1 for none */
+    int32_t  parent;               /* parent bone index, -1 for none */
+} WxlBoneInfo;
+
+/* readBoneInfo fills `bones` with min(boneCount, maxBones) records and `lookup` (the key-bone -> bone table) with
+ * min(lookupCount, maxLookup) entries; boneCount / lookupCount are the real sizes. */
+typedef struct WxlBoneRead
+{
+    uint32_t     structSize;       /* sizeof(WxlBoneRead), set by the caller */
+    uint32_t     maxBones;
+    WxlBoneInfo* bones;
+    uint32_t     maxLookup;
+    uint16_t*    lookup;
+    uint32_t     boneCount;        /* out */
+    uint32_t     lookupCount;      /* out */
+    uint32_t     bonesOk;          /* out: 1 when the model has a readable bone table */
+    uint32_t     lookupOk;         /* out: 1 when it has a readable key-bone lookup */
+} WxlBoneRead;
+
+typedef struct WxlCmoInfo
+{
+    uint32_t structSize;           /* sizeof(WxlCmoInfo), set by the caller */
+    uint32_t race;                 /* ChrRaces id */
+    uint32_t gender;               /* 0 male, 1 female */
+    uint32_t reserved;
+    void*    model;                /* the character's own model instance (opaque), NULL when it has none */
+} WxlCmoInfo;
+
+#define WXL_ITEM_TEXT 260
+typedef struct WxlItemDisplayInfo
+{
+    uint32_t structSize;           /* sizeof(WxlItemDisplayInfo), set by the caller */
+    char     modelName[2][WXL_ITEM_TEXT];     /* empty string for none */
+    char     modelTexture[2][WXL_ITEM_TEXT];
+    char     icon2[WXL_ITEM_TEXT];            /* the record's second inventory-icon field */
+} WxlItemDisplayInfo;
+
+/* The held-item model resolver: may replace the file name the client loads for a held weapon (a bare file name; the
+ * client prepends its folder). 1 = out holds a replacement. */
+typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
+/* 1 when the instance is drawn with a mirrored (handedness-flipping) palette, so the renderer swaps the cull direction. */
+typedef int (*WxlMirroredModelQueryFn)(const void* model);
+
 /* ---- the table -------------------------------------------------------------------------------- */
 
 typedef struct WxlApi
@@ -248,6 +330,66 @@ typedef struct WxlApi
      * files), 0 when it cannot. Opens and closes the file, reads nothing: use it to ask "is it there?" without
      * paying for the bytes. Quiet on a miss. */
     int  (*fileExists)(const char* name);
+
+    /* ---- engine access, added for the equip module: check WXL_API_HAS(api, vpathBuildKey) once ---- */
+
+    /* instances (see WxlModelInfo). 0 on success, a WXL_READ_* code otherwise (the struct is zeroed first). */
+    int  (*modelInfo)(void* instance, WxlModelInfo* out);
+    /* the bone table of the instance's loaded model; WXL_READ_NOT_PARSED (12) until the model is fully parsed */
+    int  (*readBoneInfo)(void* instance, WxlBoneRead* io);
+    /* the model file's path as the cache keys it; returns its length, 0 when unknown */
+    size_t (*sharedPath)(void* shared, char* out, size_t cap);
+    /* a loaded model's skin profile (opaque), NULL before it is attached; filterSkin keeps only the listed geosets'
+     * triangles visible (the others are collapsed). */
+    void*  (*sharedSkin)(void* shared);
+    void   (*filterSkin)(void* skin, const uint16_t* geosetIds, uint32_t count);
+    /* a character component's own instance, race and gender; 0 on success */
+    int  (*cmoInfo)(void* cmo, WxlCmoInfo* out);
+
+    /* model instances: get-or-create by path in a scene (the returned instance is one reference the caller must
+     * release), attach to a parent at an attachment id (force bypasses the "point missing" exit), detach every child
+     * of a parent at an attachment id, release one reference, bind a texture to the replaceable texture type 2, load a
+     * texture by path (NULL on failure). A fault inside any of them is caught and logged; they then do nothing. */
+    void*  (*createModel)(void* scene, const char* path);
+    void   (*attachModel)(void* child, void* parent, uint32_t attachId, int force);
+    void   (*detachSlot)(void* parent, uint32_t attachId);
+    void   (*releaseModel)(void* instance);
+    void   (*bindTexture)(void* instance, void* texture);
+    void*  (*loadTexture)(const char* path);
+    /* the child of `parent` attached at attachId whose model file has the same stem as `name`; NULL for none */
+    void*  (*findAttachedChild)(void* parent, uint32_t attachId, const char* name);
+
+    /* animation sequences. boneId 0xFFFFFFFF = the root/primary bone. */
+    int      (*hasSequence)(void* instance, uint32_t sequenceId);
+    uint32_t (*boneSequenceId)(void* instance, uint32_t boneId);
+    void     (*setBoneSequence)(void* instance, uint32_t boneId, uint32_t sequenceId, uint32_t variation, uint32_t time,
+                                float speed, int32_t blend, int32_t primary);
+    /* the start anchor (ms) of bone 0's sequence; 0 before the bone block exists */
+    int32_t  (*seqStartAnchor)(void* instance);
+
+    /* bone palettes: copy palette rows from the pose source into the instance following collToChar (count entries,
+     * 0xFF = leave the row alone). Refused (0) unless the instances still hold the models the table was built for. */
+    int  (*copyRemappedBones)(void* dst, void* src, const uint8_t* collToChar, uint32_t count, const void* dstShared,
+                              const void* srcShared);
+    /* 1 when the engine rebuilt the instance's palette during this frame; *stamp receives the frame stamp */
+    int  (*paletteBuiltThisFrame)(void* instance, uint32_t* stamp);
+    /* mirrors the freshly built palette across the model's local Y axis; 1 when applied */
+    int  (*mirrorPalette)(void* instance);
+
+    /* records. itemDisplayInfo: 1 when the ItemDisplayInfo record exists. raceClientPrefix: 0 ok, 1 race id out of range
+     * (*maxRaceId = the largest valid id), 2 no record, 3 record without a prefix. itemDataDisplayId reads the display id
+     * out of an OnItemSlotChange item pointer (0 when unreadable). */
+    int      (*itemDisplayInfo)(uint32_t displayId, WxlItemDisplayInfo* out);
+    int      (*raceClientPrefix)(uint32_t raceId, char* out, size_t cap, int32_t* maxRaceId);
+    uint32_t (*itemDataDisplayId)(const void* itemData);
+
+    /* the client asks these when it attaches / draws a held item; one function each, a later call replaces the earlier */
+    void (*setHandItemModelResolver)(WxlHandItemResolverFn fn);
+    void (*setMirroredModelQuery)(WxlMirroredModelQueryFn fn);
+
+    /* the virtual-path key the client would mint for a per-character model; returns the length, 0 on truncation */
+    size_t (*vpathBuildKey)(char* out, size_t outSz, void* cmo, const char* realMdxPath, const uint16_t* geoIds,
+                            uint32_t geoCount, const char* texPath, uint32_t variantKey, const char* materialPatchSpec);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \
