@@ -135,7 +135,7 @@ and a value that is not a number is ignored; both are logged (category `PHYS`).
 [Physics]
 Enabled=1
 
-GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
+GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them. Negative (down to -100) = pushed up
 LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
 AngularDampingScale=1.0   ; drag on turning/twisting
 InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns

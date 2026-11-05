@@ -20,9 +20,9 @@ namespace wxl::equip::physics::tuning
         };
 
         // Ranges: a value outside is clamped to it. 0 is meaningful for most (gravity 0 floats, damping 0 never
-        // slows); inertia and mass must stay above 0 or the solver divides by nothing.
+        // slows); gravity alone may go negative (the parts rise); inertia and mass must stay above 0 or the solver divides by nothing.
         constexpr Key kKeys[] = {
-            {"GravityScale", &Tuning::gravity, 0.0f, 100.0f},
+            {"GravityScale", &Tuning::gravity, -100.0f, 100.0f},   // negative = pushed up (buoyant)
             {"LinearDampingScale", &Tuning::linearDamping, 0.0f, 100.0f},
             {"AngularDampingScale", &Tuning::angularDamping, 0.0f, 100.0f},
             {"InertiaScale", &Tuning::inertia, 0.01f, 100.0f},
@@ -83,6 +83,12 @@ namespace wxl::equip::physics::tuning
     {
         if (!text || !out) return false;
         while (*text == ' ' || *text == '\t') ++text;
+        bool negative = false;   // an optional leading sign; keys whose range starts at 0 clamp a negative to 0
+        if (*text == '-' || *text == '+')
+        {
+            negative = (*text == '-');
+            ++text;
+        }
 
         // "123", "1.25", "1,25", ".5": digits with at most one decimal separator. Done by hand because
         // strtod follows the process locale and a "," would stop it on an Italian system.
@@ -104,8 +110,8 @@ namespace wxl::equip::physics::tuning
                 break;
         }
         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (!digits || *p != '\0') return false;   // nothing numeric, a sign, an exponent, or trailing junk
-        *out = static_cast<float>(value);
+        if (!digits || *p != '\0') return false;   // nothing numeric, an exponent, or trailing junk
+        *out = static_cast<float>(negative ? -value : value);
         return std::isfinite(*out);
     }
 
@@ -163,7 +169,7 @@ namespace wxl::equip::physics::tuning
         {
             if (b.type == phys::kBodyDynamic)
             {
-                Scale(b.gravity, t.gravity, 0.0f, 1.0e4f, n);
+                Scale(b.gravity, t.gravity, -1.0e4f, 1.0e4f, n);   // a negative result lifts the body
                 Scale(b.linDamp, t.linearDamping, 0.0f, 1.0e4f, n);
                 Scale(b.angDamp, t.angularDamping, 0.0f, 1.0e4f, n);
                 Scale(b.inertia, t.inertia, 0.0f, 1.0e4f, n);

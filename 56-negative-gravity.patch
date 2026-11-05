@@ -1,0 +1,94 @@
+diff -ruN a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp	2026-11-05 19:10:48.251603588 +0000
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp	2026-11-05 19:10:48.254176513 +0000
+@@ -20,9 +20,9 @@
+         };
+ 
+         // Ranges: a value outside is clamped to it. 0 is meaningful for most (gravity 0 floats, damping 0 never
+-        // slows); inertia and mass must stay above 0 or the solver divides by nothing.
++        // slows); gravity alone may go negative (the parts rise); inertia and mass must stay above 0 or the solver divides by nothing.
+         constexpr Key kKeys[] = {
+-            {"GravityScale", &Tuning::gravity, 0.0f, 100.0f},
++            {"GravityScale", &Tuning::gravity, -100.0f, 100.0f},   // negative = pushed up (buoyant)
+             {"LinearDampingScale", &Tuning::linearDamping, 0.0f, 100.0f},
+             {"AngularDampingScale", &Tuning::angularDamping, 0.0f, 100.0f},
+             {"InertiaScale", &Tuning::inertia, 0.01f, 100.0f},
+@@ -83,6 +83,12 @@
+     {
+         if (!text || !out) return false;
+         while (*text == ' ' || *text == '\t') ++text;
++        bool negative = false;   // an optional leading sign; keys whose range starts at 0 clamp a negative to 0
++        if (*text == '-' || *text == '+')
++        {
++            negative = (*text == '-');
++            ++text;
++        }
+ 
+         // "123", "1.25", "1,25", ".5": digits with at most one decimal separator. Done by hand because
+         // strtod follows the process locale and a "," would stop it on an Italian system.
+@@ -104,8 +110,8 @@
+                 break;
+         }
+         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+-        if (!digits || *p != '\0') return false;   // nothing numeric, a sign, an exponent, or trailing junk
+-        *out = static_cast<float>(value);
++        if (!digits || *p != '\0') return false;   // nothing numeric, an exponent, or trailing junk
++        *out = static_cast<float>(negative ? -value : value);
+         return std::isfinite(*out);
+     }
+ 
+@@ -163,7 +169,7 @@
+         {
+             if (b.type == phys::kBodyDynamic)
+             {
+-                Scale(b.gravity, t.gravity, 0.0f, 1.0e4f, n);
++                Scale(b.gravity, t.gravity, -1.0e4f, 1.0e4f, n);   // a negative result lifts the body
+                 Scale(b.linDamp, t.linearDamping, 0.0f, 1.0e4f, n);
+                 Scale(b.angDamp, t.angularDamping, 0.0f, 1.0e4f, n);
+                 Scale(b.inertia, t.inertia, 0.0f, 1.0e4f, n);
+diff -ruN a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp	2026-11-05 19:10:48.258165882 +0000
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp	2026-11-05 19:10:48.259270314 +0000
+@@ -11,7 +11,8 @@
+ //     Enabled=1
+ //
+ //     ; ---- how the bones fall and settle (dynamic bodies) ----
+-//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are.
++//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are. Negative = they
++//                               ; are pushed up (-100 .. 100); a body whose file gravity is 0 stays at 0.
+ //     LinearDampingScale=1.0    ; air drag on movement. Up: slower, gooier. Down: swings longer.
+ //     AngularDampingScale=1.0   ; air drag on spinning/twisting. Up: stops turning sooner.
+ //     InertiaScale=1.0          ; resistance to being rotated. Up: lazier turns. (0.01 .. 100)
+@@ -39,7 +40,8 @@
+ //     WatchIni=0
+ //
+ // Every multiplier is read as a decimal number, "1.25" or "1,25"; a value outside its range is clamped to it
+-// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
++// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above
++// (GravityScale is -100 .. 100; a negative value for any other key clamps to 0).
+ #pragma once
+ 
+ #include "physics_domino.h"
+@@ -67,8 +69,8 @@
+     /// Reads one key of [Physics]: copies its text into out and returns true when the key exists.
+     using ReadFn = bool (*)(const char* key, char* out, size_t cap);
+ 
+-    /// Parses "1.25" / "1,25" (surrounding spaces ignored). False for anything that is not a finite,
+-    /// non-negative number; *out is untouched then.
++    /// Parses "1.25" / "1,25" / "-0.5" (surrounding spaces ignored; an optional leading + or -). False for
++    /// anything that is not a finite number; *out is untouched then.
+     bool ParseMultiplier(const char* text, float* out);
+ 
+     /// Reads every multiplier through `read`. Problems (a value that is not a number, or out of range) are
+diff -ruN a/Engine/Source/WXLModules/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+--- a/Engine/Source/WXLModules/Physics/README.md	2026-11-05 19:10:48.263066021 +0000
++++ b/Engine/Source/WXLModules/Physics/README.md	2026-11-05 19:10:48.264259993 +0000
+@@ -135,7 +135,7 @@
+ [Physics]
+ Enabled=1
+ 
+-GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
++GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them. Negative (down to -100) = pushed up
+ LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
+ AngularDampingScale=1.0   ; drag on turning/twisting
+ InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns
