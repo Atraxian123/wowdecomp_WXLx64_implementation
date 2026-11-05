@@ -1,4 +1,6 @@
-// Host-side test of ModernM2Load.cpp / ModernM2Skin.cpp against the real M2Data / CM2Shared headers.
+// Host-side test of the modern M2 reader: the client's adapter (Engine/Source/Model2/ModernM2/ModernM2.cpp, built here
+// against the real M2Data / CM2Shared headers) in front of the module (Engine/Source/WXLModules/ModernM2), which the
+// test loads as a shared library through the C ABI exactly as the client's loader would, behind a fake core table.
 // Build and run it with run_modernm2_tests.sh. It builds synthetic MD21 files and skins, so it needs no game data.
 #include <cstdarg>
 #include <initializer_list>
@@ -7,12 +9,15 @@
 #include <cstring>
 #include <vector>
 
+#include <dlfcn.h>
+
 #include "Engine/Source/Model2/ModernM2/ModernM2.h"
 #include "Engine/Source/Model2/ModernM2/FlightAnim.h"
 #include "Engine/Source/WXL/Services.h"
 #include "Engine/Source/WXL/Log.h"
 #define WXL_ALLOW_32BIT_HEADER 1
 #include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
+#include "Engine/Source/WXL/Sdk/wxl_modernm2_api.h"
 
 // ---- stubs for engine services the module calls
 namespace SIMD
@@ -147,6 +152,60 @@ static CM2Shared* MakeShared(const std::vector<uint8_t>& file, const char* name)
     sh->m_fileSize = static_cast<uint32_t>(file.size());
     std::snprintf(sh->m_fileName, sizeof sh->m_fileName, "%s", name);
     return sh;
+}
+
+
+// ---- the fake core the module is loaded into: just the table members the module uses
+static void FakeApiLog(const char* category, const char* message) { std::printf("    [module %s] %s\n", category, message); }
+static int FakeRegisterService(const char* name, const void* table, size_t size) { return wxl::services::Register(name, table, size) ? 0 : 1; }
+static const void* FakeGetService(const char* name, size_t* size) { return wxl::services::Get(name, size); }
+static int FakeLogThrottle(const char*, unsigned, unsigned) { return 1; }
+
+static void* g_moduleHandle = nullptr;
+typedef void (*ShutdownFn)(void);
+
+/// dlopen the module, check its ABI and init it the way wxl::api::LoadModules does.
+static bool LoadModule(const char* path)
+{
+    g_moduleHandle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!g_moduleHandle) { std::printf("  [FAIL] dlopen: %s\n", dlerror()); return false; }
+    auto abi  = reinterpret_cast<WxlModuleAbiVersionFn>(dlsym(g_moduleHandle, "WxlModuleAbiVersion"));
+    auto init = reinterpret_cast<WxlModuleInitFn>(dlsym(g_moduleHandle, "WxlModuleInit"));
+    if (!abi || !init || abi() != WXL_ABI_VERSION) { std::printf("  [FAIL] not a module / wrong ABI\n"); return false; }
+
+    static WxlApi api = {};
+    api.abiVersion      = WXL_ABI_VERSION;
+    api.structSize      = sizeof(WxlApi);
+    api.log             = &FakeApiLog;
+    api.logThrottle     = &FakeLogThrottle;
+    api.registerService = &FakeRegisterService;
+    api.getService      = &FakeGetService;
+    WxlModuleInfo info = {};
+    info.structSize = sizeof(info);
+    const int rc = init(&api, &info);
+    CHECK(rc == 0, "module init accepted");
+    CHECK(std::strcmp(info.name, "modernm2") == 0, "module names itself modernm2");
+    return rc == 0;
+}
+
+static void TestModuleLifecycle()
+{
+    std::printf("module lifecycle\n");
+    size_t size = 0;
+    CHECK(!wxl::services::Get(WXL_SERVICE_MODERNM2, &size) && !wxl::modernm2::ModuleLoaded(), "before the module loads: no service");
+
+    // An MD21 file with no module: refused like an absent file, nothing swapped, no state.
+    std::vector<uint8_t> md21(64, 0);
+    std::memcpy(md21.data(), "MD21", 4);
+    CM2Shared* shared = MakeShared(md21, "Creature\\Test\\NoModule.m2");
+    M2Data* before = shared->m_data;
+    CHECK(wxl::modernm2::PrepareLoad(shared) == wxl::modernm2::LoadResult::Failed && shared->m_data == before && !shared->m_wxl,
+          "no module: an MD21 file is refused and left untouched");
+    std::vector<uint8_t> flat(64, 0);
+    CM2Shared* stock = MakeShared(flat, "Creature\\Test\\Stock.m2");
+    CHECK(wxl::modernm2::PrepareLoad(stock) == wxl::modernm2::LoadResult::NotModern, "no module: a stock model is not affected");
+    SIMD::FreeA16(shared->m_data); std::free(shared);
+    SIMD::FreeA16(stock->m_data);  std::free(stock);
 }
 
 static void TestLoad()
@@ -430,13 +489,21 @@ static void TestAnimAndCaps()
           "doodad instance cap: 75 / bones, at least 1");
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc < 2) { std::printf("usage: modernm2_test <libwxl_modernm2.so>\n"); return 2; }
+    TestModuleLifecycle();
+    if (!LoadModule(argv[1])) return 1;
+    CHECK(wxl::modernm2::ModuleLoaded(), "the adapter finds the module's service");
+    const auto* svc = static_cast<const WxlModernM2Services*>(wxl::services::Get(WXL_SERVICE_MODERNM2));
+    CHECK(svc && svc->versionMin == wxl::modernm2::kVersionMin && svc->versionMax == wxl::modernm2::kVersionMax,
+          "the module's version window equals the client's");
     TestLoad();
     TestSkinSplit();
     TestExtendedStart();
     TestAnimAndCaps();
     TestFlightChoice();
+    if (auto shutdown = reinterpret_cast<ShutdownFn>(dlsym(g_moduleHandle, "WxlModuleShutdown"))) shutdown();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

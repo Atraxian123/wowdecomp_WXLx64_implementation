@@ -1,0 +1,2147 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5a02e77..3b87b63 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -92,6 +92,8 @@ add_subdirectory(Engine/Source/WXLModules/Equip)
+ add_subdirectory(Engine/Source/WXLModules/Outline)
+ add_subdirectory(Engine/Source/WXLModules/Creature)
+ add_subdirectory(Engine/Source/WXLModules/Weapon)
++add_subdirectory(Engine/Source/WXLModules/Listfile)
++add_subdirectory(Engine/Source/WXLModules/ModernM2)
+ add_subdirectory(WoW/Common)
+ add_subdirectory(WoW/Source/Battlenet)
+ add_subdirectory(WoW/Source/Console)
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2.cpp b/Engine/Source/Model2/ModernM2/ModernM2.cpp
+new file mode 100644
+index 0000000..f307fcc
+--- /dev/null
++++ b/Engine/Source/Model2/ModernM2/ModernM2.cpp
+@@ -0,0 +1,296 @@
++// Modern M2 reading, the client's side: forwards the load steps to wxl_modernm2.dll (service "wxl.modernm2.v1").
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// The decompiled loader (CM2Shared) calls the wxl::modernm2:: functions declared in ModernM2.h exactly where it always
++// did. Each one checks the cheap things the client can know itself, finds the module's service, and passes it plain
++// buffers plus the client's own allocators (WxlM2Alloc), so a block the module asks for is freed by the routine that
++// allocated it. The per-model State (TXID table, reserve room, wide index starts) lives in CM2Shared::m_wxl and is
++// owned here: the module keeps nothing between calls.
++
++#include "Engine/Source/Model2/ModernM2/ModernM2.h"
++
++#include <atomic>
++#include <cstddef>
++#include <cstring>
++#include <new>
++
++#include "Engine/Source/Base/SIMD.h"
++#include "Engine/Source/Os/OsMemory.h"
++#include "Engine/Source/Storm/H/storm.h"
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/Services.h"
++
++#ifndef WXL_ALLOW_32BIT_HEADER
++#define WXL_ALLOW_32BIT_HEADER 1   // consumer side: only the table declaration is needed
++#endif
++#include "Engine/Source/WXL/Sdk/wxl_modernm2_api.h"
++
++namespace wxl::modernm2
++{
++    namespace
++    {
++        /// MD21 container magic, as the little-endian dword of the on-disk bytes (not byte-reversed).
++        constexpr uint32_t kTagMD21 = 0x3132444D;
++
++        static_assert(kMaxTxid == WXL_M2_MAX_TXID, "the client's TXID cap and the module's must match");
++
++        // ------------------------------------------------------------------------------- the service
++        /// The module's table, or null while it is not loaded. Looked up at the time of the call (load order between
++        /// the module and the first model does not matter) and cached once found; the table lives as long as the
++        /// process.
++        const WxlModernM2Services* Service()
++        {
++            static std::atomic<const WxlModernM2Services*> s_cached{ nullptr };
++            const WxlModernM2Services* cached = s_cached.load(std::memory_order_acquire);
++            if (cached) return cached;
++
++            size_t size = 0;
++            const auto* found = static_cast<const WxlModernM2Services*>(wxl::services::Get(WXL_SERVICE_MODERNM2, &size));
++            if (!found || size < sizeof(uint32_t) || found->structSize < offsetof(WxlModernM2Services, unwrapAnim) + sizeof(found->unwrapAnim))
++                return nullptr;
++
++            if (found->versionMin != kVersionMin || found->versionMax != kVersionMax)
++                wxl::LogCat("M2", "modern M2 module reads versions %u-%u but the client accepts %u-%u: rebuild both from the same tree",
++                            found->versionMin, found->versionMax, kVersionMin, kVersionMax);
++            s_cached.store(found, std::memory_order_release);
++            return found;
++        }
++
++        // ------------------------------------------------------------------------ the client's allocators
++        struct AllocContext
++        {
++            CM2Shared* shared;
++        };
++
++        State& EnsureState(CM2Shared* shared)
++        {
++            if (!shared->m_wxl) shared->m_wxl = new State();
++            return *shared->m_wxl;
++        }
++
++        void* AllocBlock(void*, uint32_t size)
++        {
++            return SIMD::AllocA16(size, __FILE__, __LINE__);
++        }
++
++        void ReleaseBlock(void*, void* block)
++        {
++            if (block) SIMD::FreeA16(block);
++        }
++
++        /// A block within reach of a 32-bit offset from the model: owned by the model's State, released with it.
++        void* AllocNearBlock(void* ctx, const void* anchor, size_t bytes)
++        {
++            CM2Shared* shared = static_cast<AllocContext*>(ctx)->shared;
++#if defined(WOWDECOMP_ARCH_64)
++            void* block = OsAllocNear(anchor, bytes);
++#else
++            (void)anchor;
++            void* block = SMemAlloc(static_cast<uint32_t>(bytes), __FILE__, __LINE__, 0);
++#endif
++            if (block) EnsureState(shared).farBlocks.push_back(block);
++            return block;
++        }
++
++        WxlM2Alloc MakeAlloc(AllocContext& context)
++        {
++            WxlM2Alloc mem = {};
++            mem.structSize = sizeof(mem);
++            mem.ctx        = &context;
++            mem.alloc      = &AllocBlock;
++            mem.release    = &ReleaseBlock;
++            mem.allocNear  = &AllocNearBlock;
++            return mem;
++        }
++
++        // ------------------------------------------------------------------------- the client's own fixes
++        /// A section with boneInfluences == 0 takes the client's shadow-map vertex variant that skips the
++        /// inverse(cameraView) * lightView rebase, which makes a shadow stay rigidly aligned to the camera
++        /// instead of the light. Every drawn submesh with boneInfluences == 0 is lifted to 1. The module does this
++        /// as part of its finalize; this copy covers a client running without it.
++        void NormalizeBoneInfluences(M2SkinProfile* sk)
++        {
++            M2SkinSection* sections = sk->m_skinSections.Data();
++            for (uint32_t i = 0; i < sk->m_skinSections.m_count; ++i)
++                if (sections[i].m_indexCount != 0 && sections[i].m_boneInfluences == 0)
++                    sections[i].m_boneInfluences = 1;
++        }
++
++        /// The shadow-pass animate step reads the shared's bone-flag tally (m_billboardBoneCount): at zero it
++        /// takes a fast path that never rebuilds the bone palette, so the palette keeps an older frame's view
++        /// matrix while the shadow renderer uploads the current one and the shadow drifts with the camera.
++        /// Stock content always has the count > 0; a model from a toolchain that ships empty bone flags
++        /// would not. Runtime object only, never the model data.
++        void ForceShadowAnimGate(CM2Shared* shared)
++        {
++            if (shared->m_billboardBoneCount == 0) shared->m_billboardBoneCount = 1;
++        }
++    }
++
++    bool ModuleLoaded() { return Service() != nullptr; }
++
++    // ------------------------------------------------------------------------------------ PrepareLoad
++    LoadResult PrepareLoad(CM2Shared* shared)
++    {
++        const uint8_t* buf = reinterpret_cast<const uint8_t*>(shared->m_data);
++        const uint32_t size = shared->m_fileSize;
++        uint32_t magic = 0;
++        if (!buf || size < 8) return LoadResult::NotModern;
++        std::memcpy(&magic, buf, sizeof(magic));
++        if (magic != kTagMD21) return LoadResult::NotModern;   // a stock model: one compare, no service lookup
++
++        const WxlModernM2Services* service = Service();
++        if (!service)
++        {
++            if (wxl::LogThrottle("m2-nomodule", 1, 100000))
++                wxl::LogCat("M2", "'%s' is a modern model but the module (%s) is not loaded: wxl_modernm2.dll missing from WXL\\Modules, or disabled",
++                            shared->m_fileName, WXL_SERVICE_MODERNM2);
++            return LoadResult::Failed;   // the stock walk cannot read an MD21 container: same as an absent file
++        }
++
++        AllocContext context{ shared };
++        const WxlM2Alloc mem = MakeAlloc(context);
++        WxlM2PrepareResult result = {};
++        result.structSize = sizeof(result);
++
++        const int status = service->prepareLoad(shared->m_fileName, buf, size, &mem, &result);
++        if (status == WXL_M2_NOT_MODERN) return LoadResult::NotModern;
++        if (status != WXL_M2_MODERN || !result.body) return LoadResult::Failed;
++
++        // The module read the container and seated the flat body in a block of ours: swap it in. The model's block
++        // is only ever freed through SIMD::FreeA16 on m_data, so the swap is invisible to the rest of the client.
++        SIMD::FreeA16(shared->m_data);
++        shared->m_data = static_cast<M2Data*>(result.body);
++        shared->m_fileSize = result.bodySize;
++
++        State* state = new (std::nothrow) State();
++        if (!state)
++        {
++            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (state)", shared->m_fileName);
++            return LoadResult::Failed;
++        }
++        state->modern = true;
++        state->txidCount = result.txidCount > kMaxTxid ? kMaxTxid : result.txidCount;
++        std::memcpy(state->txid, result.txid, sizeof(uint32_t) * state->txidCount);
++        state->reserveBase = result.reserveBase;
++        state->reserveCap = result.reserveCap;
++        shared->m_wxl = state;
++        return LoadResult::Modern;
++    }
++
++    // -------------------------------------------------------------------------------------- FinishWalk
++    void FinishWalk(CM2Shared* shared)
++    {
++        const WxlModernM2Services* service = Service();
++        if (service && shared->m_data) service->finishWalk(shared->m_data);
++    }
++
++    // ------------------------------------------------------------------------------------ TextureName
++    bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap)
++    {
++        State* state = shared->m_wxl;
++        if (!state || !state->modern) return false;
++        if (texture.m_type != 0) return false;                  // dynamic slots stay empty
++        if (index >= state->txidCount || !state->txid[index]) return false;
++
++        const uint32_t fileId = state->txid[index];
++        const WxlModernM2Services* service = Service();
++        if (!service)
++        {
++            ++state->texUnresolved;
++            return false;
++        }
++
++        // FOUND: the file's own path. NOTFOUND: the listfile module's not-found name for a texture; opening that name
++        // makes the client fall back to its own missing-texture handling, which is the listfile module's contract.
++        switch (service->textureName(fileId, out, cap))
++        {
++        case WXL_M2_TEXNAME_FOUND:    ++state->texResolved;   return true;
++        case WXL_M2_TEXNAME_NOTFOUND: ++state->texUnresolved; return true;
++        default:                      ++state->texUnresolved; return false;
++        }
++    }
++
++    // ----------------------------------------------------------------------------------- FinalizeSkin
++    void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes)
++    {
++        M2Data* md = shared->m_data;
++        M2SkinProfile* sk = shared->m_skinData;
++        if (!md || !sk) return;
++
++        const WxlModernM2Services* service = Service();
++        bool ran = false;
++        if (service)
++        {
++            AllocContext context{ shared };
++            const WxlM2Alloc mem = MakeAlloc(context);
++
++            const State* existing = shared->m_wxl;
++            WxlM2SkinJob job = {};
++            job.structSize  = sizeof(job);
++            job.name        = shared->m_fileName;
++            job.model       = md;
++            job.skin        = sk;
++            job.skinBytes   = skinBytes;
++            job.modern      = (existing && existing->modern) ? 1u : 0u;
++            if (existing)
++            {
++                job.reserveBase = existing->reserveBase;
++                job.reserveCap  = existing->reserveCap;
++                job.reserveUsed = existing->reserveUsed;
++            }
++
++            if (service->finalizeSkin(&mem, &job) == 0)
++            {
++                ran = true;
++                shared->m_skinData = static_cast<M2SkinProfile*>(job.newSkin);   // re-seated when its arrays grew
++                if (shared->m_wxl) shared->m_wxl->reserveUsed = job.reserveUsed;
++
++                // Extended encoding: the full index starts the sections cannot hold. They are kept as the file has them
++                // (sourceStart) and as a draw reads them (sectionStart, which the shared's index rebuild remaps later).
++                if (job.extendedIndexStart && job.startCount && job.indexStart)
++                {
++                    State& state = EnsureState(shared);
++                    state.extendedIndexStart = true;
++                    state.sourceStart.assign(job.indexStart, job.indexStart + job.startCount);
++                    state.sectionStart = state.sourceStart;
++                }
++            }
++        }
++
++        // No module (or it could not run): stock content still gets the one fix every model has always had.
++        if (!ran) NormalizeBoneInfluences(shared->m_skinData);
++        ForceShadowAnimGate(shared);
++    }
++
++    // -------------------------------------------------------------------------------------- UnwrapAnim
++    bool UnwrapAnim(uint8_t* buffer, uint32_t& size)
++    {
++        // 'AFM2', read as the little-endian dword of the on-disk bytes. A stock animation file costs one compare.
++        constexpr uint32_t kTagAFM2 = 0x324D4641;
++        uint32_t magic = 0;
++        if (!buffer || size < 8) return false;
++        std::memcpy(&magic, buffer, sizeof(magic));
++        if (magic != kTagAFM2) return false;
++
++        const WxlModernM2Services* service = Service();
++        return service && service->unwrapAnim(buffer, &size) != 0;
++    }
++
++    // ----------------------------------------------------------------------------------------- Destroy
++    void Destroy(CM2Shared* shared)
++    {
++        State* state = shared->m_wxl;
++        if (!state) return;
++        shared->m_wxl = nullptr;
++        for (void* block : state->farBlocks)
++        {
++#if defined(WOWDECOMP_ARCH_64)
++            OsFreeNear(block);
++#else
++            SMemFree(block, __FILE__, __LINE__, 0);
++#endif
++        }
++        delete state;
++    }
++}
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2.h b/Engine/Source/Model2/ModernM2/ModernM2.h
+index 682a983..89941f1 100644
+--- a/Engine/Source/Model2/ModernM2/ModernM2.h
++++ b/Engine/Source/Model2/ModernM2/ModernM2.h
+@@ -1,18 +1,21 @@
+-// Modern (MD21 container, inner version 272-274) M2 reader, compiled into the client.
+-// Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
++// Modern (MD21 container, inner version 272-274) M2 reading: the client's side of it.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+-// The extension reached the client from outside: detours on the stock loader, raw offsets turned into raw
+-// pointers. Here the same work sits at the decompiled load steps themselves and speaks the client's own
+-// record layout, in which every M2Array is a count plus a 32-bit offset RELATIVE TO THE ARRAY (so the
+-// stock M2Init walk is reused unchanged once the body has been reshaped).
++// The reader itself is a module, wxl_modernm2.dll (Engine/Source/WXLModules/ModernM2), loaded from WXL\Modules by the
++// 64-bit client. What stays here is the thin side the decompiled loader calls (ModernM2.cpp): it owns the per-model
++// State, hands the module the memory it needs (the client's own allocators, so every block is still freed by the
++// routine that allocated it) and forwards each load step through the service "wxl.modernm2.v1"
++// (Engine/Source/WXL/Sdk/wxl_modernm2_api.h). The client's record layout is spoken by the module through its own
++// copy of M2Data.h; a client without the module (or a 32-bit build) reads stock models only and refuses an MD21 file
++// like an absent one.
+ //
+ // Load path (CM2Shared::FinishLoading):
+ //   PrepareLoad   MD21 container -> flat MD20 body in a freshly seated, slightly oversized block; in-place
+ //                 field deltas; particle / camera records brought to the client's record shape.
+-//   M2Init        the stock walk, which now accepts the modern version window.
++//   M2Init        the stock walk, which accepts the modern version window (IsAcceptedVersion).
+ //   FinishWalk    reference clamps on the walked header.
+ // Texture creation (CM2Shared::Initialize) asks TextureName for every hardcoded texture the file leaves
+-// unnamed: the TXID chunk's file id goes to the listfile module's service (wxl.listfile.v1).
++// unnamed: the TXID chunk's file id goes to the listfile module's service (wxl.listfile.v1) through the module.
+ // Skin load (CM2Shared::FinishLoadingSkinProfile) calls FinalizeSkin before the batch blocks are sized.
+ // External animation files go through UnwrapAnim.
+ #pragma once
+@@ -25,18 +28,21 @@
+ 
+ namespace wxl::modernm2
+ {
+-    constexpr uint32_t kVersionMin = 272; // inner M2 version window the reader accepts
++    // Inner M2 version window the reader accepts. The loader's hot path (M2Init) asks it for every sequence load, so
++    // it is kept here; the module publishes its own copy and the client compares the two when it finds the service.
++    constexpr uint32_t kVersionMin = 272;
+     constexpr uint32_t kVersionMax = 274;
+ 
+     inline bool IsAcceptedVersion(uint32_t version) { return version >= kVersionMin && version <= kVersionMax; }
+ 
+-    constexpr uint32_t kMaxTxid = 128; // hard cap on the TXID entries kept per model
++    constexpr uint32_t kMaxTxid = 128; // hard cap on the TXID entries kept per model (WXL_M2_MAX_TXID)
+ 
+     /// The client's vertex shader holds the bone palette from register 31, 3 registers per matrix:
+     /// (256 - 31) / 3 = 75 bones per draw.
+     constexpr uint32_t kMaxBonesPerDraw = 75;
+ 
+-    /// Per-model state, owned by CM2Shared::m_wxl. Created only for models that need it.
++    /// Per-model state, owned by CM2Shared::m_wxl (created and released by ModernM2.cpp). Created only for models
++    /// that need it. The module keeps none of it: the numbers it needs come back through its result structs.
+     struct State
+     {
+         bool     modern = false;          // read through the MD21 path
+@@ -73,13 +79,16 @@ namespace wxl::modernm2
+     bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap);
+ 
+     /// Skin finalize: bone-budget split, contract rebuild for modern models, boneInfluences / shadow gate
+-    /// fixes. `skinBytes` is the byte size of the skin block as read. Runs before the batch blocks are sized.
++    /// fixes (the shadow gate is applied here, on the runtime object; the rest is the module's). `skinBytes` is the byte size of the skin block as read. Runs before the batch blocks are sized.
+     void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes);
+ 
+     /// A modern external animation file wraps the flat track blob in one chunk; slides the payload onto the
+     /// buffer base. Returns true when it unwrapped (size is shortened to the payload).
+     bool UnwrapAnim(uint8_t* buffer, uint32_t& size);
+ 
++    /// True when the modern M2 module is loaded (its service was found).
++    bool ModuleLoaded();
++
+     /// Releases everything the model's state owns.
+     void Destroy(CM2Shared* shared);
+ 
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+index 306d2e1..19bc192 100644
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -76,6 +76,7 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
+ | Misc | `workingDirectory` |
+ 
+ The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file id -> path service (`"wxl.listfile.v1"`, `wxl_listfile_api.h`) other modules call.
++The modern M2 reader (`Engine/Source/WXLModules/ModernM2`) is the fifth: the client's M2 loader calls it through `"wxl.modernm2.v1"` (`wxl_modernm2_api.h`) at the load steps of `CM2Shared`, handing it the memory it may use (`WxlM2Alloc`); it names `TXID` textures through the listfile service.
+ 
+ ### Moving code that was written inside the client
+ 
+@@ -105,5 +106,8 @@ with its build line; `stub/windows.h` is just enough of the Windows header to bu
+   texture layers.
+ * `weapon_service_test.cpp`: the weapon module registers its service in the core's real registry and the
+   equip module's `WeaponService.cpp` gets a baked path back through it.
++* `modernm2_test.cpp` (modern M2): loads `wxl_modernm2.dll` as a shared library behind a fake core and drives it through the
++  client's adapter (`Model2/ModernM2/ModernM2.cpp`) on synthetic MD21 files and skins; `modernm2_layout_test.cpp` compares the
++  module's copy of the M2 record layout with the engine's `M2Data.h`. `run_modernm2_tests.sh` runs both.
+ 
+ What cannot be tested off Windows is `WXLApi/ModelAccess.cpp` (it reads the real `CM2Model`) and the Win32 loader.
+diff --git a/Engine/Source/WXL/Sdk/wxl_modernm2_api.h b/Engine/Source/WXL/Sdk/wxl_modernm2_api.h
+new file mode 100644
+index 0000000..81557f1
+--- /dev/null
++++ b/Engine/Source/WXL/Sdk/wxl_modernm2_api.h
+@@ -0,0 +1,150 @@
++/*
++ * WarcraftXL modern M2 module: the service it publishes (ABI 1, see wxl_api.h).
++ * Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++ *
++ * wxl_modernm2.dll reads modern models (an MD21 container, inner version 272-274) for the client: it turns the
++ * container into the flat MD20 body the client's own M2 loader walks, brings the records that grew in later builds
++ * back to the client's record shape, rebuilds the skin contract, and names a texture the file leaves unnamed by its
++ * TXID file id (through the listfile module, wxl_listfile_api.h). The client calls it through this table at the load
++ * steps of CM2Shared (Engine/Source/Model2/ModernM2/ModernM2.cpp is the one caller):
++ *
++ *     const WxlModernM2Services* m2 = WxlModernM2Get(api);      // NULL when the module is not loaded
++ *
++ * The module never sees an engine type. It works on byte buffers and on the two blocks the client reads (the model
++ * body and the skin block) through its own copy of the record layout; every block it needs comes from the CALLER,
++ * through WxlM2Alloc, so each block is freed by the side that allocated it and the client's own free routines
++ * (SIMD::FreeA16, OsFreeNear) stay the ones that release them.
++ *
++ * Plain C types only. Every function may be called from any thread (the client loads models on its async threads);
++ * the module keeps no per-model state: whatever has to live with a model comes back in a result struct and is kept
++ * by the client. Nothing here throws. The table only ever grows at its end (WXL_MODERNM2_HAS).
++ */
++#ifndef WXL_MODERNM2_API_H
++#define WXL_MODERNM2_API_H
++
++#include "wxl_api.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define WXL_SERVICE_MODERNM2 "wxl.modernm2.v1"
++
++/* Inner M2 versions the module reads (the client's own is 264). The client keeps its own copy of the window for the
++ * hot path (every sequence load asks it) and compares it with these two once, when it first finds the service. */
++#define WXL_M2_VERSION_MIN 272u
++#define WXL_M2_VERSION_MAX 274u
++
++/* Most TXID entries kept per model. */
++#define WXL_M2_MAX_TXID 128u
++
++/* The memory the module may ask the caller for during one call. `ctx` is handed back to each function. */
++typedef struct WxlM2Alloc
++{
++    uint32_t structSize;     /* sizeof(WxlM2Alloc) in the caller */
++    void*    ctx;
++    /* A block of `size` bytes, 16-byte aligned, that the client frees with its own routine (the model body, the
++     * skin block). NULL when out of memory. */
++    void*  (*alloc)(void* ctx, uint32_t size);
++    /* Gives back a block obtained from alloc(), or the block a call replaced (the old skin block). */
++    void   (*release)(void* ctx, void* block);
++    /* A block of `size` bytes within reach of a signed 32-bit offset from `anchor` (an M2 array reaches its data by
++     * such an offset). It belongs to the model: the client releases it when the model goes. NULL when none. */
++    void*  (*allocNear)(void* ctx, const void* anchor, size_t size);
++} WxlM2Alloc;
++
++/* ---- prepareLoad ---------------------------------------------------------------------------------------- */
++enum
++{
++    WXL_M2_NOT_MODERN = 0,   /* not an MD21 container: nothing was touched, the stock loader goes ahead */
++    WXL_M2_MODERN     = 1,   /* `body` holds the flat MD20 body in the client's shape */
++    WXL_M2_FAILED     = 2    /* an MD21 file the module cannot read (logged): treat it as a corrupt model */
++};
++
++typedef struct WxlM2PrepareResult
++{
++    uint32_t structSize;     /* sizeof(WxlM2PrepareResult), set by the caller */
++    uint32_t status;         /* WXL_M2_NOT_MODERN / _MODERN / _FAILED */
++    void*    body;           /* MODERN: a block from alloc(): the body, then `reserveCap` spare zeroed bytes */
++    uint32_t bodySize;       /* MODERN: bytes of the body (the model's new file size) */
++    uint32_t reserveBase;    /* MODERN: where the spare room starts in the block (16-aligned, >= bodySize) */
++    uint32_t reserveCap;     /* MODERN: bytes of spare room, for arrays the skin finalize rebuilds */
++    uint32_t version;        /* MODERN: the inner version found */
++    uint32_t txidCount;      /* MODERN: entries of txid[] (the TXID chunk's file ids, one per texture record) */
++    uint32_t txid[WXL_M2_MAX_TXID];
++} WxlM2PrepareResult;
++
++/* ---- finalizeSkin --------------------------------------------------------------------------------------- */
++typedef struct WxlM2SkinJob
++{
++    uint32_t    structSize;  /* sizeof(WxlM2SkinJob), set by the caller */
++    const char* name;        /* the model's file name (log lines, and the extended-index-start name test) */
++    void*       model;       /* IN: the model body after the client's walk (offsets are relative to each array) */
++    void*       skin;        /* IN: the skin block as read, walked */
++    uint32_t    skinBytes;   /* IN: bytes of that block */
++    uint32_t    modern;      /* IN: 1 when the model went through prepareLoad (WXL_M2_MODERN) */
++    uint32_t    reserveBase; /* IN: the model block's spare room (from prepareLoad; 0/0/0 for a stock model) */
++    uint32_t    reserveCap;
++    uint32_t    reserveUsed; /* IN/OUT: how much of it is taken */
++
++    void*       newSkin;     /* OUT: the skin block to use from now on: `skin` when it was edited in place, else a
++                                new block from alloc() (the old one went back through release()) */
++    uint32_t    committed;   /* OUT: 0 when the rebuilt arrays could not be written back (logged; nothing changed) */
++    uint32_t    extendedIndexStart; /* OUT: 1 when sections carry a full 32-bit index start beside the record's 16 bits */
++    uint32_t    startCount;  /* OUT: entries of indexStart (0 unless extendedIndexStart) */
++    const uint32_t* indexStart; /* OUT: the full index start of each section, in the skin's own section order. Owned by the
++                                   module; valid until the next finalizeSkin call on the same thread: copy it. */
++} WxlM2SkinJob;
++
++/* TextureName results */
++enum
++{
++    WXL_M2_TEXNAME_NONE       = 0, /* no answer (no listfile module): keep the solid white placeholder */
++    WXL_M2_TEXNAME_FOUND      = 1, /* `out` is the texture's own path */
++    WXL_M2_TEXNAME_NOTFOUND   = 2  /* `out` is the listfile module's not-found name: open it anyway, the client then
++                                      shows its own missing texture */
++};
++
++typedef struct WxlModernM2Services
++{
++    uint32_t structSize;     /* sizeof(WxlModernM2Services) in the publisher */
++    uint32_t versionMin;     /* WXL_M2_VERSION_MIN / _MAX the module was built with */
++    uint32_t versionMax;
++
++    /* An MD21 container in `file` (the bytes the client read) -> the flat body in a block from mem->alloc(). `file`
++     * is only read: on WXL_M2_MODERN the caller frees it, on any other status it is untouched. Returns the status. */
++    int  (*prepareLoad)(const char* name, const void* file, uint32_t fileSize, const WxlM2Alloc* mem,
++                        WxlM2PrepareResult* out);
++
++    /* After the client's walk of a MODERN body: reference clamps on the walked header (ribbon texture / material
++     * indices, camera lookup sentinels). */
++    void (*finishWalk)(void* model);
++
++    /* The path to create texture `fileId` (one TXID entry) from, written to out[cap]. Returns WXL_M2_TEXNAME_*. */
++    int  (*textureName)(uint32_t fileId, char* out, size_t cap);
++
++    /* The skin finalize: the bone-budget split every model needs, the contract rebuild a modern model needs, the
++     * boneInfluences fix, wide index starts. Edits the model's arrays and the skin in place or re-seats the skin;
++     * everything it needs comes through `mem`. Returns 0 on success, nonzero when it could not run at all. */
++    int  (*finalizeSkin)(const WxlM2Alloc* mem, WxlM2SkinJob* job);
++
++    /* A modern external animation file wraps the flat track blob in one chunk: slides the payload onto the buffer
++     * base and shortens *size. Returns 1 when it unwrapped, 0 when the buffer is not wrapped. */
++    int  (*unwrapAnim)(void* buffer, uint32_t* size);
++} WxlModernM2Services;
++
++#define WXL_MODERNM2_HAS(table, member) \
++    ((table) && (table)->structSize >= offsetof(WxlModernM2Services, member) + sizeof(((WxlModernM2Services*)0)->member))
++
++/* The service, or NULL when the modern M2 module is not loaded (yet). */
++static inline const WxlModernM2Services* WxlModernM2Get(const WxlApi* api)
++{
++    return (api && WXL_API_HAS(api, getService) && api->getService)
++        ? (const WxlModernM2Services*)api->getService(WXL_SERVICE_MODERNM2, NULL) : NULL;
++}
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* WXL_MODERNM2_API_H */
+diff --git a/Engine/Source/WXLModules/ModernM2/CMakeLists.txt b/Engine/Source/WXLModules/ModernM2/CMakeLists.txt
+new file mode 100644
+index 0000000..96b8637
+--- /dev/null
++++ b/Engine/Source/WXLModules/ModernM2/CMakeLists.txt
+@@ -0,0 +1,31 @@
++# WXL modern M2 module: wxl_modernm2.dll, loaded from <client folder>\WXL\Modules\ by the 64-bit client.
++# Reads modern models (MD21 container, inner version 272-274) for the client's M2 loader: container demux, record
++# normalization, skin contract rebuild, TXID texture names (through wxl_listfile.dll). It is built against
++# Engine/Source/WXL/Sdk (wxl_api.h, wxl_module.hpp, wxl_modernm2_api.h, wxl_listfile_api.h), its own folder (which
++# carries its own copy of the M2 record layout) and FlightAnim.h (constants only, engine-free, shared with the game
++# layer: Engine/Source/Model2/ModernM2): no engine type, no import library of the client.
++if (NOT WOWDECOMP_ARCH_64)
++    message(STATUS "WXL modules are 64-bit only: wxl_modernm2 is not built")
++    return()
++endif ()
++
++file(GLOB MODULE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
++
++add_library(wxl_modernm2 SHARED ${MODULE_SOURCES})
++
++target_include_directories(wxl_modernm2
++    PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/Engine/Source/WXL/Sdk
++        ${CMAKE_SOURCE_DIR}/Engine/Source/Model2/ModernM2
++)
++
++set_target_properties(wxl_modernm2 PROPERTIES
++    PREFIX ""
++    CXX_STANDARD 17
++    CXX_STANDARD_REQUIRED ON
++    CXX_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON
++    # "$<1:...>" keeps Visual Studio from adding a Debug/Release sub-folder: the loader looks in WXL\Modules
++    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/bin/Win/WXL/Modules>"
++)
+diff --git a/Engine/Source/WXLModules/ModernM2/Internal.hpp b/Engine/Source/WXLModules/ModernM2/Internal.hpp
+new file mode 100644
+index 0000000..df5f7f8
+--- /dev/null
++++ b/Engine/Source/WXLModules/ModernM2/Internal.hpp
+@@ -0,0 +1,37 @@
++// Modern M2 module: what Load.cpp, Skin.cpp and Module.cpp share. Nothing here leaves the module.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// The module keeps no per-model state: what used to be wxl::modernm2::State inside CM2Shared now lives in the
++// client (Engine/Source/Model2/ModernM2/ModernM2.h) and travels through the structs of wxl_modernm2_api.h.
++#pragma once
++
++#include "M2Records.hpp"
++#include "wxl_modernm2_api.h"
++
++#include <cstddef>
++#include <cstdint>
++
++namespace wxl::m2mod
++{
++    using namespace wxl::m2rec;
++
++    constexpr uint32_t kVersionMin = WXL_M2_VERSION_MIN;   // inner M2 version window the reader accepts
++    constexpr uint32_t kVersionMax = WXL_M2_VERSION_MAX;
++
++    inline bool IsAcceptedVersion(uint32_t version) { return version >= kVersionMin && version <= kVersionMax; }
++
++    constexpr uint32_t kMaxTxid = WXL_M2_MAX_TXID;
++
++    /// The client's vertex shader holds the bone palette from register 31, 3 registers per matrix:
++    /// (256 - 31) / 3 = 75 bones per draw.
++    constexpr uint32_t kMaxBonesPerDraw = 75;
++
++    // Load.cpp
++    int  PrepareLoad(const char* name, const void* file, uint32_t fileSize, const WxlM2Alloc* mem, WxlM2PrepareResult* out);
++    void FinishWalk(void* model);
++    int  TextureName(uint32_t fileId, char* out, size_t cap);
++    int  UnwrapAnim(void* buffer, uint32_t* size);
++
++    // Skin.cpp
++    int  FinalizeSkin(const WxlM2Alloc* mem, WxlM2SkinJob* job);
++}
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2Load.cpp b/Engine/Source/WXLModules/ModernM2/Load.cpp
+similarity index 85%
+rename from Engine/Source/Model2/ModernM2/ModernM2Load.cpp
+rename to Engine/Source/WXLModules/ModernM2/Load.cpp
+index 870da1a..a8b0639 100644
+--- a/Engine/Source/Model2/ModernM2/ModernM2Load.cpp
++++ b/Engine/Source/WXLModules/ModernM2/Load.cpp
+@@ -6,8 +6,11 @@
+ // PrepareLoad the buffer is a flat MD20 body in the shape the client's own walk expects, and the walk is the
+ // stock one.
+ 
+-#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+-#include "Engine/Source/Model2/ModernM2/FlightAnim.h"
++#include "Internal.hpp"
++#include "FlightAnim.h"          // Engine/Source/Model2/ModernM2: constants only, shared with the game layer
++
++#include "wxl_module.hpp"
++#include "wxl_listfile_api.h"
+ 
+ #include <atomic>
+ #include <cmath>
+@@ -15,18 +18,7 @@
+ #include <cstring>
+ #include <new>
+ 
+-#include "Engine/Source/Base/SIMD.h"
+-#include "Engine/Source/Os/OsMemory.h"
+-#include "Engine/Source/Storm/H/storm.h"
+-#include "Engine/Source/WXL/Log.h"
+-#include "Engine/Source/WXL/Services.h"
+-
+-#ifndef WXL_ALLOW_32BIT_HEADER
+-#define WXL_ALLOW_32BIT_HEADER 1   // consumer side: only the table declaration is needed
+-#endif
+-#include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
+-
+-namespace wxl::modernm2
++namespace wxl::m2mod
+ {
+     namespace
+     {
+@@ -435,15 +427,12 @@ namespace wxl::modernm2
+         const WxlListfileServices* ListfileService()
+         {
+             static std::atomic<const WxlListfileServices*> s_cached{ nullptr };
+-            const WxlListfileServices* s = s_cached.load(std::memory_order_acquire);
+-            if (s) return s;
+-            size_t size = 0;
+-            s = static_cast<const WxlListfileServices*>(wxl::services::Get(WXL_SERVICE_LISTFILE, &size));
+-            if (s && size >= sizeof(s->structSize) && s->structSize >= offsetof(WxlListfileServices, resolve) + sizeof(s->resolve))
+-                s_cached.store(s, std::memory_order_release);
+-            else
+-                s = nullptr;
+-            return s;
++            const WxlListfileServices* cached = s_cached.load(std::memory_order_acquire);
++            if (cached) return cached;
++            const WxlListfileServices* found = WxlListfileGet(wxl::module::Api());
++            if (!WXL_LISTFILE_HAS(found, resolve) || !found->resolve) return nullptr;
++            s_cached.store(found, std::memory_order_release);
++            return found;
+         }
+ 
+         /// Spare bytes seated after the body for arrays the skin finalize rebuilds.
+@@ -451,11 +440,11 @@ namespace wxl::modernm2
+     }
+ 
+     // ------------------------------------------------------------------------------------ PrepareLoad
+-    LoadResult PrepareLoad(CM2Shared* shared)
++    int PrepareLoad(const char* name, const void* file, uint32_t size, const WxlM2Alloc* mem, WxlM2PrepareResult* out)
+     {
+-        uint8_t* buf = reinterpret_cast<uint8_t*>(shared->m_data);
+-        const uint32_t size = shared->m_fileSize;
+-        if (!buf || size < 8 || Rd32(buf) != kTagMD21) return LoadResult::NotModern;
++        const uint8_t* buf = static_cast<const uint8_t*>(file);
++        if (!name) name = "?";
++        if (!buf || size < 8 || Rd32(buf) != kTagMD21) return WXL_M2_NOT_MODERN;
+ 
+         const char* fail = nullptr;
+         Scan s;
+@@ -481,26 +470,22 @@ namespace wxl::modernm2
+ 
+         if (fail)
+         {
+-            wxl::LogCat("M2", "'%s' modern load FAILED: %s (v=%u skips=0x%X)", shared->m_fileName, fail, version, s.skipMask);
+-            return LoadResult::Failed;
++            wxl::LogCat("M2", "'%s' modern load FAILED: %s (v=%u skips=0x%X)", name, fail, version, s.skipMask);
++            return WXL_M2_FAILED;
+         }
+ 
+-        // Seat the flat body in a fresh block with spare room after it. The model's block is only ever freed
+-        // through SIMD::FreeA16 on m_data, so swapping it here is invisible to the rest of the client; every
+-        // offset in the body is body-relative, so the copy needs no fixing up.
++        // Seat the flat body in a fresh block with spare room after it. The caller frees the block with its own
++        // routine; every offset in the body is body-relative, so the copy needs no fixing up.
+         const uint32_t reserveBase = (s.bodySize + 15u) & ~15u;
+         const uint32_t total = reserveBase + kModelReserve;
+-        uint8_t* seated = static_cast<uint8_t*>(SIMD::AllocA16(total, __FILE__, __LINE__));
++        uint8_t* seated = static_cast<uint8_t*>(mem->alloc(mem->ctx, total));
+         if (!seated)
+         {
+-            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (%u bytes)", shared->m_fileName, total);
+-            return LoadResult::Failed;
++            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (%u bytes)", name, total);
++            return WXL_M2_FAILED;
+         }
+         std::memcpy(seated, buf + s.bodyOff, s.bodySize);
+         std::memset(seated + s.bodySize, 0, total - s.bodySize);
+-        SIMD::FreeA16(buf);
+-        shared->m_data = reinterpret_cast<M2Data*>(seated);
+-        shared->m_fileSize = s.bodySize;
+ 
+         auto* h = reinterpret_cast<M2Data*>(seated);
+         const uint32_t bodySize = s.bodySize;
+@@ -519,22 +504,19 @@ namespace wxl::modernm2
+         uint32_t normalized[kNormalizerCount] = {};
+         if (!NormalizeRecords(seated, bodySize, h, normalized))
+         {
+-            wxl::LogCat("M2", "'%s' modern load FAILED: record normalization rejected a record", shared->m_fileName);
+-            return LoadResult::Failed;
++            wxl::LogCat("M2", "'%s' modern load FAILED: record normalization rejected a record", name);
++            mem->release(mem->ctx, seated);   // the caller still owns `file`: nothing was swapped
++            return WXL_M2_FAILED;
+         }
+ 
+-        State* state = new (std::nothrow) State();
+-        if (!state)
+-        {
+-            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (state)", shared->m_fileName);
+-            return LoadResult::Failed;
+-        }
+-        state->modern = true;
+-        state->txidCount = s.txidCount;
+-        std::memcpy(state->txid, s.txid, sizeof(uint32_t) * s.txidCount);
+-        state->reserveBase = reserveBase;
+-        state->reserveCap = kModelReserve;
+-        shared->m_wxl = state;
++        out->status      = WXL_M2_MODERN;
++        out->body        = seated;
++        out->bodySize    = bodySize;
++        out->reserveBase = reserveBase;
++        out->reserveCap  = kModelReserve;
++        out->version     = version;
++        out->txidCount   = s.txidCount;
++        std::memcpy(out->txid, s.txid, sizeof(uint32_t) * s.txidCount);
+ 
+         char norm[96] = {};
+         size_t at = 0;
+@@ -545,15 +527,16 @@ namespace wxl::modernm2
+             if (wrote <= 0) break;
+             at += static_cast<size_t>(wrote);
+         }
+-        wxl::LogCat("M2", "'%s' read natively (v=%u txid=%u skips=0x%X extseq=%u normalized:%s)", shared->m_fileName,
++        wxl::LogCat("M2", "'%s' read natively (v=%u txid=%u skips=0x%X extseq=%u normalized:%s)", name,
+                     version, s.txidCount, s.skipMask, external, norm[0] ? norm : " none");
+-        return LoadResult::Modern;
++        return WXL_M2_MODERN;
+     }
+ 
+     // -------------------------------------------------------------------------------------- FinishWalk
+-    void FinishWalk(CM2Shared* shared)
++    void FinishWalk(void* model)
+     {
+-        M2Data* h = shared->m_data;
++        M2Data* h = static_cast<M2Data*>(model);
++        if (!h) return;
+ 
+         // Ribbons: the source exporter can emit texture / material indices past what the model declares.
+         for (uint32_t i = 0; i < h->m_ribbons.m_count; ++i)
+@@ -581,58 +564,37 @@ namespace wxl::modernm2
+     }
+ 
+     // ------------------------------------------------------------------------------------ TextureName
+-    bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap)
++    int TextureName(uint32_t fileId, char* out, size_t cap)
+     {
+-        State* state = shared->m_wxl;
+-        if (!state || !state->modern) return false;
+-        if (texture.m_type != 0) return false;                  // dynamic slots stay empty
+-        if (index >= state->txidCount || !state->txid[index]) return false;
+-
+-        const uint32_t fileId = state->txid[index];
+         const WxlListfileServices* listfile = ListfileService();
+         if (!listfile)
+         {
+             if (wxl::LogThrottle("m2-txid-nolistfile", 1, 100000))
+                 wxl::LogCat("M2", "TXID %u: the listfile service (%s) is not available, solid white fallback", fileId, WXL_SERVICE_LISTFILE);
+-            ++state->texUnresolved;
+-            return false;
++            return WXL_M2_TEXNAME_NONE;
+         }
+ 
+         // resolve() returns the file's own path, or, when the listfile does not know the id or the client
+         // cannot open the file, the not-found name for a texture; opening that name makes the client fall
+         // back to its own missing-texture handling, which is the listfile module's contract.
+-        const int result = listfile->resolve(fileId, WXL_LISTFILE_TEXTURE, out, cap);
+-        if (result == WXL_LISTFILE_ERROR) { ++state->texUnresolved; return false; }
+-        if (result == WXL_LISTFILE_FOUND) ++state->texResolved; else ++state->texUnresolved;
+-        return true;
++        switch (listfile->resolve(fileId, WXL_LISTFILE_TEXTURE, out, cap))
++        {
++        case WXL_LISTFILE_FOUND:    return WXL_M2_TEXNAME_FOUND;
++        case WXL_LISTFILE_NOTFOUND: return WXL_M2_TEXNAME_NOTFOUND;
++        default:                    return WXL_M2_TEXNAME_NONE;
++        }
+     }
+ 
+     // -------------------------------------------------------------------------------------- UnwrapAnim
+-    bool UnwrapAnim(uint8_t* buffer, uint32_t& size)
++    int UnwrapAnim(void* bufferVoid, uint32_t* size)
+     {
+         constexpr uint32_t kChunkHeaderBytes = 8;
+-        if (!buffer || size < kChunkHeaderBytes || Rd32(buffer) != kTagAFM2) return false;
++        uint8_t* buffer = static_cast<uint8_t*>(bufferVoid);
++        if (!buffer || !size || *size < kChunkHeaderBytes || Rd32(buffer) != kTagAFM2) return 0;
+         const uint32_t payload = Rd32(buffer + 4);
+-        if (static_cast<uint64_t>(kChunkHeaderBytes) + payload > size) return false;
++        if (static_cast<uint64_t>(kChunkHeaderBytes) + payload > *size) return 0;
+         std::memmove(buffer, buffer + kChunkHeaderBytes, payload);
+-        size = payload;
+-        return true;
+-    }
+-
+-    // ----------------------------------------------------------------------------------------- Destroy
+-    void Destroy(CM2Shared* shared)
+-    {
+-        State* state = shared->m_wxl;
+-        if (!state) return;
+-        shared->m_wxl = nullptr;
+-        for (void* block : state->farBlocks)
+-        {
+-#if defined(WOWDECOMP_ARCH_64)
+-            OsFreeNear(block);
+-#else
+-            SMemFree(block, __FILE__, __LINE__, 0);
+-#endif
+-        }
+-        delete state;
++        *size = payload;
++        return 1;
+     }
+ }
+diff --git a/Engine/Source/WXLModules/ModernM2/M2Records.hpp b/Engine/Source/WXLModules/ModernM2/M2Records.hpp
+new file mode 100644
+index 0000000..d231d68
+--- /dev/null
++++ b/Engine/Source/WXLModules/ModernM2/M2Records.hpp
+@@ -0,0 +1,383 @@
++// The client's M2 record layout, as the modern M2 module sees it.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// A copy of Engine/Source/Model2/M2Data.h with the Tempest vector types reduced to their fields: a module includes no
++// engine header (Sdk/wxl_api.h), so it carries the layout it reads. The layout is the 3.3.5a client's record format
++// and does not change; Tools/WxlModuleTest/modernm2_layout_test.cpp compares every size and offset below with the
++// engine's own M2Data.h, so a drift fails the test instead of corrupting a model.
++//
++// Everything lives in wxl::m2rec so the module never collides with the client's global names when both are compiled
++// into one test program. Names, member names and offsets are the engine's.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace wxl::m2rec
++{
++    struct C2Vector { float x, y; };
++    struct C3Vector { float x, y, z; };
++    struct C4Quaternion { float x, y, z, w; };
++    struct CAaBox { C3Vector b, t; };
++    struct CRange { float m_l, m_h; };
++    struct CiRange { int32_t m_l, m_h; };
++
++
++    template <class T>
++    class M2Array {
++        public:
++        /* 0000 */ uint32_t m_count;
++        /* 0004 */ uint32_t m_offset;
++
++        T& operator[](uint32_t index) const { return Data()[index]; }
++        /// The data sits at a signed 32-bit offset from the array record itself.
++        T* Data() const
++        {
++            return reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(this) + static_cast<intptr_t>(static_cast<int32_t>(m_offset)));
++        }
++        void Set(const T* data)
++        {
++            m_offset = data ? static_cast<uint32_t>(reinterpret_cast<uintptr_t>(data) - reinterpret_cast<uintptr_t>(this)) : 0;
++        }
++    };
++
++    class fixed16 {
++        public:
++        /* 0000 */ int16_t m_value;
++
++    };
++
++    class ubyte4 {
++        public:
++        /* 0000 */ uint8_t b [4];
++
++        uint8_t operator[](uint32_t index) const { return b[index]; }
++    };
++
++    template <class T>
++    class M2SplineKey {
++        public:
++        /* 0000 */ T m_value;
++        T m_inTan;
++        T m_outTan;
++    };
++
++    class M2CompQuat {
++        public:
++        /* 0000 */ uint16_t m_values [4];
++    };
++
++    class M2TrackBase {
++        public:
++        /* 0000 */ uint16_t m_trackType;
++        /* 0002 */ uint16_t m_loopIndex;
++        /* 0004 */ M2Array<M2Array<uint32_t> > m_sequenceTimes;
++    };
++
++    template <class T>
++    class M2Track : public M2TrackBase {
++        public:
++        /* 000C */ M2Array<M2Array<T> > m_sequenceKeys;
++    };
++
++    template <class T>
++    class M2PartTrack {
++        public:
++        /* 0000 */ M2Array<fixed16> m_times;
++        /* 0008 */ M2Array<T> m_values;
++    };
++
++    class M2Bounds {
++        public:
++        /* 0000 */ CAaBox m_extent;
++        /* 0018 */ float m_radius;
++    };
++
++    class M2Loop {
++        public:
++        /* 0000 */ uint32_t m_length;
++    };
++
++    class M2Sequence {
++        public:
++        /* 0000 */ uint16_t m_id;
++        /* 0002 */ uint16_t m_variationIndex;
++        /* 0004 */ uint32_t m_duration;
++        /* 0008 */ float m_moveSpeed;
++        /* 000C */ uint32_t m_flags;
++        /* 0010 */ uint32_t m_frequency;
++        /* 0014 */ CiRange m_replay;
++        /* 001C */ uint32_t m_blendTime;
++        /* 0020 */ M2Bounds m_bounds;
++        /* 003C */ uint16_t m_variationNext;
++        /* 003E */ uint16_t m_aliasNext;
++    };
++
++    class M2CompBone {
++        public:
++        /* 0000 */ uint32_t m_boneId;
++        /* 0004 */ uint32_t m_flags;
++        /* 0008 */ uint16_t m_parentIndex;
++        /* 000A */ uint16_t m_uDistToParent;
++        /* 000C */ uint32_t m_boneNameCRC;
++        /* 0010 */ M2Track<C3Vector> m_translationTrack;
++        /* 0024 */ M2Track<M2CompQuat> m_rotationTrack;
++        /* 0038 */ M2Track<C3Vector> m_scaleTrack;
++        /* 004C */ C3Vector m_pivot;
++    };
++
++    class M2VertexPNT2 {
++        public:
++        /* 0000 */ C3Vector m_position;
++        /* 000C */ C3Vector m_normal;
++        /* 0018 */ C2Vector m_texcoord [2];
++    };
++
++    class M2Vertex {
++        public:
++        /* 0000 */ C3Vector m_position;
++        /* 000C */ ubyte4 m_weights;
++        /* 0010 */ ubyte4 m_indices;
++        /* 0014 */ C3Vector m_normal;
++        /* 0020 */ C2Vector m_texcoord [2];
++    };
++
++    class M2Color {
++        public:
++        /* 0000 */ M2Track<C3Vector> m_color;
++        /* 0014 */ M2Track<fixed16> m_alpha;
++    };
++
++    class M2Texture {
++        public:
++        /* 0000 */ uint32_t m_type;
++        /* 0004 */ uint32_t m_flags;
++        /* 0008 */ M2Array<char> m_filename;
++    };
++
++    class M2TextureWeight {
++        public:
++        /* 0000 */ M2Track<fixed16> m_weight;
++    };
++
++    class M2TextureTransform {
++        public:
++        /* 0000 */ M2Track<C3Vector> m_translation;
++        /* 0014 */ M2Track<C4Quaternion> m_rotation;
++        /* 0028 */ M2Track<C3Vector> m_scaling;
++    };
++
++    class M2Material {
++        public:
++        /* 0000 */ uint16_t m_flags;
++        /* 0002 */ uint16_t m_blendMode;
++    };
++
++    class M2Attachment {
++        public:
++        /* 0000 */ uint32_t m_id;
++        /* 0004 */ uint16_t m_bone;
++        /* 0006 */ uint16_t unused_0006;
++        /* 0008 */ C3Vector m_position;
++        /* 0014 */ M2Track<uint8_t> m_animateAttached;
++    };
++
++    class M2Event {
++        public:
++        /* 0000 */ uint32_t m_eventId;
++        /* 0004 */ uint32_t m_data;
++        /* 0008 */ uint16_t m_bone;
++        /* 000A */ uint16_t unused_000A;
++        /* 000C */ C3Vector m_position;
++        /* 0018 */ M2TrackBase m_enabled;
++    };
++
++    class M2Light {
++        public:
++        /* 0000 */ uint16_t m_type;
++        /* 0002 */ uint16_t m_bone;
++        /* 0004 */ C3Vector m_position;
++        /* 0010 */ M2Track<C3Vector> m_ambientColor;
++        /* 0024 */ M2Track<float> m_ambientIntensity;
++        /* 0038 */ M2Track<C3Vector> m_diffuseColor;
++        /* 004C */ M2Track<float> m_diffuseIntensity;
++        /* 0060 */ M2Track<float> m_attenuationStart;
++        /* 0074 */ M2Track<float> m_attenuationEnd;
++        /* 0088 */ M2Track<uint8_t> m_visibility;
++    };
++
++    class M2Camera {
++        public:
++        /* 0000 */ uint32_t m_type;
++        /* 0004 */ float m_fieldOfView;
++        /* 0008 */ float m_farClip;
++        /* 000C */ float m_nearClip;
++        /* 0010 */ M2Track<M2SplineKey<C3Vector> > m_positions;
++        /* 0024 */ C3Vector m_positionBase;
++        /* 0030 */ M2Track<M2SplineKey<C3Vector> > m_targetPositions;
++        /* 0044 */ C3Vector m_targetPositionBase;
++        /* 0050 */ M2Track<M2SplineKey<float> > m_roll;
++    };
++
++    class M2Ribbon {
++        public:
++        /* 0000 */ uint32_t m_ribbonId;
++        /* 0004 */ uint16_t m_boneIndex;
++        /* 0006 */ uint16_t unused_0006;
++        /* 0008 */ C3Vector m_position;
++        /* 0014 */ M2Array<uint16_t> m_textureIndices;
++        /* 001C */ M2Array<uint16_t> m_materialIndices;
++        /* 0024 */ M2Track<C3Vector> m_colorTrack;
++        /* 0038 */ M2Track<fixed16> m_alphaTrack;
++        /* 004C */ M2Track<float> m_heightAboveTrack;
++        /* 0060 */ M2Track<float> m_heightBelowTrack;
++        /* 0074 */ float m_edgesPerSecond;
++        /* 0078 */ float m_edgeLifetime;
++        /* 007C */ float m_gravity;
++        /* 0080 */ uint16_t m_textureRows;
++        /* 0082 */ uint16_t m_textureCols;
++        /* 0084 */ M2Track<uint16_t> m_textureSlotTrack;
++        /* 0098 */ M2Track<uint8_t> m_visibilityTrack;
++        /* 00AC */ int16_t m_priorityPlane;
++        /* 00AE */ uint16_t unused_00AE;
++    };
++
++    class M2Particle {
++        public:
++        /* 0000 */ uint32_t m_particleId;
++        /* 0004 */ uint32_t m_flags;
++        /* 0008 */ C3Vector m_position;
++        /* 0014 */ uint16_t m_boneIndex;
++        /* 0016 */ uint16_t m_textureIndex;
++        /* 0018 */ M2Array<char> m_geometryMdl;
++        /* 0020 */ M2Array<char> m_recursionMdl;
++        /* 0028 */ uint8_t m_blendMode;
++        /* 0029 */ uint8_t m_emitterType;
++        /* 002A */ uint16_t m_colorIndex;
++        /* 002C */ uint16_t unused_002C;
++        /* 002E */ int16_t m_priorityPlane;
++        /* 0030 */ uint16_t m_rows;
++        /* 0032 */ uint16_t m_cols;
++        /* 0034 */ M2Track<float> m_speedTrack;
++        /* 0048 */ M2Track<float> m_variationTrack;
++        /* 005C */ M2Track<float> m_latitudeTrack;
++        /* 0070 */ M2Track<float> m_longitudeTrack;
++        /* 0084 */ M2Track<float> m_gravityTrack;
++        /* 0098 */ M2Track<float> m_lifeTrack;
++        /* 00AC */ float m_lifeVariation;
++        /* 00B0 */ M2Track<float> m_emissionRateTrack;
++        /* 00C4 */ float m_emissionRateVariation;
++        /* 00C8 */ M2Track<float> m_widthTrack;
++        /* 00DC */ M2Track<float> m_lengthTrack;
++        /* 00F0 */ M2Track<float> m_zsourceTrack;
++        /* 0104 */ M2PartTrack<C3Vector> m_colorTrack;
++        /* 0114 */ M2PartTrack<fixed16> m_alphaTrack;
++        /* 0124 */ M2PartTrack<C2Vector> m_scaleTrack;
++        /* 0134 */ C2Vector m_scaleVariation;
++        /* 013C */ M2PartTrack<uint16_t> m_headCellTrack;
++        /* 014C */ M2PartTrack<uint16_t> m_tailCellTrack;
++        /* 015C */ float m_tailLength;
++        /* 0160 */ float m_twinkleFPS;
++        /* 0164 */ float m_twinkleOnOff;
++        /* 0168 */ CRange m_twinkleScale;
++        /* 0170 */ float m_ivelScale;
++        /* 0174 */ float m_drag;
++        /* 0178 */ float m_initialSpin;
++        /* 017C */ float m_initialSpinVariation;
++        /* 0180 */ float m_spin;
++        /* 0184 */ float m_spinVariation;
++        /* 0188 */ CAaBox m_tumble;
++        /* 01A0 */ C3Vector m_windVector;
++        /* 01AC */ float m_windTime;
++        /* 01B0 */ float m_followSpeed1;
++        /* 01B4 */ float m_followScale1;
++        /* 01B8 */ float m_followSpeed2;
++        /* 01BC */ float m_followScale2;
++        /* 01C0 */ M2Array<C3Vector> m_spline;
++        /* 01C8 */ M2Track<uint8_t> m_visibilityTrack;
++    };
++
++    class M2Batch {
++        public:
++        /* 0000 */ uint8_t m_flags;
++        /* 0001 */ int8_t m_priorityPlane;
++        /* 0002 */ uint16_t m_shader;
++        /* 0004 */ uint16_t m_skinSectionIndex;
++        /* 0006 */ uint16_t m_geosetIndex;
++        /* 0008 */ uint16_t m_colorIndex;
++        /* 000A */ uint16_t m_materialIndex;
++        /* 000C */ uint16_t m_materialLayer;
++        /* 000E */ uint16_t m_textureCount;
++        /* 0010 */ uint16_t m_textureComboIndex;
++        /* 0012 */ uint16_t m_textureCoordComboIndex;
++        /* 0014 */ uint16_t m_textureWeightComboIndex;
++        /* 0016 */ uint16_t m_textureTransformComboIndex;
++    };
++
++    class M2SkinSection {
++        public:
++        /* 0000 */ uint32_t m_skinSectionId;
++        /* 0004 */ uint16_t m_vertexStart;
++        /* 0006 */ uint16_t m_vertexCount;
++        /* 0008 */ uint16_t m_indexStart;
++        /* 000A */ uint16_t m_indexCount;
++        /* 000C */ uint16_t m_boneCount;
++        /* 000E */ uint16_t m_boneComboIndex;
++        /* 0010 */ uint16_t m_boneInfluences;
++        /* 0012 */ uint16_t m_centerBoneIndex;
++        /* 0014 */ C3Vector m_centerPosition;
++        /* 0020 */ C3Vector m_sortCenterPosition;
++        /* 002C */ float m_sortRadius;
++    };
++
++    class M2Data {
++        public:
++        /* 0000 */ uint32_t m_magic;
++        /* 0004 */ uint32_t m_version;
++        /* 0008 */ M2Array<char> m_name;
++        /* 0010 */ uint32_t m_flags;
++        /* 0014 */ M2Array<M2Loop> m_loops;
++        /* 001C */ M2Array<M2Sequence> m_sequences;
++        /* 0024 */ M2Array<uint16_t> m_sequenceIdxHashById;
++        /* 002C */ M2Array<M2CompBone> m_bones;
++        /* 0034 */ M2Array<uint16_t> m_boneIndicesById;
++        /* 003C */ M2Array<M2Vertex> m_vertices;
++        /* 0044 */ uint32_t m_numSkinProfiles;
++        /* 0048 */ M2Array<M2Color> m_colors;
++        /* 0050 */ M2Array<M2Texture> m_textures;
++        /* 0058 */ M2Array<M2TextureWeight> m_textureWeights;
++        /* 0060 */ M2Array<M2TextureTransform> m_textureTransforms;
++        /* 0068 */ M2Array<uint16_t> m_textureIndicesById;
++        /* 0070 */ M2Array<M2Material> m_materials;
++        /* 0078 */ M2Array<uint16_t> m_boneCombos;
++        /* 0080 */ M2Array<uint16_t> m_textureCombos;
++        /* 0088 */ M2Array<uint16_t> m_textureCoordCombos;
++        /* 0090 */ M2Array<uint16_t> m_textureWeightCombos;
++        /* 0098 */ M2Array<uint16_t> m_textureTransformCombos;
++        /* 00A0 */ M2Bounds m_bounds;
++        /* 00BC */ M2Bounds m_collisionBounds;
++        /* 00D8 */ M2Array<uint16_t> m_collisionIndices;
++        /* 00E0 */ M2Array<C3Vector> m_collisionPositions;
++        /* 00E8 */ M2Array<C3Vector> m_collisionFaceNormals;
++        /* 00F0 */ M2Array<M2Attachment> m_attachments;
++        /* 00F8 */ M2Array<uint16_t> m_attachmentIndicesById;
++        /* 0100 */ M2Array<M2Event> m_events;
++        /* 0108 */ M2Array<M2Light> m_lights;
++        /* 0110 */ M2Array<M2Camera> m_cameras;
++        /* 0118 */ M2Array<uint16_t> m_cameraIndicesById;
++        /* 0120 */ M2Array<M2Ribbon> m_ribbons;
++        /* 0128 */ M2Array<M2Particle> m_particles;
++        /* 0130 */ M2Array<uint16_t> m_textureCombinerCombos;
++    };
++
++    class M2SkinProfile {
++        public:
++        /* 0000 */ uint32_t m_magic;
++        /* 0004 */ M2Array<uint16_t> m_vertices;
++        /* 000C */ M2Array<uint16_t> m_indices;
++        /* 0014 */ M2Array<ubyte4> m_bones;
++        /* 001C */ M2Array<M2SkinSection> m_skinSections;
++        /* 0024 */ M2Array<M2Batch> m_batches;
++        /* 002C */ uint32_t m_boneCountMax;
++    };
++}
+diff --git a/Engine/Source/WXLModules/ModernM2/Module.cpp b/Engine/Source/WXLModules/ModernM2/Module.cpp
+new file mode 100644
+index 0000000..357585a
+--- /dev/null
++++ b/Engine/Source/WXLModules/ModernM2/Module.cpp
+@@ -0,0 +1,94 @@
++// The modern M2 module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h and wxl_modernm2_api.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Registers the service "wxl.modernm2.v1": the client's M2 loader (Engine/Source/Model2/ModernM2/ModernM2.cpp)
++// calls it at the load steps of CM2Shared. Needs the listfile module (wxl_listfile.dll) only to name a texture by
++// its TXID file id, and looks that service up when a texture is named, so load order between the two does not matter.
++
++#include "Internal.hpp"
++
++#include "wxl_module.hpp"
++
++#include <cstring>
++
++WXL_DEFINE_MODULE_ABI()
++
++namespace
++{
++    namespace m2 = wxl::m2mod;
++
++    // No exception leaves the module: the client calls these from its async load threads.
++    int SvcPrepareLoad(const char* name, const void* file, uint32_t fileSize, const WxlM2Alloc* mem, WxlM2PrepareResult* out)
++    {
++        if (!out || out->structSize < sizeof(WxlM2PrepareResult)) return WXL_M2_NOT_MODERN;
++        out->status = WXL_M2_NOT_MODERN;
++        out->body = nullptr;
++        out->bodySize = out->reserveBase = out->reserveCap = out->version = out->txidCount = 0;
++        if (!mem || mem->structSize < sizeof(WxlM2Alloc) || !mem->alloc || !mem->release) return WXL_M2_NOT_MODERN;
++        try { out->status = static_cast<uint32_t>(m2::PrepareLoad(name, file, fileSize, mem, out)); }
++        catch (...) { out->status = WXL_M2_FAILED; }
++        return static_cast<int>(out->status);
++    }
++
++    void SvcFinishWalk(void* model)
++    {
++        try { m2::FinishWalk(model); } catch (...) {}
++    }
++
++    int SvcTextureName(uint32_t fileId, char* out, size_t cap)
++    {
++        if (!out || !cap) return WXL_M2_TEXNAME_NONE;
++        try { return m2::TextureName(fileId, out, cap); } catch (...) { return WXL_M2_TEXNAME_NONE; }
++    }
++
++    int SvcFinalizeSkin(const WxlM2Alloc* mem, WxlM2SkinJob* job)
++    {
++        if (!job || job->structSize < sizeof(WxlM2SkinJob) || !mem || mem->structSize < sizeof(WxlM2Alloc)) return 1;
++        try { return m2::FinalizeSkin(mem, job); } catch (...) { return 1; }
++    }
++
++    int SvcUnwrapAnim(void* buffer, uint32_t* size)
++    {
++        try { return m2::UnwrapAnim(buffer, size); } catch (...) { return 0; }
++    }
++
++    // Static, valid for the life of the process (the client keeps the pointer).
++    const WxlModernM2Services g_services = {
++        sizeof(WxlModernM2Services),
++        WXL_M2_VERSION_MIN,
++        WXL_M2_VERSION_MAX,
++        &SvcPrepareLoad,
++        &SvcFinishWalk,
++        &SvcTextureName,
++        &SvcFinalizeSkin,
++        &SvcUnwrapAnim,
++    };
++}
++
++WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
++{
++    if (info)
++    {
++        std::strncpy(info->name, "modernm2", sizeof(info->name) - 1);
++        info->versionMajor = 1;
++        info->versionMinor = 0;
++    }
++
++    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, getService) || !api->registerService || !api->log)
++        return 1;
++    wxl::module::Bind(api);
++
++    if (api->registerService(WXL_SERVICE_MODERNM2, &g_services, sizeof(g_services)) != 0)
++    {
++        wxl::LogCat("M2", "the service " WXL_SERVICE_MODERNM2 " is already registered");
++        return 3;
++    }
++
++    wxl::LogCat("M2", "modern M2 module ready: inner versions %u-%u", WXL_M2_VERSION_MIN, WXL_M2_VERSION_MAX);
++    return 0;
++}
++
++WXL_MODULE_API void WxlModuleShutdown(void)
++{
++    // Nothing to tear down: the module keeps no state between calls.
++}
+diff --git a/Engine/Source/WXLModules/ModernM2/README.md b/Engine/Source/WXLModules/ModernM2/README.md
+new file mode 100644
+index 0000000..35faed7
+--- /dev/null
++++ b/Engine/Source/WXLModules/ModernM2/README.md
+@@ -0,0 +1,64 @@
++> **The modern M2 reader is a WXL module**: `wxl_modernm2.dll`, built from this folder, loaded from `WXL\Modules\` by the
++> 64-bit client. It sees the client only through `Engine/Source/WXL/Sdk/wxl_api.h`; the client calls it through the
++> service `wxl.modernm2.v1` (`Engine/Source/WXL/Sdk/wxl_modernm2_api.h`). The client's side is one file,
++> `Engine/Source/Model2/ModernM2/ModernM2.cpp`.
++> Test: `Tools/WxlModuleTest/modernm2_test.cpp` (the module through the C ABI) and `modernm2_layout_test.cpp`;
++> `run_modernm2_tests.sh` builds and runs both.
++
++# Modern M2: MD21 models for the 3.3.5a client
++
++Reads models from later builds (an `MD21` container, inner version 272-274) and hands the client's own loader the flat
++`MD20` body it understands. The loader's walk (`M2Init`) is the stock one; this module is everything around it.
++
++| Step (client) | What the module does |
++| --- | --- |
++| `CM2Shared::FinishLoading`, before the walk: `prepareLoad` | demuxes the container, seats the body in a block the client allocates (with spare room after it), applies the in-place field deltas, rewrites particle / camera records that grew to the client's shape, files the later-era flight sequences under the client's flight ids, harvests the `TXID` file ids |
++| after the walk: `finishWalk` | clamps ribbon texture / material indices and camera lookup sentinels |
++| `CM2Shared::Initialize`: `textureName` | names a hardcoded texture the file leaves unnamed by its `TXID` file id, through the listfile module (`wxl.listfile.v1`); an id the listfile does not know comes back as the listfile's not-found name, so the client shows its own missing texture |
++| `CM2Shared::FinishLoadingSkinProfile`: `finalizeSkin` | the bone-budget split (75 bones per draw, for every model), the material / texture-unit contract rebuild a modern model needs, `boneInfluences` fix, full 32-bit index starts for models that use the extended encoding |
++| external animation files: `unwrapAnim` | slides the payload out of the one-chunk `AFM2` wrapper |
++
++A split-skeleton model (`SKID`, a `.skel` file) is refused like an absent file: there is no skeleton splice.
++
++## What lives where
++
++* **Module:** every byte-level decision above. It carries its own copy of the client's record layout (`M2Records.hpp`,
++  no engine header may be included) and keeps **no state between calls**.
++* **Client (`ModernM2.cpp`):** the per-model `State` (TXID table, spare room used, full index starts), and the memory.
++  Every block the module needs comes through `WxlM2Alloc`, from the client's own allocators, so a block is freed by the
++  routine that allocated it (`SIMD::FreeA16`, `OsFreeNear`) and no pointer crosses the DLL boundary the wrong way.
++* **Shared, engine-free:** `Engine/Source/Model2/ModernM2/FlightAnim.h` (constants and a pure decision function; the
++  module remaps the source flight ids with it, the game layer resolves them with it).
++
++`M2Records.hpp` is a copy of `Engine/Source/Model2/M2Data.h`. The format is the old client's and does not move, but a copy
++can drift: `modernm2_layout_test.cpp` compares every size and field offset with the engine's header (it is generated from
++it; regenerate the lists when the engine header gains a record).
++
++## Without the module
++
++The client never needs it to start. `wxl_modernm2.dll` missing (or in `[Modules] Disable=`) means:
++
++* a stock model loads exactly as before;
++* a modern model is refused (`Corrupt model data`), once in the log under `M2`:
++  `... is a modern model but the module (wxl.modernm2.v1) is not loaded`;
++* the bone-budget split and the other skin rebuilds are not run. The one fix every stock model always got
++  (`boneInfluences == 0` lifted to 1) and the shadow-pass gate stay in the client.
++
++A 32-bit build of the client builds no modules and so reads stock models only.
++
++## Load order
++
++The client looks the service up when a model loads, not at start-up, so load order against other modules does not
++matter. `textureName` needs `wxl_listfile.dll` loaded to give real paths; without it a `TXID` texture stays the solid white
++placeholder and one line says so.
++
++## Log
++
++Category `M2` (switch: `[Log] ModernM2=0` in `WXLExtendedEquipment.ini`, with `[Log] Enabled=1`): one line per modern
++model read, with the version, the `TXID` count, which source-only chunks were skipped, and which records were
++normalized; one line per refusal with the reason.
++
++## Limits
++
++An inner version outside 272-274 is refused. At most 128 `TXID` entries are kept per model. Everything past the
++module's own bounds checks (a hostile count, an offset outside the body) refuses the model instead of reading on.
+diff --git a/Engine/Source/Model2/ModernM2/ModernM2Skin.cpp b/Engine/Source/WXLModules/ModernM2/Skin.cpp
+similarity index 89%
+rename from Engine/Source/Model2/ModernM2/ModernM2Skin.cpp
+rename to Engine/Source/WXLModules/ModernM2/Skin.cpp
+index 1972c2a..2f8bc29 100644
+--- a/Engine/Source/Model2/ModernM2/ModernM2Skin.cpp
++++ b/Engine/Source/WXLModules/ModernM2/Skin.cpp
+@@ -1,26 +1,24 @@
+ // Modern M2 reader, skin half: bone-budget split, material / texture-unit contract rebuild, wide index starts.
+ // Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
+ //
+-// Runs from CM2Shared::FinishLoadingSkinProfile, after the skin's own arrays were walked and before
+-// InitializeSkinProfile sizes its parallel batch blocks from the skin.
++// The client calls it from CM2Shared::FinishLoadingSkinProfile (through wxl_modernm2_api.h), after the skin's own
++// arrays were walked and before InitializeSkinProfile sizes its parallel batch blocks from the skin.
+ //
+ // Where the arrays go. An M2Array reaches its data by a signed 32-bit offset from ITSELF, so a rebuilt array
+ // has to live near its owner. Skin arrays are rebuilt by re-seating the skin block (old contents, then the new
+ // arrays) and model-header arrays are placed in the spare room the load seated after the model body, falling
+ // back to an allocation near the model. No pointer is ever stored where an offset belongs.
+ 
+-#include "Engine/Source/Model2/ModernM2/ModernM2.h"
++#include "Internal.hpp"
++
++#include "wxl_module.hpp"
+ 
+ #include <algorithm>
+ #include <cstring>
+ #include <unordered_map>
++#include <vector>
+ 
+-#include "Engine/Source/Base/SIMD.h"
+-#include "Engine/Source/Os/OsMemory.h"
+-#include "Engine/Source/Storm/H/storm.h"
+-#include "Engine/Source/WXL/Log.h"
+-
+-namespace wxl::modernm2
++namespace wxl::m2mod
+ {
+     namespace
+     {
+@@ -640,28 +638,28 @@ namespace wxl::modernm2
+         }
+ 
+         // -------------------------------------------------------------------------------------- commit
+-        void* PlaceInModelBlock(CM2Shared* shared, State& state, size_t bytes)
++        /// The blocks one finalize works on, and the caller's allocators. Replaces the engine's CM2Shared + State.
++        struct Target
++        {
++            const WxlM2Alloc* mem;
++            M2Data*           md;
++            M2SkinProfile*    sk;           // updated when the skin block is re-seated
++            uint32_t          reserveBase;
++            uint32_t          reserveCap;
++            uint32_t          reserveUsed;
++        };
++
++        void* PlaceInModelBlock(Target& t, size_t bytes)
+         {
+             bytes = (bytes + 15) & ~static_cast<size_t>(15);
+-            if (state.reserveUsed + bytes <= state.reserveCap)
++            if (t.reserveUsed + bytes <= t.reserveCap)
+             {
+-                uint8_t* p = reinterpret_cast<uint8_t*>(shared->m_data) + state.reserveBase + state.reserveUsed;
+-                state.reserveUsed += static_cast<uint32_t>(bytes);
++                uint8_t* p = reinterpret_cast<uint8_t*>(t.md) + t.reserveBase + t.reserveUsed;
++                t.reserveUsed += static_cast<uint32_t>(bytes);
+                 return p;
+             }
+-#if defined(WOWDECOMP_ARCH_64)
+-            void* p = OsAllocNear(shared->m_data, bytes);
+-#else
+-            void* p = SMemAlloc(static_cast<uint32_t>(bytes), __FILE__, __LINE__, 0);
+-#endif
+-            if (p) state.farBlocks.push_back(p);
+-            return p;
+-        }
+-
+-        State& EnsureState(CM2Shared* shared)
+-        {
+-            if (!shared->m_wxl) shared->m_wxl = new State();
+-            return *shared->m_wxl;
++            // Out of spare room: a block near the model, which the caller releases with the model.
++            return t.mem->allocNear ? t.mem->allocNear(t.mem->ctx, t.md, bytes) : nullptr;
+         }
+ 
+         template <class T>
+@@ -675,19 +673,18 @@ namespace wxl::modernm2
+         /// Writes the working copy back: model arrays into the model block (or near it), skin arrays into a
+         /// re-seated skin block when their size changed. Memory is gathered first and nothing is modified
+         /// until every allocation succeeded.
+-        bool Commit(CM2Shared* shared, uint32_t skinBytes, Work& w, const char* name)
++        bool Commit(Target& t, uint32_t skinBytes, Work& w, const char* name)
+         {
+-            M2Data* md = shared->m_data;
+-            M2SkinProfile* sk = shared->m_skinData;
+-            State& state = EnsureState(shared);
++            M2Data* md = t.md;
++            M2SkinProfile* sk = t.sk;
+ 
+             // --- model-level arrays
+             uint16_t* pBoneCombos = nullptr; uint16_t* pTexCoord = nullptr;
+             uint16_t* pCombiner = nullptr;   uint16_t* pTransform = nullptr;
+-            if (w.boneCombosChanged && !(pBoneCombos = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.boneCombos.size() * 2)))) return false;
+-            if (w.texCoordChanged && !(pTexCoord = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.texCoord.size() * 2)))) return false;
+-            if (w.combinerChanged && !(pCombiner = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.combiner.size() * 2)))) return false;
+-            if (w.transformChanged && !(pTransform = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.transformCombos.size() * 2)))) return false;
++            if (w.boneCombosChanged && !(pBoneCombos = static_cast<uint16_t*>(PlaceInModelBlock(t, w.boneCombos.size() * 2)))) return false;
++            if (w.texCoordChanged && !(pTexCoord = static_cast<uint16_t*>(PlaceInModelBlock(t, w.texCoord.size() * 2)))) return false;
++            if (w.combinerChanged && !(pCombiner = static_cast<uint16_t*>(PlaceInModelBlock(t, w.combiner.size() * 2)))) return false;
++            if (w.transformChanged && !(pTransform = static_cast<uint16_t*>(PlaceInModelBlock(t, w.transformCombos.size() * 2)))) return false;
+ 
+             // --- skin block
+             const bool reseat = w.geometryChanged || w.batches.size() != sk->m_batches.m_count;
+@@ -705,7 +702,8 @@ namespace wxl::modernm2
+                 }
+                 offSections = take(w.sections.size() * sizeof(M2SkinSection));
+                 offBatches = take(w.batches.size() * sizeof(M2Batch));
+-                newBlock = static_cast<uint8_t*>(SIMD::AllocA16(static_cast<uint32_t>(at), __FILE__, __LINE__));
++                if (at > 0xFFFFFFFFu) return false;
++                newBlock = static_cast<uint8_t*>(t.mem->alloc(t.mem->ctx, static_cast<uint32_t>(at)));
+                 if (!newBlock) return false;
+             }
+ 
+@@ -751,8 +749,8 @@ namespace wxl::modernm2
+                 std::memcpy(newBlock + offBatches, w.batches.data(), w.batches.size() * sizeof(M2Batch));
+                 ok &= SetArray(nsk->m_skinSections, reinterpret_cast<M2SkinSection*>(newBlock + offSections), static_cast<uint32_t>(w.sections.size()));
+                 ok &= SetArray(nsk->m_batches, reinterpret_cast<M2Batch*>(newBlock + offBatches), static_cast<uint32_t>(w.batches.size()));
+-                shared->m_skinData = nsk;
+-                SIMD::FreeA16(sk);
++                t.sk = nsk;
++                t.mem->release(t.mem->ctx, sk);
+             }
+             else
+             {
+@@ -777,27 +775,32 @@ namespace wxl::modernm2
+                     sections[i].m_boneInfluences = 1;
+         }
+ 
+-        /// The shadow-pass animate step reads the shared's bone-flag tally (m_billboardBoneCount): at zero it
+-        /// takes a fast path that never rebuilds the bone palette, so the palette keeps an older frame's view
+-        /// matrix while the shadow renderer uploads the current one and the shadow drifts with the camera.
+-        /// Stock content always has the count > 0; a model from a toolchain that ships empty bone flags
+-        /// would not. Runtime object only, never the model data.
+-        void ForceShadowAnimGate(CM2Shared* shared)
++        /// What the caller copies after the call returns: the full index starts of the sections. One per thread,
++        /// so concurrent model loads on the client's async threads never share it.
++        std::vector<uint32_t>& StartsOut()
+         {
+-            if (shared->m_billboardBoneCount == 0) shared->m_billboardBoneCount = 1;
++            thread_local std::vector<uint32_t> starts;
++            return starts;
+         }
+     }
+ 
+     // ----------------------------------------------------------------------------------------- FinalizeSkin
+-    void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes)
++    // (The shadow-pass gate on the shared's bone-flag tally, m_billboardBoneCount, is a runtime object of the
++    // client, not model data: the client sets it after this returns. See ModernM2.cpp.)
++    int FinalizeSkin(const WxlM2Alloc* mem, WxlM2SkinJob* job)
+     {
+-        M2Data* md = shared->m_data;
+-        M2SkinProfile* sk = shared->m_skinData;
+-        if (!md || !sk) return;
+-
+-        const char* name = shared->m_fileName;
+-        const State* existing = shared->m_wxl;
+-        const bool modern = existing && existing->modern;
++        job->newSkin = job->skin;
++        job->committed = 1;
++        job->extendedIndexStart = 0;
++        job->startCount = 0;
++        job->indexStart = nullptr;
++
++        M2Data* md = static_cast<M2Data*>(job->model);
++        M2SkinProfile* sk = static_cast<M2SkinProfile*>(job->skin);
++        if (!md || !sk || !mem || !mem->alloc || !mem->release) return 1;
++
++        const char* name = job->name ? job->name : "?";
++        const bool modern = job->modern != 0;
+         const bool extended = UsesExtendedIndexStart(name);
+ 
+         bool anyLevel = false;
+@@ -810,14 +813,15 @@ namespace wxl::modernm2
+ 
+         const bool split = NeedsSplit(sk, extended);
+ 
+-        // Stock content with nothing to rebuild: only the two unconditional fixes.
++        // Stock content with nothing to rebuild: only the unconditional boneInfluences fix.
+         if (!modern && !split && !anyLevel)
+         {
+             NormalizeBoneInfluences(sk);
+-            ForceShadowAnimGate(shared);
+-            return;
++            return 0;
+         }
+ 
++        Target target{ mem, md, sk, job->reserveBase, job->reserveCap, job->reserveUsed };
++
+         Work w;
+         {
+             const uint32_t vc = sk->m_vertices.m_count;
+@@ -857,29 +861,32 @@ namespace wxl::modernm2
+         }
+ 
+         // Extended encoding: the high half of an index start rides in the section's level. Take it out of
+-        // the section id (the rest of the client reads that as a plain id) and keep the full starts here.
+-        std::vector<uint32_t> sourceStart;
++        // the section id (the rest of the client reads that as a plain id) and keep the full starts for the caller.
++        std::vector<uint32_t>& starts = StartsOut();
++        starts.clear();
+         if (extended && anyLevel)
+         {
+-            sourceStart.resize(w.sections.size());
++            starts.resize(w.sections.size());
+             for (size_t i = 0; i < w.sections.size(); ++i)
+             {
+-                sourceStart[i] = FullIndexStart(w.sections[i], true);
++                starts[i] = FullIndexStart(w.sections[i], true);
+                 SetLevel(w.sections[i], 0);
+             }
+         }
+ 
+-        if (!Commit(shared, skinBytes, w, name))
++        const bool committed = Commit(target, job->skinBytes, w, name);
++        if (!committed)
+             wxl::LogCat("M2", "'%s' skin finalize could not commit", name);
+ 
+-        if (!sourceStart.empty())
++        job->newSkin = target.sk;
++        job->reserveUsed = target.reserveUsed;
++        job->committed = committed ? 1 : 0;
++        if (!starts.empty())
+         {
+-            State& state = EnsureState(shared);
+-            state.extendedIndexStart = true;
+-            state.sectionStart = sourceStart;
+-            state.sourceStart = std::move(sourceStart);
++            job->extendedIndexStart = 1;
++            job->startCount = static_cast<uint32_t>(starts.size());
++            job->indexStart = starts.data();
+         }
+-
+-        ForceShadowAnimGate(shared);
++        return 0;
+     }
+ }
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index 4e4d9d1..3e2e6e4 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -47,7 +47,7 @@ foreach (wxl_module wxl_equip wxl_outline)
+ endforeach ()
+ 
+ # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
+-foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
++foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_modernm2)
+     if (TARGET ${wxl_module})
+         add_dependencies(WowClient ${wxl_module})
+     endif ()
+diff --git a/Tools/WxlModuleTest/modernm2_layout_test.cpp b/Tools/WxlModuleTest/modernm2_layout_test.cpp
+new file mode 100644
+index 0000000..9cc84bd
+--- /dev/null
++++ b/Tools/WxlModuleTest/modernm2_layout_test.cpp
+@@ -0,0 +1,279 @@
++// Layout parity: the modern M2 module carries its own copy of the client's M2 record layout
++// (Engine/Source/WXLModules/ModernM2/M2Records.hpp, no engine header allowed in a module). This program includes
++// BOTH that copy (namespace wxl::m2rec) and the engine's M2Data.h (global names) and fails to compile, or fails to
++// run, when a size or a field offset differs. Generated from M2Data.h; regenerate the lists when the engine header
++// gains a record. Built and run by run_modernm2_tests.sh.
++#include <cstddef>
++#include <cstdint>
++#include <cstdio>
++
++#include "Engine/Source/Model2/M2Data.h"
++#include "M2Records.hpp"
++
++namespace mod = wxl::m2rec;
++
++static int g_fail = 0, g_pass = 0;
++#define SAME_SIZE(T) do { if (sizeof(::T) == sizeof(mod::T)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] sizeof(%s): engine %zu, module %zu\n", #T, sizeof(::T), sizeof(mod::T)); } } while (0)
++#define SAME_AT(T, F) do { if (offsetof(::T, F) == offsetof(mod::T, F)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] offsetof(%s, %s): engine %zu, module %zu\n", #T, #F, offsetof(::T, F), offsetof(mod::T, F)); } } while (0)
++
++int main()
++{
++    std::printf("M2 record layout: module copy vs engine M2Data.h\n");
++    SAME_SIZE(fixed16);
++    SAME_AT(fixed16, m_value);
++    SAME_SIZE(ubyte4);
++    SAME_AT(ubyte4, b);
++    SAME_SIZE(M2CompQuat);
++    SAME_AT(M2CompQuat, m_values);
++    SAME_SIZE(M2TrackBase);
++    SAME_AT(M2TrackBase, m_trackType);
++    SAME_AT(M2TrackBase, m_loopIndex);
++    SAME_AT(M2TrackBase, m_sequenceTimes);
++    SAME_SIZE(M2Bounds);
++    SAME_AT(M2Bounds, m_extent);
++    SAME_AT(M2Bounds, m_radius);
++    SAME_SIZE(M2Loop);
++    SAME_AT(M2Loop, m_length);
++    SAME_SIZE(M2Sequence);
++    SAME_AT(M2Sequence, m_id);
++    SAME_AT(M2Sequence, m_variationIndex);
++    SAME_AT(M2Sequence, m_duration);
++    SAME_AT(M2Sequence, m_moveSpeed);
++    SAME_AT(M2Sequence, m_flags);
++    SAME_AT(M2Sequence, m_frequency);
++    SAME_AT(M2Sequence, m_replay);
++    SAME_AT(M2Sequence, m_blendTime);
++    SAME_AT(M2Sequence, m_bounds);
++    SAME_AT(M2Sequence, m_variationNext);
++    SAME_AT(M2Sequence, m_aliasNext);
++    SAME_SIZE(M2CompBone);
++    SAME_AT(M2CompBone, m_boneId);
++    SAME_AT(M2CompBone, m_flags);
++    SAME_AT(M2CompBone, m_parentIndex);
++    SAME_AT(M2CompBone, m_uDistToParent);
++    SAME_AT(M2CompBone, m_boneNameCRC);
++    SAME_AT(M2CompBone, m_translationTrack);
++    SAME_AT(M2CompBone, m_rotationTrack);
++    SAME_AT(M2CompBone, m_scaleTrack);
++    SAME_AT(M2CompBone, m_pivot);
++    SAME_SIZE(M2VertexPNT2);
++    SAME_AT(M2VertexPNT2, m_position);
++    SAME_AT(M2VertexPNT2, m_normal);
++    SAME_AT(M2VertexPNT2, m_texcoord);
++    SAME_SIZE(M2Vertex);
++    SAME_AT(M2Vertex, m_position);
++    SAME_AT(M2Vertex, m_weights);
++    SAME_AT(M2Vertex, m_indices);
++    SAME_AT(M2Vertex, m_normal);
++    SAME_AT(M2Vertex, m_texcoord);
++    SAME_SIZE(M2Color);
++    SAME_AT(M2Color, m_color);
++    SAME_AT(M2Color, m_alpha);
++    SAME_SIZE(M2Texture);
++    SAME_AT(M2Texture, m_type);
++    SAME_AT(M2Texture, m_flags);
++    SAME_AT(M2Texture, m_filename);
++    SAME_SIZE(M2TextureWeight);
++    SAME_AT(M2TextureWeight, m_weight);
++    SAME_SIZE(M2TextureTransform);
++    SAME_AT(M2TextureTransform, m_translation);
++    SAME_AT(M2TextureTransform, m_rotation);
++    SAME_AT(M2TextureTransform, m_scaling);
++    SAME_SIZE(M2Material);
++    SAME_AT(M2Material, m_flags);
++    SAME_AT(M2Material, m_blendMode);
++    SAME_SIZE(M2Attachment);
++    SAME_AT(M2Attachment, m_id);
++    SAME_AT(M2Attachment, m_bone);
++    SAME_AT(M2Attachment, unused_0006);
++    SAME_AT(M2Attachment, m_position);
++    SAME_AT(M2Attachment, m_animateAttached);
++    SAME_SIZE(M2Event);
++    SAME_AT(M2Event, m_eventId);
++    SAME_AT(M2Event, m_data);
++    SAME_AT(M2Event, m_bone);
++    SAME_AT(M2Event, unused_000A);
++    SAME_AT(M2Event, m_position);
++    SAME_AT(M2Event, m_enabled);
++    SAME_SIZE(M2Light);
++    SAME_AT(M2Light, m_type);
++    SAME_AT(M2Light, m_bone);
++    SAME_AT(M2Light, m_position);
++    SAME_AT(M2Light, m_ambientColor);
++    SAME_AT(M2Light, m_ambientIntensity);
++    SAME_AT(M2Light, m_diffuseColor);
++    SAME_AT(M2Light, m_diffuseIntensity);
++    SAME_AT(M2Light, m_attenuationStart);
++    SAME_AT(M2Light, m_attenuationEnd);
++    SAME_AT(M2Light, m_visibility);
++    SAME_SIZE(M2Camera);
++    SAME_AT(M2Camera, m_type);
++    SAME_AT(M2Camera, m_fieldOfView);
++    SAME_AT(M2Camera, m_farClip);
++    SAME_AT(M2Camera, m_nearClip);
++    SAME_AT(M2Camera, m_positions);
++    SAME_AT(M2Camera, m_positionBase);
++    SAME_AT(M2Camera, m_targetPositions);
++    SAME_AT(M2Camera, m_targetPositionBase);
++    SAME_AT(M2Camera, m_roll);
++    SAME_SIZE(M2Ribbon);
++    SAME_AT(M2Ribbon, m_ribbonId);
++    SAME_AT(M2Ribbon, m_boneIndex);
++    SAME_AT(M2Ribbon, unused_0006);
++    SAME_AT(M2Ribbon, m_position);
++    SAME_AT(M2Ribbon, m_textureIndices);
++    SAME_AT(M2Ribbon, m_materialIndices);
++    SAME_AT(M2Ribbon, m_colorTrack);
++    SAME_AT(M2Ribbon, m_alphaTrack);
++    SAME_AT(M2Ribbon, m_heightAboveTrack);
++    SAME_AT(M2Ribbon, m_heightBelowTrack);
++    SAME_AT(M2Ribbon, m_edgesPerSecond);
++    SAME_AT(M2Ribbon, m_edgeLifetime);
++    SAME_AT(M2Ribbon, m_gravity);
++    SAME_AT(M2Ribbon, m_textureRows);
++    SAME_AT(M2Ribbon, m_textureCols);
++    SAME_AT(M2Ribbon, m_textureSlotTrack);
++    SAME_AT(M2Ribbon, m_visibilityTrack);
++    SAME_AT(M2Ribbon, m_priorityPlane);
++    SAME_AT(M2Ribbon, unused_00AE);
++    SAME_SIZE(M2Particle);
++    SAME_AT(M2Particle, m_particleId);
++    SAME_AT(M2Particle, m_flags);
++    SAME_AT(M2Particle, m_position);
++    SAME_AT(M2Particle, m_boneIndex);
++    SAME_AT(M2Particle, m_textureIndex);
++    SAME_AT(M2Particle, m_geometryMdl);
++    SAME_AT(M2Particle, m_recursionMdl);
++    SAME_AT(M2Particle, m_blendMode);
++    SAME_AT(M2Particle, m_emitterType);
++    SAME_AT(M2Particle, m_colorIndex);
++    SAME_AT(M2Particle, unused_002C);
++    SAME_AT(M2Particle, m_priorityPlane);
++    SAME_AT(M2Particle, m_rows);
++    SAME_AT(M2Particle, m_cols);
++    SAME_AT(M2Particle, m_speedTrack);
++    SAME_AT(M2Particle, m_variationTrack);
++    SAME_AT(M2Particle, m_latitudeTrack);
++    SAME_AT(M2Particle, m_longitudeTrack);
++    SAME_AT(M2Particle, m_gravityTrack);
++    SAME_AT(M2Particle, m_lifeTrack);
++    SAME_AT(M2Particle, m_lifeVariation);
++    SAME_AT(M2Particle, m_emissionRateTrack);
++    SAME_AT(M2Particle, m_emissionRateVariation);
++    SAME_AT(M2Particle, m_widthTrack);
++    SAME_AT(M2Particle, m_lengthTrack);
++    SAME_AT(M2Particle, m_zsourceTrack);
++    SAME_AT(M2Particle, m_colorTrack);
++    SAME_AT(M2Particle, m_alphaTrack);
++    SAME_AT(M2Particle, m_scaleTrack);
++    SAME_AT(M2Particle, m_scaleVariation);
++    SAME_AT(M2Particle, m_headCellTrack);
++    SAME_AT(M2Particle, m_tailCellTrack);
++    SAME_AT(M2Particle, m_tailLength);
++    SAME_AT(M2Particle, m_twinkleFPS);
++    SAME_AT(M2Particle, m_twinkleOnOff);
++    SAME_AT(M2Particle, m_twinkleScale);
++    SAME_AT(M2Particle, m_ivelScale);
++    SAME_AT(M2Particle, m_drag);
++    SAME_AT(M2Particle, m_initialSpin);
++    SAME_AT(M2Particle, m_initialSpinVariation);
++    SAME_AT(M2Particle, m_spin);
++    SAME_AT(M2Particle, m_spinVariation);
++    SAME_AT(M2Particle, m_tumble);
++    SAME_AT(M2Particle, m_windVector);
++    SAME_AT(M2Particle, m_windTime);
++    SAME_AT(M2Particle, m_followSpeed1);
++    SAME_AT(M2Particle, m_followScale1);
++    SAME_AT(M2Particle, m_followSpeed2);
++    SAME_AT(M2Particle, m_followScale2);
++    SAME_AT(M2Particle, m_spline);
++    SAME_AT(M2Particle, m_visibilityTrack);
++    SAME_SIZE(M2Batch);
++    SAME_AT(M2Batch, m_flags);
++    SAME_AT(M2Batch, m_priorityPlane);
++    SAME_AT(M2Batch, m_shader);
++    SAME_AT(M2Batch, m_skinSectionIndex);
++    SAME_AT(M2Batch, m_geosetIndex);
++    SAME_AT(M2Batch, m_colorIndex);
++    SAME_AT(M2Batch, m_materialIndex);
++    SAME_AT(M2Batch, m_materialLayer);
++    SAME_AT(M2Batch, m_textureCount);
++    SAME_AT(M2Batch, m_textureComboIndex);
++    SAME_AT(M2Batch, m_textureCoordComboIndex);
++    SAME_AT(M2Batch, m_textureWeightComboIndex);
++    SAME_AT(M2Batch, m_textureTransformComboIndex);
++    SAME_SIZE(M2SkinSection);
++    SAME_AT(M2SkinSection, m_skinSectionId);
++    SAME_AT(M2SkinSection, m_vertexStart);
++    SAME_AT(M2SkinSection, m_vertexCount);
++    SAME_AT(M2SkinSection, m_indexStart);
++    SAME_AT(M2SkinSection, m_indexCount);
++    SAME_AT(M2SkinSection, m_boneCount);
++    SAME_AT(M2SkinSection, m_boneComboIndex);
++    SAME_AT(M2SkinSection, m_boneInfluences);
++    SAME_AT(M2SkinSection, m_centerBoneIndex);
++    SAME_AT(M2SkinSection, m_centerPosition);
++    SAME_AT(M2SkinSection, m_sortCenterPosition);
++    SAME_AT(M2SkinSection, m_sortRadius);
++    SAME_SIZE(M2Data);
++    SAME_AT(M2Data, m_magic);
++    SAME_AT(M2Data, m_version);
++    SAME_AT(M2Data, m_name);
++    SAME_AT(M2Data, m_flags);
++    SAME_AT(M2Data, m_loops);
++    SAME_AT(M2Data, m_sequences);
++    SAME_AT(M2Data, m_sequenceIdxHashById);
++    SAME_AT(M2Data, m_bones);
++    SAME_AT(M2Data, m_boneIndicesById);
++    SAME_AT(M2Data, m_vertices);
++    SAME_AT(M2Data, m_numSkinProfiles);
++    SAME_AT(M2Data, m_colors);
++    SAME_AT(M2Data, m_textures);
++    SAME_AT(M2Data, m_textureWeights);
++    SAME_AT(M2Data, m_textureTransforms);
++    SAME_AT(M2Data, m_textureIndicesById);
++    SAME_AT(M2Data, m_materials);
++    SAME_AT(M2Data, m_boneCombos);
++    SAME_AT(M2Data, m_textureCombos);
++    SAME_AT(M2Data, m_textureCoordCombos);
++    SAME_AT(M2Data, m_textureWeightCombos);
++    SAME_AT(M2Data, m_textureTransformCombos);
++    SAME_AT(M2Data, m_bounds);
++    SAME_AT(M2Data, m_collisionBounds);
++    SAME_AT(M2Data, m_collisionIndices);
++    SAME_AT(M2Data, m_collisionPositions);
++    SAME_AT(M2Data, m_collisionFaceNormals);
++    SAME_AT(M2Data, m_attachments);
++    SAME_AT(M2Data, m_attachmentIndicesById);
++    SAME_AT(M2Data, m_events);
++    SAME_AT(M2Data, m_lights);
++    SAME_AT(M2Data, m_cameras);
++    SAME_AT(M2Data, m_cameraIndicesById);
++    SAME_AT(M2Data, m_ribbons);
++    SAME_AT(M2Data, m_particles);
++    SAME_AT(M2Data, m_textureCombinerCombos);
++    SAME_SIZE(M2SkinProfile);
++    SAME_AT(M2SkinProfile, m_magic);
++    SAME_AT(M2SkinProfile, m_vertices);
++    SAME_AT(M2SkinProfile, m_indices);
++    SAME_AT(M2SkinProfile, m_bones);
++    SAME_AT(M2SkinProfile, m_skinSections);
++    SAME_AT(M2SkinProfile, m_batches);
++    SAME_AT(M2SkinProfile, m_boneCountMax);
++    // template instantiations the reader walks
++    SAME_SIZE(M2TrackBase);
++    {
++        using E1 = ::M2Array<char>;  using M1 = mod::M2Array<char>;
++        if (sizeof(E1) == sizeof(M1)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] sizeof(M2Array)\n"); }
++        using E2 = ::M2Track<float>; using M2 = mod::M2Track<float>;
++        if (sizeof(E2) == sizeof(M2) && offsetof(E2, m_sequenceKeys) == offsetof(M2, m_sequenceKeys)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] M2Track<float>\n"); }
++        using E3 = ::M2Track<::C3Vector>; using M3 = mod::M2Track<mod::C3Vector>;
++        if (sizeof(E3) == sizeof(M3)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] M2Track<C3Vector>\n"); }
++        using E4 = ::M2PartTrack<::C3Vector>; using M4 = mod::M2PartTrack<mod::C3Vector>;
++        if (sizeof(E4) == sizeof(M4)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] M2PartTrack<C3Vector>\n"); }
++        using E5 = ::M2SplineKey<::C3Vector>; using M5 = mod::M2SplineKey<mod::C3Vector>;
++        if (sizeof(E5) == sizeof(M5)) ++g_pass; else { ++g_fail; std::printf("  [FAIL] M2SplineKey<C3Vector>\n"); }
++    }
++    std::printf("%d matched, %d differ\n", g_pass, g_fail);
++    return g_fail ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/modernm2_test.cpp b/Tools/WxlModuleTest/modernm2_test.cpp
+index 79fda34..600de17 100644
+--- a/Tools/WxlModuleTest/modernm2_test.cpp
++++ b/Tools/WxlModuleTest/modernm2_test.cpp
+@@ -1,4 +1,6 @@
+-// Host-side test of ModernM2Load.cpp / ModernM2Skin.cpp against the real M2Data / CM2Shared headers.
++// Host-side test of the modern M2 reader: the client's adapter (Engine/Source/Model2/ModernM2/ModernM2.cpp, built here
++// against the real M2Data / CM2Shared headers) in front of the module (Engine/Source/WXLModules/ModernM2), which the
++// test loads as a shared library through the C ABI exactly as the client's loader would, behind a fake core table.
+ // Build and run it with run_modernm2_tests.sh. It builds synthetic MD21 files and skins, so it needs no game data.
+ #include <cstdarg>
+ #include <initializer_list>
+@@ -7,12 +9,15 @@
+ #include <cstring>
+ #include <vector>
+ 
++#include <dlfcn.h>
++
+ #include "Engine/Source/Model2/ModernM2/ModernM2.h"
+ #include "Engine/Source/Model2/ModernM2/FlightAnim.h"
+ #include "Engine/Source/WXL/Services.h"
+ #include "Engine/Source/WXL/Log.h"
+ #define WXL_ALLOW_32BIT_HEADER 1
+ #include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
++#include "Engine/Source/WXL/Sdk/wxl_modernm2_api.h"
+ 
+ // ---- stubs for engine services the module calls
+ namespace SIMD
+@@ -149,6 +154,60 @@ static CM2Shared* MakeShared(const std::vector<uint8_t>& file, const char* name)
+     return sh;
+ }
+ 
++
++// ---- the fake core the module is loaded into: just the table members the module uses
++static void FakeApiLog(const char* category, const char* message) { std::printf("    [module %s] %s\n", category, message); }
++static int FakeRegisterService(const char* name, const void* table, size_t size) { return wxl::services::Register(name, table, size) ? 0 : 1; }
++static const void* FakeGetService(const char* name, size_t* size) { return wxl::services::Get(name, size); }
++static int FakeLogThrottle(const char*, unsigned, unsigned) { return 1; }
++
++static void* g_moduleHandle = nullptr;
++typedef void (*ShutdownFn)(void);
++
++/// dlopen the module, check its ABI and init it the way wxl::api::LoadModules does.
++static bool LoadModule(const char* path)
++{
++    g_moduleHandle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!g_moduleHandle) { std::printf("  [FAIL] dlopen: %s\n", dlerror()); return false; }
++    auto abi  = reinterpret_cast<WxlModuleAbiVersionFn>(dlsym(g_moduleHandle, "WxlModuleAbiVersion"));
++    auto init = reinterpret_cast<WxlModuleInitFn>(dlsym(g_moduleHandle, "WxlModuleInit"));
++    if (!abi || !init || abi() != WXL_ABI_VERSION) { std::printf("  [FAIL] not a module / wrong ABI\n"); return false; }
++
++    static WxlApi api = {};
++    api.abiVersion      = WXL_ABI_VERSION;
++    api.structSize      = sizeof(WxlApi);
++    api.log             = &FakeApiLog;
++    api.logThrottle     = &FakeLogThrottle;
++    api.registerService = &FakeRegisterService;
++    api.getService      = &FakeGetService;
++    WxlModuleInfo info = {};
++    info.structSize = sizeof(info);
++    const int rc = init(&api, &info);
++    CHECK(rc == 0, "module init accepted");
++    CHECK(std::strcmp(info.name, "modernm2") == 0, "module names itself modernm2");
++    return rc == 0;
++}
++
++static void TestModuleLifecycle()
++{
++    std::printf("module lifecycle\n");
++    size_t size = 0;
++    CHECK(!wxl::services::Get(WXL_SERVICE_MODERNM2, &size) && !wxl::modernm2::ModuleLoaded(), "before the module loads: no service");
++
++    // An MD21 file with no module: refused like an absent file, nothing swapped, no state.
++    std::vector<uint8_t> md21(64, 0);
++    std::memcpy(md21.data(), "MD21", 4);
++    CM2Shared* shared = MakeShared(md21, "Creature\\Test\\NoModule.m2");
++    M2Data* before = shared->m_data;
++    CHECK(wxl::modernm2::PrepareLoad(shared) == wxl::modernm2::LoadResult::Failed && shared->m_data == before && !shared->m_wxl,
++          "no module: an MD21 file is refused and left untouched");
++    std::vector<uint8_t> flat(64, 0);
++    CM2Shared* stock = MakeShared(flat, "Creature\\Test\\Stock.m2");
++    CHECK(wxl::modernm2::PrepareLoad(stock) == wxl::modernm2::LoadResult::NotModern, "no module: a stock model is not affected");
++    SIMD::FreeA16(shared->m_data); std::free(shared);
++    SIMD::FreeA16(stock->m_data);  std::free(stock);
++}
++
+ static void TestLoad()
+ {
+     std::printf("modern container load\n");
+@@ -430,13 +489,21 @@ static void TestAnimAndCaps()
+           "doodad instance cap: 75 / bones, at least 1");
+ }
+ 
+-int main()
++int main(int argc, char** argv)
+ {
++    if (argc < 2) { std::printf("usage: modernm2_test <libwxl_modernm2.so>\n"); return 2; }
++    TestModuleLifecycle();
++    if (!LoadModule(argv[1])) return 1;
++    CHECK(wxl::modernm2::ModuleLoaded(), "the adapter finds the module's service");
++    const auto* svc = static_cast<const WxlModernM2Services*>(wxl::services::Get(WXL_SERVICE_MODERNM2));
++    CHECK(svc && svc->versionMin == wxl::modernm2::kVersionMin && svc->versionMax == wxl::modernm2::kVersionMax,
++          "the module's version window equals the client's");
+     TestLoad();
+     TestSkinSplit();
+     TestExtendedStart();
+     TestAnimAndCaps();
+     TestFlightChoice();
++    if (auto shutdown = reinterpret_cast<ShutdownFn>(dlsym(g_moduleHandle, "WxlModuleShutdown"))) shutdown();
+     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
+     return g_fail ? 1 : 0;
+ }
+diff --git a/Tools/WxlModuleTest/run_modernm2_tests.sh b/Tools/WxlModuleTest/run_modernm2_tests.sh
+index 0507878..2f8eee6 100644
+--- a/Tools/WxlModuleTest/run_modernm2_tests.sh
++++ b/Tools/WxlModuleTest/run_modernm2_tests.sh
+@@ -1,15 +1,29 @@
+ #!/bin/sh
+-# Builds the modern M2 reader (Engine/Source/Model2/ModernM2) with its host test using g++ (Linux or MinGW),
+-# with address and undefined-behaviour sanitizers, and runs it. Synthetic data only; no game files needed.
++# Builds the modern M2 module (Engine/Source/WXLModules/ModernM2) as a shared library and the client's adapter
++# (Engine/Source/Model2/ModernM2/ModernM2.cpp) with its host test, using g++ (Linux or MinGW), with address and
++# undefined-behaviour sanitizers, and runs them: the test loads the module through the C ABI. Then it runs the
++# layout test, which compares the module's own copy of the M2 record layout with the engine's M2Data.h.
++# Synthetic data only; no game files needed.
+ #   ./run_modernm2_tests.sh        (exit code 0 = everything passed)
+ set -e
+ HERE=$(cd "$(dirname "$0")" && pwd)
+ R=$(cd "$HERE/../.." && pwd)
++MOD=$R/Engine/Source/WXLModules/ModernM2
+ M=$R/Engine/Source/Model2/ModernM2
++SDK=$R/Engine/Source/WXL/Sdk
+ OUT=${TMPDIR:-/tmp}/wxl_modernm2_test
+ mkdir -p "$OUT"
+-g++ -std=c++20 -O1 -g -w -fpermissive -DWOWDECOMP_ARCH_64 -fsanitize=address,undefined -pthread \
+-    -include "$HERE/stub_m2/shims.h" -I "$HERE/stub_m2" -I "$R" \
+-    "$HERE/modernm2_test.cpp" "$M/ModernM2Load.cpp" "$M/ModernM2Skin.cpp" "$R/Engine/Source/WXL/Services.cpp" \
+-    -o "$OUT/modernm2_test"
+-"$OUT/modernm2_test"
++
++# the module: no engine header on its include path, only the SDK, its own folder and FlightAnim.h (constants)
++g++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-invalid-offsetof -fPIC -shared -fvisibility=hidden \
++    -fsanitize=address,undefined -I "$SDK" -I "$MOD" -I "$M" "$MOD"/*.cpp -o "$OUT/libwxl_modernm2.so"
++
++SHIM="-include $HERE/stub_m2/shims.h -I $HERE/stub_m2 -I $R"
++g++ -std=c++20 -O1 -g -w -fpermissive -DWOWDECOMP_ARCH_64 -fsanitize=address,undefined -pthread $SHIM \
++    "$HERE/modernm2_test.cpp" "$M/ModernM2.cpp" "$R/Engine/Source/WXL/Services.cpp" \
++    -ldl -o "$OUT/modernm2_test"
++"$OUT/modernm2_test" "$OUT/libwxl_modernm2.so"
++
++g++ -std=c++20 -O1 -g -w -fpermissive -DWOWDECOMP_ARCH_64 $SHIM -I "$MOD" \
++    "$HERE/modernm2_layout_test.cpp" -o "$OUT/modernm2_layout_test"
++"$OUT/modernm2_layout_test"

@@ -76,6 +76,7 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
 | Misc | `workingDirectory` |
 
 The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file id -> path service (`"wxl.listfile.v1"`, `wxl_listfile_api.h`) other modules call.
+The modern M2 reader (`Engine/Source/WXLModules/ModernM2`) is the fifth: the client's M2 loader calls it through `"wxl.modernm2.v1"` (`wxl_modernm2_api.h`) at the load steps of `CM2Shared`, handing it the memory it may use (`WxlM2Alloc`); it names `TXID` textures through the listfile service.
 
 ### Moving code that was written inside the client
 
@@ -105,5 +106,8 @@ with its build line; `stub/windows.h` is just enough of the Windows header to bu
   texture layers.
 * `weapon_service_test.cpp`: the weapon module registers its service in the core's real registry and the
   equip module's `WeaponService.cpp` gets a baked path back through it.
+* `modernm2_test.cpp` (modern M2): loads `wxl_modernm2.dll` as a shared library behind a fake core and drives it through the
+  client's adapter (`Model2/ModernM2/ModernM2.cpp`) on synthetic MD21 files and skins; `modernm2_layout_test.cpp` compares the
+  module's copy of the M2 record layout with the engine's `M2Data.h`. `run_modernm2_tests.sh` runs both.
 
 What cannot be tested off Windows is `WXLApi/ModelAccess.cpp` (it reads the real `CM2Model`) and the Win32 loader.
