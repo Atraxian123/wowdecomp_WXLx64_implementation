@@ -40,18 +40,21 @@ target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
 
 # The equipment extension and the unit outline are modules as well: wxl_equip.dll and wxl_outline.dll, loaded from
 # WXL\Modules like the others.
-foreach (wxl_module wxl_equip wxl_outline)
-    if (TARGET ${wxl_module})
-        add_dependencies(WowClient ${wxl_module})
-    endif ()
-endforeach ()
+option(WOWCLIENT_BUILD_WXL_MODULES "Also build the WXL module DLLs when building WowClient" ON)
 
+if (WOWCLIENT_BUILD_WXL_MODULES)
+	foreach (wxl_module wxl_equip wxl_outline wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
+		if (TARGET ${wxl_module})
+			add_dependencies(WowClient ${wxl_module})
+		endif ()
+	endforeach ()
+endif ()
 # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
-foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
-    if (TARGET ${wxl_module})
-        add_dependencies(WowClient ${wxl_module})
-    endif ()
-endforeach ()
+#foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
+#    if (TARGET ${wxl_module})
+#        add_dependencies(WowClient ${wxl_module})
+#    endif ()
+#endforeach ()
 
 target_link_libraries(WowClient
     PRIVATE
