@@ -21,6 +21,7 @@ class CWorldParam {
     static CVar* cvar_waterLOD;
     static CVar* cvar_baseMip;
     static CVar* cvar_horizonFarClip;
+static CVar* cvar_fogDistanceScale;
     static CVar* cvar_horizonNearClip;
     static CVar* cvar_showFootprints;
     static CVar* cvar_bspCache;

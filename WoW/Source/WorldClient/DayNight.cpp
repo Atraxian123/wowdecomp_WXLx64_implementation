@@ -2120,6 +2120,15 @@ void DayNight::UpdateFog() {
     DNInfo& info = DayNight::g_dnInfo;
     float end = info.m_farClip;
 
+    // fogDistanceScale: 1 = fog ends at the view distance, <1 pulls it in, 0 turns distance fog off
+    float fogScale = CWorldParam::cvar_fogDistanceScale ? CWorldParam::cvar_fogDistanceScale->m_floatValue : 1.0f;
+
+    if (fogScale <= 0.0f) {
+        end = info.m_farClip * 100.0f;
+    } else {
+        end *= fogScale;
+    }
+
     if (s_fogOverride) {
         if (s_overrideFogEnd < end) {
             end = s_overrideFogEnd;
@@ -2138,6 +2147,12 @@ void DayNight::UpdateFog() {
         info.m_fog.m_color = info.m_bands.m_skyColors[5];
         info.m_fog.m_start = end * info.m_bands.m_fogStartMul;
         info.m_fog.m_density = info.m_bands.m_fogRate;
+    }
+
+    if (fogScale <= 0.0f) {
+        // distance fog off: push it beyond anything the far clip can show
+        info.m_fog.m_end = info.m_farClip * 100.0f;
+        info.m_fog.m_start = info.m_fog.m_end * 0.99f;
     }
 
     SMOFog fog;

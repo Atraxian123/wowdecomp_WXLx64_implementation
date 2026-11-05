@@ -1,0 +1,213 @@
+From 5e05fe8d56bab078f37ece29171d2d1167c825ea Mon Sep 17 00:00:00 2001
+From: patchgen <a@b.c>
+Date: Thu, 5 Nov 2026 09:44:38 +0000
+Subject: [PATCH] Add View Distance & Fog addon and fogDistanceScale CVar
+
+---
+ .../WowDecompViewDistance.lua                 | 102 ++++++++++++++++++
+ .../WowDecompViewDistance.toc                 |   5 +
+ WoW/Source/WorldClient/DayNight.cpp           |  15 +++
+ WoW/Source/WorldClient/WorldParam.h           |   1 +
+ WoW/Source/WorldClient/WorldParam_CVar.cpp    |   6 +-
+ 5 files changed, 127 insertions(+), 2 deletions(-)
+ create mode 100644 Addons/WowDecompViewDistance/WowDecompViewDistance.lua
+ create mode 100644 Addons/WowDecompViewDistance/WowDecompViewDistance.toc
+
+diff --git a/Addons/WowDecompViewDistance/WowDecompViewDistance.lua b/Addons/WowDecompViewDistance/WowDecompViewDistance.lua
+new file mode 100644
+index 0000000..e45b79c
+--- /dev/null
++++ b/Addons/WowDecompViewDistance/WowDecompViewDistance.lua
+@@ -0,0 +1,102 @@
++-- Adds an Interface Options panel with sliders for the CVars the wowdecomp client exposes:
++--   farclip              view distance in yards (the original game capped this at ~1580)
++--   horizonFarclipScale  how far the low detail horizon terrain reaches, as a multiple of farclip
++--   fogDistanceScale     where distance fog ends relative to farclip (0 = no distance fog)
++
++local panel = CreateFrame("Frame", "WowDecompViewDistancePanel", UIParent)
++panel.name = "View Distance & Fog"
++
++local title = panel:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
++title:SetPoint("TOPLEFT", 16, -16)
++title:SetText("View Distance & Fog")
++
++local sliders = {}
++
++local function MakeSlider(name, label, cvar, minValue, maxValue, step, y, format)
++    local slider = CreateFrame("Slider", "WowDecompVD" .. name, panel, "OptionsSliderTemplate")
++    slider:SetPoint("TOPLEFT", 24, y)
++    slider:SetWidth(300)
++    slider:SetMinMaxValues(minValue, maxValue)
++    slider:SetValueStep(step)
++    slider.cvar = cvar
++    slider.label = label
++    slider.format = format
++
++    _G[slider:GetName() .. "Low"]:SetText(tostring(minValue))
++    _G[slider:GetName() .. "High"]:SetText(tostring(maxValue))
++
++    local function UpdateText(value)
++        _G[slider:GetName() .. "Text"]:SetText(label .. ": " .. format(value))
++    end
++
++    slider:SetScript("OnValueChanged", function(self, value)
++        value = math.floor(value / step + 0.5) * step
++        UpdateText(value)
++
++        if not self.refreshing then
++            SetCVar(cvar, value)
++        end
++    end)
++
++    function slider:Refresh()
++        self.refreshing = true
++        local value = tonumber(GetCVar(cvar)) or minValue
++        self:SetValue(value)
++        UpdateText(value)
++        self.refreshing = false
++    end
++
++    sliders[#sliders + 1] = slider
++    return slider
++end
++
++MakeSlider("Farclip", "View distance", "farclip", 177, 10000, 50, -70, function(v)
++    return string.format("%d yards", v)
++end)
++
++MakeSlider("Horizon", "Horizon distance (x view distance)", "horizonFarclipScale", 3, 12, 0.5, -130, function(v)
++    return string.format("x%.1f", v)
++end)
++
++MakeSlider("Fog", "Distance fog", "fogDistanceScale", 0, 1.5, 0.05, -190, function(v)
++    if v <= 0 then
++        return "off"
++    end
++
++    return string.format("%d%% of view distance", v * 100 + 0.5)
++end)
++
++local note = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
++note:SetPoint("TOPLEFT", 24, -240)
++note:SetWidth(420)
++note:SetJustifyH("LEFT")
++note:SetText("Large view distances load much more terrain: expect higher memory use and longer streaming. Fog above 100% shows the far clip edge of the world.")
++
++panel.refresh = function()
++    for _, slider in ipairs(sliders) do
++        slider:Refresh()
++    end
++end
++
++panel.okay = function() end
++panel.cancel = function() end
++panel.default = function()
++    SetCVar("farclip", 350)
++    SetCVar("horizonFarclipScale", 4)
++    SetCVar("fogDistanceScale", 1)
++    panel.refresh()
++end
++
++InterfaceOptions_AddCategory(panel)
++
++SLASH_WOWDECOMPVD1 = "/viewdist"
++SlashCmdList["WOWDECOMPVD"] = function(msg)
++    local value = tonumber(msg)
++
++    if value then
++        SetCVar("farclip", value)
++        print("View distance set to " .. GetCVar("farclip"))
++    else
++        InterfaceOptionsFrame_OpenToCategory(panel)
++    end
++end
+diff --git a/Addons/WowDecompViewDistance/WowDecompViewDistance.toc b/Addons/WowDecompViewDistance/WowDecompViewDistance.toc
+new file mode 100644
+index 0000000..b034de5
+--- /dev/null
++++ b/Addons/WowDecompViewDistance/WowDecompViewDistance.toc
+@@ -0,0 +1,5 @@
++## Interface: 30300
++## Title: View Distance & Fog
++## Notes: Sliders for the view distance, horizon (low detail terrain) distance and distance fog. Needs the wowdecomp client.
++## Version: 1.0
++WowDecompViewDistance.lua
+diff --git a/WoW/Source/WorldClient/DayNight.cpp b/WoW/Source/WorldClient/DayNight.cpp
+index 500a2a7..4a324a5 100644
+--- a/WoW/Source/WorldClient/DayNight.cpp
++++ b/WoW/Source/WorldClient/DayNight.cpp
+@@ -2120,6 +2120,15 @@ void DayNight::UpdateFog() {
+     DNInfo& info = DayNight::g_dnInfo;
+     float end = info.m_farClip;
+ 
++    // fogDistanceScale: 1 = fog ends at the view distance, <1 pulls it in, 0 turns distance fog off
++    float fogScale = CWorldParam::cvar_fogDistanceScale ? CWorldParam::cvar_fogDistanceScale->m_floatValue : 1.0f;
++
++    if (fogScale <= 0.0f) {
++        end = info.m_farClip * 100.0f;
++    } else {
++        end *= fogScale;
++    }
++
+     if (s_fogOverride) {
+         if (s_overrideFogEnd < end) {
+             end = s_overrideFogEnd;
+@@ -2140,6 +2149,12 @@ void DayNight::UpdateFog() {
+         info.m_fog.m_density = info.m_bands.m_fogRate;
+     }
+ 
++    if (fogScale <= 0.0f) {
++        // distance fog off: push it beyond anything the far clip can show
++        info.m_fog.m_end = info.m_farClip * 100.0f;
++        info.m_fog.m_start = info.m_fog.m_end * 0.99f;
++    }
++
+     SMOFog fog;
+     CMapObjDef* mapObjDef;
+     uint8_t found;
+diff --git a/WoW/Source/WorldClient/WorldParam.h b/WoW/Source/WorldClient/WorldParam.h
+index 39ba9db..6d22793 100644
+--- a/WoW/Source/WorldClient/WorldParam.h
++++ b/WoW/Source/WorldClient/WorldParam.h
+@@ -21,6 +21,7 @@ class CWorldParam {
+     static CVar* cvar_waterLOD;
+     static CVar* cvar_baseMip;
+     static CVar* cvar_horizonFarClip;
++static CVar* cvar_fogDistanceScale;
+     static CVar* cvar_horizonNearClip;
+     static CVar* cvar_showFootprints;
+     static CVar* cvar_bspCache;
+diff --git a/WoW/Source/WorldClient/WorldParam_CVar.cpp b/WoW/Source/WorldClient/WorldParam_CVar.cpp
+index c29a8be..ed0fa81 100644
+--- a/WoW/Source/WorldClient/WorldParam_CVar.cpp
++++ b/WoW/Source/WorldClient/WorldParam_CVar.cpp
+@@ -57,6 +57,7 @@ CVar* CWorldParam::cvar_baseMip;
+ 
+ // STATIC: 0x00CD85A0
+ CVar* CWorldParam::cvar_horizonFarClip;
++CVar* CWorldParam::cvar_fogDistanceScale;
+ 
+ // STATIC: 0x00CD85A4
+ CVar* CWorldParam::cvar_horizonNearClip;
+@@ -222,8 +223,8 @@ bool CWorldParam::HorizonFarClipScaleCallback(CVar* var, const char* oldValue, c
+ 
+     if (scale < 3.0f) {
+         scale = 3.0f;
+-    } else if (scale > 6.0f) {
+-        scale = 6.0f;
++    } else if (scale > 12.0f) {
++        scale = 12.0f;
+     }
+ 
+     World::SetHorizonFarClipScale(scale);
+@@ -636,6 +637,7 @@ void CWorldParam::Initialize() {
+     CWorldParam::cvar_waterLOD = CVar::Register("waterLOD", "Water geometry LOD", 1, "0", CWorldParam::WaterLodCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+     CWorldParam::cvar_baseMip = CVar::Register("baseMip", "base mipmap level", 1, "0", CWorldParam::BaseMipCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+     CWorldParam::cvar_horizonFarClip = CVar::Register("horizonFarclipScale", "Far clip plane scale for horizon", 1, "4.0", CWorldParam::HorizonFarClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
++    CWorldParam::cvar_fogDistanceScale = CVar::Register("fogDistanceScale", "Scale of the distance fog relative to the view distance (0 disables distance fog)", 1, "1.0", nullptr, CATEGORY_GRAPHICS, false, nullptr, false);
+     CWorldParam::cvar_horizonNearClip = CVar::Register("horizonNearclipScale", "Near clip plane scale for horizon", 1, "0.7", CWorldParam::HorizonNearClipScaleCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+     CWorldParam::cvar_showFootprints = CVar::Register("showfootprints", "toggles rendering of footprints", 1, "1", CWorldParam::ShowFootprintsCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+     CWorldParam::cvar_bspCache = CVar::Register("bspcache", "BSP node caching", 1, "1", CWorldParam::BspCacheCallback, CATEGORY_GRAPHICS, false, nullptr, false);
+-- 
+2.43.0
+

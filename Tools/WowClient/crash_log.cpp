@@ -1,3 +1,5 @@
+#include <csignal>
+#include <exception>
 #include <windows.h>
 #include <dbghelp.h>
 #include <crtdbg.h>
@@ -93,7 +95,7 @@ static void LogStack(CONTEXT* context) {
 static LONG CALLBACK FirstChanceHandler(EXCEPTION_POINTERS* info) {
     DWORD code = info->ExceptionRecord->ExceptionCode;
 
-    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_PRIV_INSTRUCTION) {
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_INT_DIVIDE_BY_ZERO || code == EXCEPTION_STACK_OVERFLOW || code == EXCEPTION_PRIV_INSTRUCTION || code == EXCEPTION_BREAKPOINT || code == EXCEPTION_ARRAY_BOUNDS_EXCEEDED || code == EXCEPTION_IN_PAGE_ERROR || code == 0xC0000409) {
         char where[MAX_PATH + 32];
         ModuleOffset(info->ExceptionRecord->ExceptionAddress, where, sizeof(where));
 
@@ -128,6 +130,95 @@ static int CrtReportHook(int type, char* message, int* returnValue) {
     return TRUE;
 }
 
+// Logs a stack whenever the process exits through exit()/abort() paths that raise no exception
+static void LogExit() {
+    LogLine("EXIT via exit()/atexit\n");
+    CONTEXT context;
+    RtlCaptureContext(&context);
+    LogStack(&context);
+}
+
+static void InvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, uintptr_t) {
+    LogLine("CRT invalid parameter\n");
+    CONTEXT context;
+    RtlCaptureContext(&context);
+    LogStack(&context);
+    ExitProcess(0x5719);
+}
+
+// std::terminate / abort() raise no catchable exception in release builds (they fail fast), so log them here
+static void TerminateHook() {
+    LogLine("TERMINATE (uncaught C++ exception)\n");
+    CONTEXT context;
+    RtlCaptureContext(&context);
+    LogStack(&context);
+    ExitProcess(0x571A);
+}
+
+static void AbortHook(int) {
+    LogLine("SIGABRT\n");
+    CONTEXT context;
+    RtlCaptureContext(&context);
+    LogStack(&context);
+    ExitProcess(0x571B);
+}
+
+// Logs a stack when the process kills itself through ExitProcess/TerminateProcess (x64 entry-point patch).
+#if defined(_M_X64)
+struct ExitPatch {
+    BYTE* target;
+    BYTE original[14];
+};
+
+static ExitPatch s_exitPatch;
+static ExitPatch s_terminatePatch;
+
+static void Patch(ExitPatch& patch, void* function, void* hook) {
+    patch.target = static_cast<BYTE*>(function);
+    memcpy(patch.original, patch.target, sizeof(patch.original));
+    BYTE jump[14] = { 0xFF, 0x25, 0, 0, 0, 0 };
+    memcpy(jump + 6, &hook, sizeof(hook));
+    DWORD old;
+    VirtualProtect(patch.target, sizeof(jump), PAGE_EXECUTE_READWRITE, &old);
+    memcpy(patch.target, jump, sizeof(jump));
+    VirtualProtect(patch.target, sizeof(jump), old, &old);
+}
+
+static void Unpatch(ExitPatch& patch) {
+    DWORD old;
+    VirtualProtect(patch.target, sizeof(patch.original), PAGE_EXECUTE_READWRITE, &old);
+    memcpy(patch.target, patch.original, sizeof(patch.original));
+    VirtualProtect(patch.target, sizeof(patch.original), old, &old);
+}
+
+static void WINAPI ExitProcessHook(UINT code) {
+    char line[64];
+    _snprintf_s(line, sizeof(line), _TRUNCATE, "ExitProcess(%u)\n", code);
+    LogLine(line);
+    CONTEXT context;
+    RtlCaptureContext(&context);
+    LogStack(&context);
+    Unpatch(s_exitPatch);
+    ExitProcess(code);
+}
+
+static BOOL WINAPI TerminateProcessHook(HANDLE process, UINT code) {
+    if (process == GetCurrentProcess() || GetProcessId(process) == GetCurrentProcessId()) {
+        char line[64];
+        _snprintf_s(line, sizeof(line), _TRUNCATE, "TerminateProcess(%u)\n", code);
+        LogLine(line);
+        CONTEXT context;
+        RtlCaptureContext(&context);
+        LogStack(&context);
+    }
+
+    Unpatch(s_terminatePatch);
+    BOOL result = TerminateProcess(process, code);
+    Patch(s_terminatePatch, s_terminatePatch.target, reinterpret_cast<void*>(&TerminateProcessHook));
+    return result;
+}
+#endif
+
 static struct CrashLogInit {
     CrashLogInit() {
         GetModuleFileNameA(nullptr, s_logPath, sizeof(s_logPath));
@@ -147,6 +238,16 @@ static struct CrashLogInit {
 
         AddVectoredExceptionHandler(1, FirstChanceHandler);
         _CrtSetReportHook(CrtReportHook);
+        _set_invalid_parameter_handler(InvalidParameter);
+        atexit(LogExit);
+        LogLine("crash logger started\n");
+#if defined(_M_X64)
+        HMODULE kernel = GetModuleHandleA("kernelbase.dll");
+        Patch(s_exitPatch, GetProcAddress(kernel, "ExitProcess"), reinterpret_cast<void*>(&ExitProcessHook));
+        Patch(s_terminatePatch, GetProcAddress(kernel, "TerminateProcess"), reinterpret_cast<void*>(&TerminateProcessHook));
+#endif
+        std::set_terminate(TerminateHook);
+        signal(SIGABRT, AbortHook);
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     }
