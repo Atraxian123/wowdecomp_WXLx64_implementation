@@ -78,6 +78,10 @@ typedef void (*WxlEventHandler)(void* user, const void* args);
 #define WXL_EVENT_HAND_ITEM_ATTACHED "OnHandItemAttached"
 #define WXL_EVENT_M2_SKIN_FINALIZE   "OnM2SkinFinalize"
 #define WXL_EVENT_M2_PER_FRAME       "OnM2PerFrameUpdate"
+#define WXL_EVENT_END_SCENE          "OnEndScene"
+#define WXL_EVENT_M2_BATCH_DRAW      "OnM2BatchDraw"
+#define WXL_EVENT_DEVICE_LOST        "OnDeviceLost"
+#define WXL_EVENT_DEVICE_RESET       "OnDeviceReset"
 
 /* OnModelLoadPre (a model's raw bytes are read, before parse) and OnModelLoad (parsed): `model` is the
  * engine's model object, an opaque handle. */
@@ -104,6 +108,27 @@ typedef struct WxlHandItemAttachedArgs { void* model; uint32_t invSlot; int32_t 
 typedef struct WxlM2SkinFinalizeArgs { void* model; } WxlM2SkinFinalizeArgs;
 /* OnM2PerFrameUpdate: the per-frame scene-graph tick of one model instance. */
 typedef struct WxlM2PerFrameUpdateArgs { void* instance; } WxlM2PerFrameUpdateArgs;
+
+/* The render events (used by the outline module). `device` is the live IDirect3DDevice9*. */
+/* OnEndScene: the frame's last EndScene, before Present; the place to composite into the frame. */
+typedef struct WxlEndSceneArgs { void* device; } WxlEndSceneArgs;
+/* OnM2BatchDraw: fired from the device's indexed draw for each model batch, just after the engine's own draw; model
+ * is the instance being drawn (compare it, or its parents, with handles from the engine access calls) and the draw
+ * parameters are the ones that draw used, so a module can issue the same draw again into its own target. */
+typedef struct WxlM2BatchDrawArgs
+{
+    void*    device;
+    void*    model;
+    int32_t  primType;
+    int32_t  baseVertex;
+    uint32_t minIndex;
+    uint32_t numVerts;
+    uint32_t startIndex;
+    uint32_t primCount;
+} WxlM2BatchDrawArgs;
+/* OnDeviceLost: fired before the client resets the device, while every D3DPOOL_DEFAULT resource must be released.
+ * OnDeviceReset: after a successful reset, when a module recreates them. params is the D3DPRESENT_PARAMETERS*. */
+typedef struct WxlDeviceResetArgs { void* device; void* params; } WxlDeviceResetArgs;
 
 /* ---- files ------------------------------------------------------------------------------------ */
 
@@ -251,6 +276,13 @@ typedef struct WxlItemDisplayInfo
     char     icon2[WXL_ITEM_TEXT];            /* the record's second inventory-icon field */
 } WxlItemDisplayInfo;
 
+typedef struct WxlOutlineUnit
+{
+    const void* model;
+    uint32_t    reaction;          /* 0 hostile, 1 neutral, 2 friendly */
+    uint32_t    isPlayer;
+} WxlOutlineUnit;
+
 /* The held-item model resolver: may replace the file name the client loads for a held weapon (a bare file name; the
  * client prepends its folder). 1 = out holds a replacement. */
 typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
@@ -390,6 +422,20 @@ typedef struct WxlApi
     /* the virtual-path key the client would mint for a per-character model; returns the length, 0 on truncation */
     size_t (*vpathBuildKey)(char* out, size_t outSz, void* cmo, const char* realMdxPath, const uint16_t* geoIds,
                             uint32_t geoCount, const char* texPath, uint32_t variantKey, const char* materialPatchSpec);
+
+    /* ---- engine access, added for the outline module: check WXL_API_HAS(api, outlineBatchState) once ---- */
+
+    /* The units under the mouse and the locked target (in that order, deduplicated), for the reaction-colored outline.
+     * Fills up to `max` entries and returns how many. `model` is an opaque instance handle (only compared, never
+     * dereferenced); reaction is 0 hostile (hated / hostile), 1 neutral (unfriendly / neutral), 2 friendly and up;
+     * isPlayer is 1 for a player character. */
+    uint32_t (*outlineUnits)(WxlOutlineUnit* out, uint32_t max);
+    /* The model instances of the creatures and objects the open quests still need (the quest log, the client's quest
+     * cache and what is visible now), up to `max`, returned as the count. The scan is not cheap: call it on a timer. */
+    uint32_t (*outlineQuestTargets)(const void** models, uint32_t max);
+    /* 1 when the model batch about to be drawn may be stamped into an outline mask (an opaque or alpha-tested batch
+     * that writes depth); *alphaRef receives the cutout reference (0..1) the engine is using for it. */
+    int (*outlineBatchState)(float* alphaRef);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

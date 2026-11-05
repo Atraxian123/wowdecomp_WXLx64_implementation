@@ -1,5 +1,7 @@
-// WXL unit outline. See Outline.h. Ported from the standalone wxl-unit-outline extension: the SDK's gx facade and
-// object accessors are replaced by the D3D9 device the events carry and by the decompiled engine's own calls.
+// WXL unit outline, as the module wxl_outline.dll. See README.md for the ini keys. Ported from the standalone
+// wxl-unit-outline extension: the SDK's gx facade is replaced by the D3D9 device the events carry, and everything the
+// outline needs from the client (which units to outline, what the quests need, the batch state) comes through the
+// module API's outline calls (Engine/Source/WXLApi/OutlineHost.cpp).
 // Copyright (C) 2026 WarcraftXL
 //
 // This program is free software: you can redistribute it and/or modify
@@ -15,27 +17,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-#include "Engine/Source/WXLOutline/Outline.h"
-
-#include "Engine/Source/WXLOutline/Hlsl.hpp"
-#include "Engine/Source/WXLOutline/QuestMatch.h"
-
-#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
-#include "Engine/Source/Gx/Types.h"
-#include "Engine/Source/Model2/M2Model.h"
-#include "Engine/Source/ShaderEffect/ShaderEffect.h"
-#include "Engine/Source/WXL/EventScript.h"
-#include "Engine/Source/WXL/Log.h"
-#include "WoW/Source/DB/DBClient/CreatureStats_C.h"
-#include "WoW/Source/DB/DBClient/DBCacheInstances.h"
-#include "WoW/Source/Object/GameObjectStats.h"
-#include "WoW/Source/Object/ObjectClient/GameObject_C.h"
-#include "WoW/Source/Object/ObjectClient/Object_C.h"
-#include "WoW/Source/Object/ObjectClient/Player_C.h"
-#include "WoW/Source/Object/QuestCache.h"
-#include "WoW/Source/Object/ObjectClient/Unit_C.h"
-#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
-#include "WoW/Source/Ui/GameUI.h"
+#include "Hlsl.hpp"
+#include "QuestMatch.h"   // ParseHexColor (the shared, engine-free header in Engine/Source/WXLOutline)
+#include "wxl_module.hpp"
 
 #include <windows.h>
 #include <d3d9.h>
@@ -60,31 +44,24 @@ namespace wxl::outline
 
         // ---- WXLExtendedEquipment.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
         // CastAnim.cpp do: WXLCore keeps no shared helper and this module links only WXLCore.
-        bool IniPath(char* path, size_t cap)
-        {
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
-            if (n == 0 || n >= cap) return false;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLExtendedEquipment.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
-            std::strcpy(slash + 1, name);
-            return true;
-        }
-
+        // [Outline] keys of WXLExtendedEquipment.ini, through the module API.
         int IniInt(const char* section, const char* key, int def)
         {
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return def;
-            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
+            const WxlApi* api = wxl::module::Api();
+            return api && api->iniGetInt ? api->iniGetInt(section, key, def) : def;
+        }
+
+        bool IniText(const char* section, const char* key, char* out, size_t cap)
+        {
+            if (out && cap) out[0] = '\0';
+            const WxlApi* api = wxl::module::Api();
+            return api && api->iniGetString && api->iniGetString(section, key, out, cap) != 0 && out[0];
         }
 
         float IniFloat(const char* section, const char* key, float def)
         {
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return def;
             char out[64] = {};
-            GetPrivateProfileStringA(section, key, "", out, sizeof(out), path);
-            if (!out[0]) return def;
+            if (!IniText(section, key, out, sizeof(out))) return def;
             char* end = nullptr;
             const double v = std::strtod(out, &end);
             return (end == out) ? def : static_cast<float>(v);
@@ -224,11 +201,8 @@ namespace wxl::outline
         {
             out[0] = def[0]; out[1] = def[1]; out[2] = def[2]; out[3] = 1.0f;
 
-            char path[MAX_PATH] = {};
             char text[32] = {};
-            if (!IniPath(path, sizeof(path))) return;
-            GetPrivateProfileStringA("Outline", key, "", text, sizeof(text), path);
-            if (!text[0]) return;
+            if (!IniText("Outline", key, text, sizeof(text))) return;
 
             float rgb[3];
             if (ParseHexColor(text, rgb)) { out[0] = rgb[0]; out[1] = rgb[1]; out[2] = rgb[2]; }
@@ -272,7 +246,7 @@ namespace wxl::outline
         static constexpr int kMaxTargets = 2 + kMaxQuestTargets;
         static constexpr unsigned long long kQuestRefreshMs = 250;
         // depthTest: the scene hides the outline where it hides the unit. Otherwise the outline shows through.
-        struct Tgt { const CM2Model* model; float color[4]; bool depthTest; };
+        struct Tgt { const void* model; float color[4]; bool depthTest; };
 
         // --- event handlers ---
         void OnEndScene(const ev::EndSceneArgs& a);
@@ -288,10 +262,7 @@ namespace wxl::outline
         void ClearMask(IDirect3DDevice9* dev);
 
         // --- helpers ---
-        static bool ShouldStampBatch();
-        static float EngineAlphaRef();
-        int  FindTarget(const CM2Model* model) const;
-        void AddTarget(WOWGUID guid, CGUnit_C* player);
+        int  FindTarget(const void* model) const;
         void RefreshQuestTargets();
         void AppendQuestTargets();
         void ReleaseTargets();
@@ -313,6 +284,7 @@ namespace wxl::outline
         bool                questThroughWalls_;
         bool                hideBehind_;
         bool                loggedNoDepth_ = false;
+        float               alphaRef_ = 0.5f;      // the engine's cutout reference for the batch being stamped
         float               questColor_[4]{};
         float               hostileColor_[4]{};
         float               neutralColor_[4]{};
@@ -393,40 +365,18 @@ namespace wxl::outline
 
     // The model, or any model it is attached to, being one of the picked units' models: weapons, shoulders and
     // mounts are separate instances parented to the unit.
-    int Outline::FindTarget(const CM2Model* model) const
+    int Outline::FindTarget(const void* model) const
     {
-        for (int hop = 0; model && hop < 8; ++hop, model = model->m_attachParent)
+        const WxlApi* api = wxl::module::Api();
+        for (int hop = 0; model && hop < 8; ++hop)
+        {
             for (int i = 0; i < count_; ++i)
                 if (targets_[i].model == model) return i;
+            WxlModelInfo info = {};
+            info.structSize = sizeof(info);
+            model = (api->modelInfo(const_cast<void*>(model), &info) == 0) ? info.parent : nullptr;
+        }
         return -1;
-    }
-
-    void Outline::AddTarget(WOWGUID guid, CGUnit_C* player)
-    {
-        if (!guid || count_ >= kMaxTargets) return;
-
-        CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
-        if (!obj || !obj->m_obj) return;
-
-        const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
-        if (!(type & (TYPEMASK_UNIT | TYPEMASK_PLAYER))) return; // units and players only: not objects, items, corpses
-
-        const CM2Model* model = obj->GetObjectModel();
-        if (!model) return;
-
-        for (int i = 0; i < count_; ++i)
-            if (targets_[i].model == model) return; // dedup: target and mouseover on the same unit
-
-        // The unit's own attitude toward the player, the same direction the client's highlight sound uses.
-        const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
-        targets_[count_].model    = model;
-        targets_[count_].depthTest = hideBehind_ || (type & TYPEMASK_PLAYER) != 0; // players always hide behind walls; NPCs only with HideBehindObjects
-        // hated / hostile, then unfriendly / neutral, then friendly and up
-        const float* color = reaction < UNIT_REACTION_UNFRIENDLY ? hostileColor_
-                           : reaction < UNIT_REACTION_FRIENDLY   ? neutralColor_
-                                                                  : friendlyColor_;
-        std::memcpy(targets_[count_].color, color, sizeof(targets_[count_].color));
-        ++count_;
     }
 
     void Outline::RebuildTargets()
@@ -434,129 +384,35 @@ namespace wxl::outline
         count_ = 0;
         if (mouseTarget_)
         {
-            CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
-            AddTarget(CGGameUI::m_currentObjectTrack, player); // mouseover
-            AddTarget(CGGameUI::m_lockedTarget,       player);
+            // The mouseover, then the target; the client picks them and the unit's attitude toward the player.
+            WxlOutlineUnit units[2] = {};
+            const uint32_t n = wxl::module::Api()->outlineUnits(units, 2);
+            for (uint32_t i = 0; i < n && count_ < kMaxTargets; ++i)
+            {
+                const float* color = units[i].reaction == 0 ? hostileColor_ : units[i].reaction == 1 ? neutralColor_ : friendlyColor_;
+                targets_[count_].model     = units[i].model;
+                targets_[count_].depthTest = hideBehind_ || units[i].isPlayer != 0; // players always hide behind walls; NPCs only with HideBehindObjects
+                std::memcpy(targets_[count_].color, color, sizeof(targets_[count_].color));
+                ++count_;
+            }
         }
         if (quest_) AppendQuestTargets();
     }
 
-    namespace
-    {
-        // What the open quests still want, from the quest log (progress) and the quest cache (requirements).
-        // A quest whose record is not cached yet is requested and skipped until it arrives.
-        // Asking for a record with a callback is what makes the cache query the server for one it does not have; the
-        // answer lands in the cache, and the next refresh finds it, so the callback has nothing left to do.
-        void QuestRecordArrived(int32_t, const WOWGUID&, void*, bool) {}
-
-        void CollectQuestNeeds(CGPlayer_C* player, QuestNeeds& needs)
-        {
-            const WOWGUID none = { 0 };
-            for (uint32_t slot = 0; slot < 25; ++slot)
-            {
-                const PlayerQuestLogEntry& e = player->m_player->m_playerQuestLog[slot];
-                if (!e.m_questId || (e.m_state & 0x3)) continue; // empty slot, complete (1) or failed (2)
-
-                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, QuestRecordArrived, nullptr, false);
-                if (!quest) continue;
-
-                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or game object entry with the sign bit set
-                    if (quest->m_objectiveId[i] && e.m_counts[i] < quest->m_objectiveRequiredCount[i])
-                        needs.AddObjective(quest->m_objectiveId[i]);
-
-                for (uint32_t i = 0; i < 6; ++i) // items to collect
-                {
-                    const uint32_t item = quest->m_collectItemId[i];
-                    if (item && player->m_bag.GetItemTypeCount(static_cast<int32_t>(item), 8) < static_cast<int32_t>(quest->m_collectItemCount[i]))
-                        needs.AddItem(item);
-                }
-            }
-        }
-
-        struct QuestScan
-        {
-            const QuestNeeds* needs;
-            const CM2Model*   models[32];
-            int               count;
-        };
-
-        // Visible objects, one at a time. Returns non-zero to keep going.
-        int32_t QuestScanCallback(WOWGUID guid, void* param)
-        {
-            auto* scan = static_cast<QuestScan*>(param);
-            if (scan->count >= static_cast<int>(sizeof(scan->models) / sizeof(scan->models[0]))) return 0;
-
-            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
-            if (!obj || !obj->m_obj) return 1;
-
-            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
-            const uint32_t entry = obj->m_obj->m_entryID;
-            bool match = false;
-
-            if (type & TYPEMASK_PLAYER)
-            {
-                return 1;
-            }
-            else if (type & TYPEMASK_UNIT)
-            {
-                CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
-                const CreatureStats_C* stats = unit->m_creatureCacheEntry;
-
-                if (!unit->IsDeadOrGhost())
-                {
-                    match = scan->needs->NeedsCreature(entry, stats ? stats->m_killCredit : nullptr, 2)
-                         || (stats && scan->needs->NeedsItemFrom(stats->m_questItem, 6));
-                }
-                else if ((unit->m_unit->m_unitDynamicFlags & 0x1) && stats) // a corpse still holding loot
-                {
-                    match = scan->needs->NeedsItemFrom(stats->m_questItem, 6);
-                }
-            }
-            else if (type & TYPEMASK_GAMEOBJECT)
-            {
-                CGGameObject_C* go = static_cast<CGGameObject_C*>(obj);
-                const GameObjectStats* stats = go->m_stats;
-                const uint16_t dyn = go->m_gameObject ? go->m_gameObject->m_dynamicFlags : 0;
-
-                // Besides the quest data, the server's own "sparkle" (0x8, unless the object cannot be used right now,
-                // 0x4) is its statement that this object matters to this player's quests; the client draws the sparkle
-                // from the same flag.
-                match = scan->needs->NeedsGameObject(entry)
-                     || (stats && scan->needs->NeedsItemFrom(stats->m_questItems, 6))
-                     || ((dyn & 0x8) && !(dyn & 0x4));
-            }
-
-            if (match)
-            {
-                const CM2Model* model = obj->GetObjectModel();
-                if (model) scan->models[scan->count++] = model;
-            }
-            return 1;
-        }
-    }
-
-    // Rebuilds the quest target list from the quest log and the visible objects. Run on a timer, not per frame: the
-    // log changes on kills and loot, and nothing here has to be frame-exact.
+    // Rebuilds the quest target list from the client (the quest log, the quest cache and the visible objects). Run on
+    // a timer, not per frame: the log changes on kills and loot, and nothing here has to be frame-exact.
     void Outline::RefreshQuestTargets()
     {
-        questCount_ = 0;
-
-        CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
-        if (!player || !player->m_player) return;
-
-        QuestNeeds needs;
-        CollectQuestNeeds(player, needs);
-        if (needs.Empty()) return;
-
-        QuestScan scan{ &needs, {}, 0 };
-        ClntObjMgrEnumVisibleObjects(QuestScanCallback, &scan);
+        const void* models[kMaxQuestTargets] = {};
+        const uint32_t n = wxl::module::Api()->outlineQuestTargets(models, kMaxQuestTargets);
 
         // Pointers only: they are compared against the model being drawn, never dereferenced, so one that outlives
         // its object by a refresh interval is harmless.
-        for (int i = 0; i < scan.count; ++i)
+        questCount_ = 0;
+        for (uint32_t i = 0; i < n && questCount_ < kMaxQuestTargets; ++i)
         {
             Tgt& t = questTargets_[questCount_++];
-            t.model = scan.models[i];
+            t.model = models[i];
             std::memcpy(t.color, questColor_, sizeof(t.color));
             t.depthTest = hideBehind_ || !questThroughWalls_;
         }
@@ -578,31 +434,6 @@ namespace wxl::outline
                 if (targets_[i].model == questTargets_[q].model) { dup = true; break; } // the mouseover / target color wins
             if (!dup) targets_[count_++] = questTargets_[q];
         }
-    }
-
-    // Attached particles, glows and billboards draw through the same model context as the mesh. The silhouette is
-    // the geometry that claims to be solid: a blended batch is not one, and neither is a batch that declines to
-    // write depth, since an effect must not occlude what is behind it. Letting either in puts a broad card in the
-    // mask, which the blur turns into a blob sitting next to the unit.
-    //
-    // Read from the engine's own state shadow: the device is a pure one and cannot be queried, and Draw() has just
-    // synced the shadow to the hardware. Opaque and alpha-key batches are the solid ones (alpha key is a cutout,
-    // not blending).
-    bool Outline::ShouldStampBatch()
-    {
-        if (!g_theGxDevicePtr) return false;
-        const int32_t blend = g_theGxDevicePtr->m_hwRenderStates[GxRs_BlendingMode].m_data.i[0];
-        const int32_t zwrite = g_theGxDevicePtr->m_hwRenderStates[GxRs_DepthWrite].m_data.i[0];
-        return blend <= GxBlend_AlphaKey && zwrite != 0;
-    }
-
-    // The alpha reference the engine cut the batch it just drew with. It lives in one of two places, by device
-    // capability: the alpha-test render state, or a pixel shader constant the engine's own shaders read.
-    float Outline::EngineAlphaRef()
-    {
-        if (CShaderEffect::s_useAlphaRef && g_theGxDevicePtr)
-            return static_cast<float>(g_theGxDevicePtr->m_hwRenderStates[GxRs_AlphaRef].m_data.i[0]) / 255.0f;
-        return CShaderEffect::s_fogColorAlphaRef.w;
     }
 
     // Draw the model again into the mask render target.
@@ -653,7 +484,7 @@ namespace wxl::outline
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
         dev->SetPixelShader(fillPS_);
         dev->SetPixelShaderConstantF(0, targets_[idx].color, 1);
-        const float alphaRef[4] = { EngineAlphaRef(), 0.0f, 0.0f, 0.0f };
+        const float alphaRef[4] = { alphaRef_, 0.0f, 0.0f, 0.0f };
         dev->SetPixelShaderConstantF(1, alphaRef, 1);
         dev->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(a.primType), a.baseVertex, a.minIndex, a.numVerts, a.startIndex, a.primCount);
 
@@ -806,9 +637,9 @@ namespace wxl::outline
         auto* dev = static_cast<IDirect3DDevice9*>(a.device);
         if (count_ == 0 || dev != device_) return;
         if (!fillPS_ || !mask_.surface || !stampSave_) return;
-        const int idx = FindTarget(static_cast<const CM2Model*>(a.model));
+        const int idx = FindTarget(a.model);
         if (idx < 0) return;
-        if (!ShouldStampBatch()) return;
+        if (!wxl::module::Api()->outlineBatchState(&alphaRef_)) return;
         if (!DrawingIntoFrame(dev, mask_.width, mask_.height)) return;
         StampSilhouette(dev, a, idx);
     }
@@ -845,7 +676,8 @@ namespace wxl::outline
         count_   = 0;
     }
 
-    void Init()
+    // Reads the ini and, when [Outline] Enabled=1 or Quest=1, brings the outline up. False when it stays off.
+    bool Start()
     {
         Outline::Options o;
         o.mouseTarget = IniInt("Outline", "Enabled", 0) != 0;
@@ -853,7 +685,7 @@ namespace wxl::outline
         if (!o.mouseTarget && !o.quest)
         {
             wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled and Quest are 0 or absent)");
-            return;
+            return false;
         }
 
         o.spread    = IniFloat("Outline", "Spread", 1.5f);
@@ -872,5 +704,6 @@ namespace wxl::outline
         static Outline s_outline(o);
         wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",
                     o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.spread, o.intensity);
+        return true;
     }
 }

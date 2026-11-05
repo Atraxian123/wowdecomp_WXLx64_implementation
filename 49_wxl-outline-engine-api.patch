@@ -1,0 +1,402 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 9441bad..a53fe60 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -78,6 +78,10 @@ typedef void (*WxlEventHandler)(void* user, const void* args);
+ #define WXL_EVENT_HAND_ITEM_ATTACHED "OnHandItemAttached"
+ #define WXL_EVENT_M2_SKIN_FINALIZE   "OnM2SkinFinalize"
+ #define WXL_EVENT_M2_PER_FRAME       "OnM2PerFrameUpdate"
++#define WXL_EVENT_END_SCENE          "OnEndScene"
++#define WXL_EVENT_M2_BATCH_DRAW      "OnM2BatchDraw"
++#define WXL_EVENT_DEVICE_LOST        "OnDeviceLost"
++#define WXL_EVENT_DEVICE_RESET       "OnDeviceReset"
+ 
+ /* OnModelLoadPre (a model's raw bytes are read, before parse) and OnModelLoad (parsed): `model` is the
+  * engine's model object, an opaque handle. */
+@@ -105,6 +109,27 @@ typedef struct WxlM2SkinFinalizeArgs { void* model; } WxlM2SkinFinalizeArgs;
+ /* OnM2PerFrameUpdate: the per-frame scene-graph tick of one model instance. */
+ typedef struct WxlM2PerFrameUpdateArgs { void* instance; } WxlM2PerFrameUpdateArgs;
+ 
++/* The render events (used by the outline module). `device` is the live IDirect3DDevice9*. */
++/* OnEndScene: the frame's last EndScene, before Present; the place to composite into the frame. */
++typedef struct WxlEndSceneArgs { void* device; } WxlEndSceneArgs;
++/* OnM2BatchDraw: fired from the device's indexed draw for each model batch, just after the engine's own draw; model
++ * is the instance being drawn (compare it, or its parents, with handles from the engine access calls) and the draw
++ * parameters are the ones that draw used, so a module can issue the same draw again into its own target. */
++typedef struct WxlM2BatchDrawArgs
++{
++    void*    device;
++    void*    model;
++    int32_t  primType;
++    int32_t  baseVertex;
++    uint32_t minIndex;
++    uint32_t numVerts;
++    uint32_t startIndex;
++    uint32_t primCount;
++} WxlM2BatchDrawArgs;
++/* OnDeviceLost: fired before the client resets the device, while every D3DPOOL_DEFAULT resource must be released.
++ * OnDeviceReset: after a successful reset, when a module recreates them. params is the D3DPRESENT_PARAMETERS*. */
++typedef struct WxlDeviceResetArgs { void* device; void* params; } WxlDeviceResetArgs;
++
+ /* ---- files ------------------------------------------------------------------------------------ */
+ 
+ typedef struct WxlBuffer
+@@ -251,6 +276,13 @@ typedef struct WxlItemDisplayInfo
+     char     icon2[WXL_ITEM_TEXT];            /* the record's second inventory-icon field */
+ } WxlItemDisplayInfo;
+ 
++typedef struct WxlOutlineUnit
++{
++    const void* model;
++    uint32_t    reaction;          /* 0 hostile, 1 neutral, 2 friendly */
++    uint32_t    isPlayer;
++} WxlOutlineUnit;
++
+ /* The held-item model resolver: may replace the file name the client loads for a held weapon (a bare file name; the
+  * client prepends its folder). 1 = out holds a replacement. */
+ typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
+@@ -390,6 +422,20 @@ typedef struct WxlApi
+     /* the virtual-path key the client would mint for a per-character model; returns the length, 0 on truncation */
+     size_t (*vpathBuildKey)(char* out, size_t outSz, void* cmo, const char* realMdxPath, const uint16_t* geoIds,
+                             uint32_t geoCount, const char* texPath, uint32_t variantKey, const char* materialPatchSpec);
++
++    /* ---- engine access, added for the outline module: check WXL_API_HAS(api, outlineBatchState) once ---- */
++
++    /* The units under the mouse and the locked target (in that order, deduplicated), for the reaction-colored outline.
++     * Fills up to `max` entries and returns how many. `model` is an opaque instance handle (only compared, never
++     * dereferenced); reaction is 0 hostile (hated / hostile), 1 neutral (unfriendly / neutral), 2 friendly and up;
++     * isPlayer is 1 for a player character. */
++    uint32_t (*outlineUnits)(WxlOutlineUnit* out, uint32_t max);
++    /* The model instances of the creatures and objects the open quests still need (the quest log, the client's quest
++     * cache and what is visible now), up to `max`, returned as the count. The scan is not cheap: call it on a timer. */
++    uint32_t (*outlineQuestTargets)(const void** models, uint32_t max);
++    /* 1 when the model batch about to be drawn may be stamped into an outline mask (an opaque or alpha-tested batch
++     * that writes depth); *alphaRef receives the cutout reference (0..1) the engine is using for it. */
++    int (*outlineBatchState)(float* alphaRef);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXL/Sdk/wxl_module.hpp b/Engine/Source/WXL/Sdk/wxl_module.hpp
+index e8ff39a..245cb6d 100644
+--- a/Engine/Source/WXL/Sdk/wxl_module.hpp
++++ b/Engine/Source/WXL/Sdk/wxl_module.hpp
+@@ -91,7 +91,8 @@ namespace wxl::events
+     enum class Event : uint32_t
+     {
+         OnModelLoadPre, OnModelLoad, OnBuildBonePalette, OnUpdate, OnWorldEnter, OnWorldLeave,
+-        OnItemSlotChange, OnItemSlotClear, OnHandItemAttached, OnM2SkinFinalize, OnM2PerFrameUpdate
++        OnItemSlotChange, OnItemSlotClear, OnHandItemAttached, OnM2SkinFinalize, OnM2PerFrameUpdate,
++        OnEndScene, OnM2BatchDraw, OnDeviceLost, OnDeviceReset
+     };
+ 
+     inline const char* EventName(Event e)
+@@ -109,6 +110,10 @@ namespace wxl::events
+             case Event::OnHandItemAttached:return WXL_EVENT_HAND_ITEM_ATTACHED;
+             case Event::OnM2SkinFinalize:  return WXL_EVENT_M2_SKIN_FINALIZE;
+             case Event::OnM2PerFrameUpdate:return WXL_EVENT_M2_PER_FRAME;
++            case Event::OnEndScene:        return WXL_EVENT_END_SCENE;
++            case Event::OnM2BatchDraw:     return WXL_EVENT_M2_BATCH_DRAW;
++            case Event::OnDeviceLost:      return WXL_EVENT_DEVICE_LOST;
++            case Event::OnDeviceReset:     return WXL_EVENT_DEVICE_RESET;
+         }
+         return "";
+     }
+@@ -123,11 +128,16 @@ namespace wxl::events
+     struct HandItemAttachedArgs  { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; bool sheathed; bool removed; };
+     struct M2SkinFinalizeArgs    { void* model; };
+     struct M2PerFrameUpdateArgs  { void* renderCtx; };
++    struct EndSceneArgs          { void* device; };
++    struct M2BatchDrawArgs       { void* device; void* model; int32_t primType; int32_t baseVertex; uint32_t minIndex; uint32_t numVerts; uint32_t startIndex; uint32_t primCount; };
++    struct DeviceResetArgs       { void* device; void* params; };
+     static_assert(sizeof(ModelLoadArgs) == sizeof(WxlModelLoadArgs) && sizeof(BuildBonePaletteArgs) == sizeof(WxlBuildBonePaletteArgs) &&
+                   sizeof(UpdateArgs) == sizeof(WxlUpdateArgs) && sizeof(WorldArgs) == sizeof(WxlWorldArgs), "args mirror the C structs");
+     static_assert(sizeof(ItemSlotChangeArgs) == sizeof(WxlItemSlotChangeArgs) && sizeof(ItemSlotClearArgs) == sizeof(WxlItemSlotClearArgs) &&
+                   sizeof(HandItemAttachedArgs) == sizeof(WxlHandItemAttachedArgs) && sizeof(M2SkinFinalizeArgs) == sizeof(WxlM2SkinFinalizeArgs) &&
+                   sizeof(M2PerFrameUpdateArgs) == sizeof(WxlM2PerFrameUpdateArgs), "the character-model args mirror the C structs");
++    static_assert(sizeof(EndSceneArgs) == sizeof(WxlEndSceneArgs) && sizeof(M2BatchDrawArgs) == sizeof(WxlM2BatchDrawArgs) &&
++                  sizeof(DeviceResetArgs) == sizeof(WxlDeviceResetArgs), "the render args mirror the C structs");
+ 
+     namespace detail
+     {
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+index 3691ff9..cd234d4 100644
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -14,6 +14,7 @@
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLApi/EquipHost.h"
+ #include "Engine/Source/WXLApi/ModelAccess.h"
++#include "Engine/Source/WXLApi/OutlineHost.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ 
+ #include <array>
+@@ -53,6 +54,22 @@ namespace wxl::api
+                     return 0;
+                 }
+             }
++
++            // Events EventName does not name: the module API names these itself.
++            static const struct { const char* name; wxl::events::Event event; } kNamedHere[] = {
++                { "OnEndScene",     wxl::events::Event::OnEndScene },
++                { "OnM2BatchDraw",  wxl::events::Event::OnM2BatchDraw },
++                { "OnDeviceLost",   wxl::events::Event::OnDeviceLost },
++                { "OnDeviceReset",  wxl::events::Event::OnDeviceReset },
++            };
++            for (const auto& entry : kNamedHere)
++            {
++                if (std::strcmp(entry.name, eventName) == 0)
++                {
++                    wxl::events::Subscribe(entry.event, handler, user);
++                    return 0;
++                }
++            }
+             wxl::LogCat("MODULE", "subscribe: unknown event '%s'", eventName);
+             return 2;
+         }
+@@ -214,6 +231,10 @@ namespace wxl::api
+             &wxl::api::equiphost::SetHandItemModelResolver,
+             &wxl::api::equiphost::SetMirroredModelQuery,
+             &wxl::api::equiphost::VPathBuildKey,
++            // engine access for the outline module (OutlineHost.cpp)
++            &wxl::api::outlinehost::Units,
++            &wxl::api::outlinehost::QuestTargets,
++            &wxl::api::outlinehost::BatchState,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/OutlineHost.cpp b/Engine/Source/WXLApi/OutlineHost.cpp
+new file mode 100644
+index 0000000..e9206e9
+--- /dev/null
++++ b/Engine/Source/WXLApi/OutlineHost.cpp
+@@ -0,0 +1,208 @@
++// The core's side of the outline module's engine access. See OutlineHost.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// The code here is what the unit outline did to the engine while it was compiled into the client (it was
++// Engine/Source/WXLOutline/Outline.cpp): the mouseover / target pick, the quest scan, and the reads of the Gx
++// device's state shadow. It moved here unchanged in behaviour; the drawing stayed in the module.
++
++#include "Engine/Source/WXLApi/OutlineHost.h"
++
++#ifndef WXL_ALLOW_32BIT_HEADER   // the module API is 64-bit only: a 32-bit client has only the declarations
++
++#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
++#include "Engine/Source/Gx/Types.h"
++#include "Engine/Source/Model2/M2Model.h"
++#include "Engine/Source/ShaderEffect/ShaderEffect.h"
++#include "Engine/Source/WXLOutline/QuestMatch.h"
++#include "WoW/Source/DB/DBClient/CreatureStats_C.h"
++#include "WoW/Source/DB/DBClient/DBCacheInstances.h"
++#include "WoW/Source/Object/GameObjectStats.h"
++#include "WoW/Source/Object/ObjectClient/GameObject_C.h"
++#include "WoW/Source/Object/ObjectClient/Object_C.h"
++#include "WoW/Source/Object/ObjectClient/Player_C.h"
++#include "WoW/Source/Object/QuestCache.h"
++#include "WoW/Source/Object/ObjectClient/Unit_C.h"
++#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
++#include "WoW/Source/Ui/GameUI.h"
++
++#include <cstdint>
++
++namespace wxl::api::outlinehost
++{
++    using wxl::outline::QuestNeeds;
++
++    namespace
++    {
++        constexpr uint32_t kMaxQuestModels = 32;
++
++        // One unit: the mouseover or the target. Units and players only (not objects, items, corpses), deduplicated by
++        // model so the target and the mouseover on the same unit give one entry.
++        void AddUnit(WxlOutlineUnit* out, uint32_t& count, uint32_t max, WOWGUID guid, CGUnit_C* player)
++        {
++            if (!guid || count >= max) return;
++
++            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
++            if (!obj || !obj->m_obj) return;
++
++            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
++            if (!(type & (TYPEMASK_UNIT | TYPEMASK_PLAYER))) return;
++
++            const CM2Model* model = obj->GetObjectModel();
++            if (!model) return;
++
++            for (uint32_t i = 0; i < count; ++i)
++                if (out[i].model == model) return;
++
++            // The unit's own attitude toward the player, the same direction the client's highlight sound uses.
++            const int reaction = player ? static_cast<int>(static_cast<CGUnit_C*>(obj)->UnitReaction(player)) : static_cast<int>(UNIT_REACTION_HONORED);
++            out[count].model    = model;
++            out[count].isPlayer = (type & TYPEMASK_PLAYER) != 0 ? 1u : 0u;
++            // hated / hostile, then unfriendly / neutral, then friendly and up
++            out[count].reaction = reaction < UNIT_REACTION_UNFRIENDLY ? 0u : reaction < UNIT_REACTION_FRIENDLY ? 1u : 2u;
++            ++count;
++        }
++
++        // What the open quests still want, from the quest log (progress) and the quest cache (requirements).
++        // A quest whose record is not cached yet is requested and skipped until it arrives.
++        // Asking for a record with a callback is what makes the cache query the server for one it does not have; the
++        // answer lands in the cache, and the next refresh finds it, so the callback has nothing left to do.
++        void QuestRecordArrived(int32_t, const WOWGUID&, void*, bool) {}
++
++        void CollectQuestNeeds(CGPlayer_C* player, QuestNeeds& needs)
++        {
++            const WOWGUID none = { 0 };
++            for (uint32_t slot = 0; slot < 25; ++slot)
++            {
++                const PlayerQuestLogEntry& e = player->m_player->m_playerQuestLog[slot];
++                if (!e.m_questId || (e.m_state & 0x3)) continue; // empty slot, complete (1) or failed (2)
++
++                const QuestCache* quest = g_questDBCache.GetRecord(static_cast<int32_t>(e.m_questId), none, QuestRecordArrived, nullptr, false);
++                if (!quest) continue;
++
++                for (uint32_t i = 0; i < 4; ++i) // kill / interact objectives: creature entry, or game object entry with the sign bit set
++                    if (quest->m_objectiveId[i] && e.m_counts[i] < quest->m_objectiveRequiredCount[i])
++                        needs.AddObjective(quest->m_objectiveId[i]);
++
++                for (uint32_t i = 0; i < 6; ++i) // items to collect
++                {
++                    const uint32_t item = quest->m_collectItemId[i];
++                    if (item && player->m_bag.GetItemTypeCount(static_cast<int32_t>(item), 8) < static_cast<int32_t>(quest->m_collectItemCount[i]))
++                        needs.AddItem(item);
++                }
++            }
++        }
++
++        struct QuestScan
++        {
++            const QuestNeeds* needs;
++            const CM2Model*   models[kMaxQuestModels];
++            uint32_t          limit;
++            uint32_t          count;
++        };
++
++        // Visible objects, one at a time. Returns non-zero to keep going.
++        int32_t QuestScanCallback(WOWGUID guid, void* param)
++        {
++            auto* scan = static_cast<QuestScan*>(param);
++            if (scan->count >= scan->limit) return 0;
++
++            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
++            if (!obj || !obj->m_obj) return 1;
++
++            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
++            const uint32_t entry = obj->m_obj->m_entryID;
++            bool match = false;
++
++            if (type & TYPEMASK_PLAYER)
++            {
++                return 1;
++            }
++            else if (type & TYPEMASK_UNIT)
++            {
++                CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
++                const CreatureStats_C* stats = unit->m_creatureCacheEntry;
++
++                if (!unit->IsDeadOrGhost())
++                {
++                    match = scan->needs->NeedsCreature(entry, stats ? stats->m_killCredit : nullptr, 2)
++                         || (stats && scan->needs->NeedsItemFrom(stats->m_questItem, 6));
++                }
++                else if ((unit->m_unit->m_unitDynamicFlags & 0x1) && stats) // a corpse still holding loot
++                {
++                    match = scan->needs->NeedsItemFrom(stats->m_questItem, 6);
++                }
++            }
++            else if (type & TYPEMASK_GAMEOBJECT)
++            {
++                CGGameObject_C* go = static_cast<CGGameObject_C*>(obj);
++                const GameObjectStats* stats = go->m_stats;
++                const uint16_t dyn = go->m_gameObject ? go->m_gameObject->m_dynamicFlags : 0;
++
++                // Besides the quest data, the server's own "sparkle" (0x8, unless the object cannot be used right now,
++                // 0x4) is its statement that this object matters to this player's quests; the client draws the sparkle
++                // from the same flag.
++                match = scan->needs->NeedsGameObject(entry)
++                     || (stats && scan->needs->NeedsItemFrom(stats->m_questItems, 6))
++                     || ((dyn & 0x8) && !(dyn & 0x4));
++            }
++
++            if (match)
++            {
++                const CM2Model* model = obj->GetObjectModel();
++                if (model) scan->models[scan->count++] = model;
++            }
++            return 1;
++        }
++    }
++
++    uint32_t Units(WxlOutlineUnit* out, uint32_t max)
++    {
++        if (!out || max == 0) return 0;
++        uint32_t count = 0;
++        CGUnit_C* player = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
++        AddUnit(out, count, max, CGGameUI::m_currentObjectTrack, player); // mouseover
++        AddUnit(out, count, max, CGGameUI::m_lockedTarget,       player);
++        return count;
++    }
++
++    // Rebuilds the quest target list from the quest log and the visible objects. The caller runs it on a timer, not
++    // per frame: the log changes on kills and loot, and nothing here has to be frame-exact.
++    uint32_t QuestTargets(const void** models, uint32_t max)
++    {
++        if (!models || max == 0) return 0;
++
++        CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
++        if (!player || !player->m_player) return 0;
++
++        QuestNeeds needs;
++        CollectQuestNeeds(player, needs);
++        if (needs.Empty()) return 0;
++
++        QuestScan scan{ &needs, {}, max < kMaxQuestModels ? max : kMaxQuestModels, 0 };
++        ClntObjMgrEnumVisibleObjects(QuestScanCallback, &scan);
++
++        // Pointers only: they are compared against the model being drawn, never dereferenced, so one that outlives
++        // its object by a refresh interval is harmless.
++        for (uint32_t i = 0; i < scan.count; ++i) models[i] = scan.models[i];
++        return scan.count;
++    }
++
++    // What the engine is doing for the batch it just drew: the blend mode and the depth write say whether it is an
++    // opaque (or alpha-tested) batch, the alpha reference is the cutout the batch used.
++    int BatchState(float* alphaRef)
++    {
++        if (alphaRef)
++        {
++            if (CShaderEffect::s_useAlphaRef && g_theGxDevicePtr)
++                *alphaRef = static_cast<float>(g_theGxDevicePtr->m_hwRenderStates[GxRs_AlphaRef].m_data.i[0]) / 255.0f;
++            else
++                *alphaRef = CShaderEffect::s_fogColorAlphaRef.w;
++        }
++        if (!g_theGxDevicePtr) return 0;
++        const int32_t blend  = g_theGxDevicePtr->m_hwRenderStates[GxRs_BlendingMode].m_data.i[0];
++        const int32_t zwrite = g_theGxDevicePtr->m_hwRenderStates[GxRs_DepthWrite].m_data.i[0];
++        return blend <= GxBlend_AlphaKey && zwrite != 0 ? 1 : 0;
++    }
++}
++
++#endif // !WXL_ALLOW_32BIT_HEADER
+diff --git a/Engine/Source/WXLApi/OutlineHost.h b/Engine/Source/WXLApi/OutlineHost.h
+new file mode 100644
+index 0000000..c208c9e
+--- /dev/null
++++ b/Engine/Source/WXLApi/OutlineHost.h
+@@ -0,0 +1,16 @@
++// The core's side of the outline module's engine access (Engine/Source/WXL/Sdk/wxl_api.h): which units to outline,
++// which creatures and objects the open quests need, and what the Gx device is doing for the batch being drawn.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Like ModelAccess.cpp and EquipHost.cpp this is a place that knows the object manager, the quest cache and the Gx
++// state shadow. The module gets opaque model handles and plain numbers.
++#pragma once
++
++#include "Engine/Source/WXL/Sdk/wxl_api.h"
++
++namespace wxl::api::outlinehost
++{
++    uint32_t Units(WxlOutlineUnit* out, uint32_t max);
++    uint32_t QuestTargets(const void** models, uint32_t max);
++    int      BatchState(float* alphaRef);
++}

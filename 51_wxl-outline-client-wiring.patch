@@ -1,0 +1,8 @@
+diff --git a/WoW/Source/Client.cpp b/WoW/Source/Client.cpp
+index af5ecdf..5930d4a 100644
+--- a/WoW/Source/Client.cpp
++++ b/WoW/Source/Client.cpp
+@@ -118 +117,0 @@
+-#include "Engine/Source/WXLOutline/Outline.h"
+@@ -1746 +1744,0 @@ bool InitializeGlobal() {
+-    wxl::outline::Init();

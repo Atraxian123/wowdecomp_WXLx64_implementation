@@ -14,6 +14,7 @@
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLApi/EquipHost.h"
 #include "Engine/Source/WXLApi/ModelAccess.h"
+#include "Engine/Source/WXLApi/OutlineHost.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
 #include <array>
@@ -50,6 +51,22 @@ namespace wxl::api
                 if (std::strcmp(wxl::events::EventName(e), eventName) == 0)
                 {
                     wxl::events::Subscribe(e, handler, user);   // same signature: void (*)(void*, const void*)
+                    return 0;
+                }
+            }
+
+            // Events EventName does not name: the module API names these itself.
+            static const struct { const char* name; wxl::events::Event event; } kNamedHere[] = {
+                { "OnEndScene",     wxl::events::Event::OnEndScene },
+                { "OnM2BatchDraw",  wxl::events::Event::OnM2BatchDraw },
+                { "OnDeviceLost",   wxl::events::Event::OnDeviceLost },
+                { "OnDeviceReset",  wxl::events::Event::OnDeviceReset },
+            };
+            for (const auto& entry : kNamedHere)
+            {
+                if (std::strcmp(entry.name, eventName) == 0)
+                {
+                    wxl::events::Subscribe(entry.event, handler, user);
                     return 0;
                 }
             }
@@ -214,6 +231,10 @@ namespace wxl::api
             &wxl::api::equiphost::SetHandItemModelResolver,
             &wxl::api::equiphost::SetMirroredModelQuery,
             &wxl::api::equiphost::VPathBuildKey,
+            // engine access for the outline module (OutlineHost.cpp)
+            &wxl::api::outlinehost::Units,
+            &wxl::api::outlinehost::QuestTargets,
+            &wxl::api::outlinehost::BatchState,
         };
     }
 
