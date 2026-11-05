@@ -6,8 +6,11 @@
 // PrepareLoad the buffer is a flat MD20 body in the shape the client's own walk expects, and the walk is the
 // stock one.
 
-#include "Engine/Source/Model2/ModernM2/ModernM2.h"
-#include "Engine/Source/Model2/ModernM2/FlightAnim.h"
+#include "Internal.hpp"
+#include "FlightAnim.h"          // Engine/Source/Model2/ModernM2: constants only, shared with the game layer
+
+#include "wxl_module.hpp"
+#include "wxl_listfile_api.h"
 
 #include <atomic>
 #include <cmath>
@@ -15,18 +18,7 @@
 #include <cstring>
 #include <new>
 
-#include "Engine/Source/Base/SIMD.h"
-#include "Engine/Source/Os/OsMemory.h"
-#include "Engine/Source/Storm/H/storm.h"
-#include "Engine/Source/WXL/Log.h"
-#include "Engine/Source/WXL/Services.h"
-
-#ifndef WXL_ALLOW_32BIT_HEADER
-#define WXL_ALLOW_32BIT_HEADER 1   // consumer side: only the table declaration is needed
-#endif
-#include "Engine/Source/WXL/Sdk/wxl_listfile_api.h"
-
-namespace wxl::modernm2
+namespace wxl::m2mod
 {
     namespace
     {
@@ -435,15 +427,12 @@ namespace wxl::modernm2
         const WxlListfileServices* ListfileService()
         {
             static std::atomic<const WxlListfileServices*> s_cached{ nullptr };
-            const WxlListfileServices* s = s_cached.load(std::memory_order_acquire);
-            if (s) return s;
-            size_t size = 0;
-            s = static_cast<const WxlListfileServices*>(wxl::services::Get(WXL_SERVICE_LISTFILE, &size));
-            if (s && size >= sizeof(s->structSize) && s->structSize >= offsetof(WxlListfileServices, resolve) + sizeof(s->resolve))
-                s_cached.store(s, std::memory_order_release);
-            else
-                s = nullptr;
-            return s;
+            const WxlListfileServices* cached = s_cached.load(std::memory_order_acquire);
+            if (cached) return cached;
+            const WxlListfileServices* found = WxlListfileGet(wxl::module::Api());
+            if (!WXL_LISTFILE_HAS(found, resolve) || !found->resolve) return nullptr;
+            s_cached.store(found, std::memory_order_release);
+            return found;
         }
 
         /// Spare bytes seated after the body for arrays the skin finalize rebuilds.
@@ -451,11 +440,11 @@ namespace wxl::modernm2
     }
 
     // ------------------------------------------------------------------------------------ PrepareLoad
-    LoadResult PrepareLoad(CM2Shared* shared)
+    int PrepareLoad(const char* name, const void* file, uint32_t size, const WxlM2Alloc* mem, WxlM2PrepareResult* out)
     {
-        uint8_t* buf = reinterpret_cast<uint8_t*>(shared->m_data);
-        const uint32_t size = shared->m_fileSize;
-        if (!buf || size < 8 || Rd32(buf) != kTagMD21) return LoadResult::NotModern;
+        const uint8_t* buf = static_cast<const uint8_t*>(file);
+        if (!name) name = "?";
+        if (!buf || size < 8 || Rd32(buf) != kTagMD21) return WXL_M2_NOT_MODERN;
 
         const char* fail = nullptr;
         Scan s;
@@ -481,26 +470,22 @@ namespace wxl::modernm2
 
         if (fail)
         {
-            wxl::LogCat("M2", "'%s' modern load FAILED: %s (v=%u skips=0x%X)", shared->m_fileName, fail, version, s.skipMask);
-            return LoadResult::Failed;
+            wxl::LogCat("M2", "'%s' modern load FAILED: %s (v=%u skips=0x%X)", name, fail, version, s.skipMask);
+            return WXL_M2_FAILED;
         }
 
-        // Seat the flat body in a fresh block with spare room after it. The model's block is only ever freed
-        // through SIMD::FreeA16 on m_data, so swapping it here is invisible to the rest of the client; every
-        // offset in the body is body-relative, so the copy needs no fixing up.
+        // Seat the flat body in a fresh block with spare room after it. The caller frees the block with its own
+        // routine; every offset in the body is body-relative, so the copy needs no fixing up.
         const uint32_t reserveBase = (s.bodySize + 15u) & ~15u;
         const uint32_t total = reserveBase + kModelReserve;
-        uint8_t* seated = static_cast<uint8_t*>(SIMD::AllocA16(total, __FILE__, __LINE__));
+        uint8_t* seated = static_cast<uint8_t*>(mem->alloc(mem->ctx, total));
         if (!seated)
         {
-            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (%u bytes)", shared->m_fileName, total);
-            return LoadResult::Failed;
+            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (%u bytes)", name, total);
+            return WXL_M2_FAILED;
         }
         std::memcpy(seated, buf + s.bodyOff, s.bodySize);
         std::memset(seated + s.bodySize, 0, total - s.bodySize);
-        SIMD::FreeA16(buf);
-        shared->m_data = reinterpret_cast<M2Data*>(seated);
-        shared->m_fileSize = s.bodySize;
 
         auto* h = reinterpret_cast<M2Data*>(seated);
         const uint32_t bodySize = s.bodySize;
@@ -519,22 +504,19 @@ namespace wxl::modernm2
         uint32_t normalized[kNormalizerCount] = {};
         if (!NormalizeRecords(seated, bodySize, h, normalized))
         {
-            wxl::LogCat("M2", "'%s' modern load FAILED: record normalization rejected a record", shared->m_fileName);
-            return LoadResult::Failed;
+            wxl::LogCat("M2", "'%s' modern load FAILED: record normalization rejected a record", name);
+            mem->release(mem->ctx, seated);   // the caller still owns `file`: nothing was swapped
+            return WXL_M2_FAILED;
         }
 
-        State* state = new (std::nothrow) State();
-        if (!state)
-        {
-            wxl::LogCat("M2", "'%s' modern load FAILED: out of memory (state)", shared->m_fileName);
-            return LoadResult::Failed;
-        }
-        state->modern = true;
-        state->txidCount = s.txidCount;
-        std::memcpy(state->txid, s.txid, sizeof(uint32_t) * s.txidCount);
-        state->reserveBase = reserveBase;
-        state->reserveCap = kModelReserve;
-        shared->m_wxl = state;
+        out->status      = WXL_M2_MODERN;
+        out->body        = seated;
+        out->bodySize    = bodySize;
+        out->reserveBase = reserveBase;
+        out->reserveCap  = kModelReserve;
+        out->version     = version;
+        out->txidCount   = s.txidCount;
+        std::memcpy(out->txid, s.txid, sizeof(uint32_t) * s.txidCount);
 
         char norm[96] = {};
         size_t at = 0;
@@ -545,15 +527,16 @@ namespace wxl::modernm2
             if (wrote <= 0) break;
             at += static_cast<size_t>(wrote);
         }
-        wxl::LogCat("M2", "'%s' read natively (v=%u txid=%u skips=0x%X extseq=%u normalized:%s)", shared->m_fileName,
+        wxl::LogCat("M2", "'%s' read natively (v=%u txid=%u skips=0x%X extseq=%u normalized:%s)", name,
                     version, s.txidCount, s.skipMask, external, norm[0] ? norm : " none");
-        return LoadResult::Modern;
+        return WXL_M2_MODERN;
     }
 
     // -------------------------------------------------------------------------------------- FinishWalk
-    void FinishWalk(CM2Shared* shared)
+    void FinishWalk(void* model)
     {
-        M2Data* h = shared->m_data;
+        M2Data* h = static_cast<M2Data*>(model);
+        if (!h) return;
 
         // Ribbons: the source exporter can emit texture / material indices past what the model declares.
         for (uint32_t i = 0; i < h->m_ribbons.m_count; ++i)
@@ -581,58 +564,37 @@ namespace wxl::modernm2
     }
 
     // ------------------------------------------------------------------------------------ TextureName
-    bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap)
+    int TextureName(uint32_t fileId, char* out, size_t cap)
     {
-        State* state = shared->m_wxl;
-        if (!state || !state->modern) return false;
-        if (texture.m_type != 0) return false;                  // dynamic slots stay empty
-        if (index >= state->txidCount || !state->txid[index]) return false;
-
-        const uint32_t fileId = state->txid[index];
         const WxlListfileServices* listfile = ListfileService();
         if (!listfile)
         {
             if (wxl::LogThrottle("m2-txid-nolistfile", 1, 100000))
                 wxl::LogCat("M2", "TXID %u: the listfile service (%s) is not available, solid white fallback", fileId, WXL_SERVICE_LISTFILE);
-            ++state->texUnresolved;
-            return false;
+            return WXL_M2_TEXNAME_NONE;
         }
 
         // resolve() returns the file's own path, or, when the listfile does not know the id or the client
         // cannot open the file, the not-found name for a texture; opening that name makes the client fall
         // back to its own missing-texture handling, which is the listfile module's contract.
-        const int result = listfile->resolve(fileId, WXL_LISTFILE_TEXTURE, out, cap);
-        if (result == WXL_LISTFILE_ERROR) { ++state->texUnresolved; return false; }
-        if (result == WXL_LISTFILE_FOUND) ++state->texResolved; else ++state->texUnresolved;
-        return true;
+        switch (listfile->resolve(fileId, WXL_LISTFILE_TEXTURE, out, cap))
+        {
+        case WXL_LISTFILE_FOUND:    return WXL_M2_TEXNAME_FOUND;
+        case WXL_LISTFILE_NOTFOUND: return WXL_M2_TEXNAME_NOTFOUND;
+        default:                    return WXL_M2_TEXNAME_NONE;
+        }
     }
 
     // -------------------------------------------------------------------------------------- UnwrapAnim
-    bool UnwrapAnim(uint8_t* buffer, uint32_t& size)
+    int UnwrapAnim(void* bufferVoid, uint32_t* size)
     {
         constexpr uint32_t kChunkHeaderBytes = 8;
-        if (!buffer || size < kChunkHeaderBytes || Rd32(buffer) != kTagAFM2) return false;
+        uint8_t* buffer = static_cast<uint8_t*>(bufferVoid);
+        if (!buffer || !size || *size < kChunkHeaderBytes || Rd32(buffer) != kTagAFM2) return 0;
         const uint32_t payload = Rd32(buffer + 4);
-        if (static_cast<uint64_t>(kChunkHeaderBytes) + payload > size) return false;
+        if (static_cast<uint64_t>(kChunkHeaderBytes) + payload > *size) return 0;
         std::memmove(buffer, buffer + kChunkHeaderBytes, payload);
-        size = payload;
-        return true;
-    }
-
-    // ----------------------------------------------------------------------------------------- Destroy
-    void Destroy(CM2Shared* shared)
-    {
-        State* state = shared->m_wxl;
-        if (!state) return;
-        shared->m_wxl = nullptr;
-        for (void* block : state->farBlocks)
-        {
-#if defined(WOWDECOMP_ARCH_64)
-            OsFreeNear(block);
-#else
-            SMemFree(block, __FILE__, __LINE__, 0);
-#endif
-        }
-        delete state;
+        *size = payload;
+        return 1;
     }
 }

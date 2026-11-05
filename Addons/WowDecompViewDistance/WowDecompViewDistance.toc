@@ -1,0 +1,5 @@
+## Interface: 30300
+## Title: View Distance & Fog
+## Notes: Sliders for the view distance, horizon (low detail terrain) distance and distance fog. Needs the wowdecomp client.
+## Version: 1.0
+WowDecompViewDistance.lua

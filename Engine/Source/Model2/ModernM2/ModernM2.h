@@ -1,18 +1,21 @@
-// Modern (MD21 container, inner version 272-274) M2 reader, compiled into the client.
-// Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
+// Modern (MD21 container, inner version 272-274) M2 reading: the client's side of it.
+// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
-// The extension reached the client from outside: detours on the stock loader, raw offsets turned into raw
-// pointers. Here the same work sits at the decompiled load steps themselves and speaks the client's own
-// record layout, in which every M2Array is a count plus a 32-bit offset RELATIVE TO THE ARRAY (so the
-// stock M2Init walk is reused unchanged once the body has been reshaped).
+// The reader itself is a module, wxl_modernm2.dll (Engine/Source/WXLModules/ModernM2), loaded from WXL\Modules by the
+// 64-bit client. What stays here is the thin side the decompiled loader calls (ModernM2.cpp): it owns the per-model
+// State, hands the module the memory it needs (the client's own allocators, so every block is still freed by the
+// routine that allocated it) and forwards each load step through the service "wxl.modernm2.v1"
+// (Engine/Source/WXL/Sdk/wxl_modernm2_api.h). The client's record layout is spoken by the module through its own
+// copy of M2Data.h; a client without the module (or a 32-bit build) reads stock models only and refuses an MD21 file
+// like an absent one.
 //
 // Load path (CM2Shared::FinishLoading):
 //   PrepareLoad   MD21 container -> flat MD20 body in a freshly seated, slightly oversized block; in-place
 //                 field deltas; particle / camera records brought to the client's record shape.
-//   M2Init        the stock walk, which now accepts the modern version window.
+//   M2Init        the stock walk, which accepts the modern version window (IsAcceptedVersion).
 //   FinishWalk    reference clamps on the walked header.
 // Texture creation (CM2Shared::Initialize) asks TextureName for every hardcoded texture the file leaves
-// unnamed: the TXID chunk's file id goes to the listfile module's service (wxl.listfile.v1).
+// unnamed: the TXID chunk's file id goes to the listfile module's service (wxl.listfile.v1) through the module.
 // Skin load (CM2Shared::FinishLoadingSkinProfile) calls FinalizeSkin before the batch blocks are sized.
 // External animation files go through UnwrapAnim.
 #pragma once
@@ -25,18 +28,21 @@
 
 namespace wxl::modernm2
 {
-    constexpr uint32_t kVersionMin = 272; // inner M2 version window the reader accepts
+    // Inner M2 version window the reader accepts. The loader's hot path (M2Init) asks it for every sequence load, so
+    // it is kept here; the module publishes its own copy and the client compares the two when it finds the service.
+    constexpr uint32_t kVersionMin = 272;
     constexpr uint32_t kVersionMax = 274;
 
     inline bool IsAcceptedVersion(uint32_t version) { return version >= kVersionMin && version <= kVersionMax; }
 
-    constexpr uint32_t kMaxTxid = 128; // hard cap on the TXID entries kept per model
+    constexpr uint32_t kMaxTxid = 128; // hard cap on the TXID entries kept per model (WXL_M2_MAX_TXID)
 
     /// The client's vertex shader holds the bone palette from register 31, 3 registers per matrix:
     /// (256 - 31) / 3 = 75 bones per draw.
     constexpr uint32_t kMaxBonesPerDraw = 75;
 
-    /// Per-model state, owned by CM2Shared::m_wxl. Created only for models that need it.
+    /// Per-model state, owned by CM2Shared::m_wxl (created and released by ModernM2.cpp). Created only for models
+    /// that need it. The module keeps none of it: the numbers it needs come back through its result structs.
     struct State
     {
         bool     modern = false;          // read through the MD21 path
@@ -73,12 +79,15 @@ namespace wxl::modernm2
     bool TextureName(CM2Shared* shared, uint32_t index, const M2Texture& texture, char* out, size_t cap);
 
     /// Skin finalize: bone-budget split, contract rebuild for modern models, boneInfluences / shadow gate
-    /// fixes. `skinBytes` is the byte size of the skin block as read. Runs before the batch blocks are sized.
+    /// fixes (the shadow gate is applied here, on the runtime object; the rest is the module's). `skinBytes` is the byte size of the skin block as read. Runs before the batch blocks are sized.
     void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes);
 
     /// A modern external animation file wraps the flat track blob in one chunk; slides the payload onto the
     /// buffer base. Returns true when it unwrapped (size is shortened to the payload).
     bool UnwrapAnim(uint8_t* buffer, uint32_t& size);
+
+    /// True when the modern M2 module is loaded (its service was found).
+    bool ModuleLoaded();
 
     /// Releases everything the model's state owns.
     void Destroy(CM2Shared* shared);

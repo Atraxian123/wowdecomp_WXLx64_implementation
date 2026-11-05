@@ -1,26 +1,24 @@
 // Modern M2 reader, skin half: bone-budget split, material / texture-unit contract rebuild, wide index starts.
 // Ported from the wxl-modern-m2 extension (Copyright (C) 2026 WarcraftXL, GPLv3, see Engine/Source/WXL/Event.h).
 //
-// Runs from CM2Shared::FinishLoadingSkinProfile, after the skin's own arrays were walked and before
-// InitializeSkinProfile sizes its parallel batch blocks from the skin.
+// The client calls it from CM2Shared::FinishLoadingSkinProfile (through wxl_modernm2_api.h), after the skin's own
+// arrays were walked and before InitializeSkinProfile sizes its parallel batch blocks from the skin.
 //
 // Where the arrays go. An M2Array reaches its data by a signed 32-bit offset from ITSELF, so a rebuilt array
 // has to live near its owner. Skin arrays are rebuilt by re-seating the skin block (old contents, then the new
 // arrays) and model-header arrays are placed in the spare room the load seated after the model body, falling
 // back to an allocation near the model. No pointer is ever stored where an offset belongs.
 
-#include "Engine/Source/Model2/ModernM2/ModernM2.h"
+#include "Internal.hpp"
+
+#include "wxl_module.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
-#include "Engine/Source/Base/SIMD.h"
-#include "Engine/Source/Os/OsMemory.h"
-#include "Engine/Source/Storm/H/storm.h"
-#include "Engine/Source/WXL/Log.h"
-
-namespace wxl::modernm2
+namespace wxl::m2mod
 {
     namespace
     {
@@ -640,28 +638,28 @@ namespace wxl::modernm2
         }
 
         // -------------------------------------------------------------------------------------- commit
-        void* PlaceInModelBlock(CM2Shared* shared, State& state, size_t bytes)
+        /// The blocks one finalize works on, and the caller's allocators. Replaces the engine's CM2Shared + State.
+        struct Target
+        {
+            const WxlM2Alloc* mem;
+            M2Data*           md;
+            M2SkinProfile*    sk;           // updated when the skin block is re-seated
+            uint32_t          reserveBase;
+            uint32_t          reserveCap;
+            uint32_t          reserveUsed;
+        };
+
+        void* PlaceInModelBlock(Target& t, size_t bytes)
         {
             bytes = (bytes + 15) & ~static_cast<size_t>(15);
-            if (state.reserveUsed + bytes <= state.reserveCap)
+            if (t.reserveUsed + bytes <= t.reserveCap)
             {
-                uint8_t* p = reinterpret_cast<uint8_t*>(shared->m_data) + state.reserveBase + state.reserveUsed;
-                state.reserveUsed += static_cast<uint32_t>(bytes);
+                uint8_t* p = reinterpret_cast<uint8_t*>(t.md) + t.reserveBase + t.reserveUsed;
+                t.reserveUsed += static_cast<uint32_t>(bytes);
                 return p;
             }
-#if defined(WOWDECOMP_ARCH_64)
-            void* p = OsAllocNear(shared->m_data, bytes);
-#else
-            void* p = SMemAlloc(static_cast<uint32_t>(bytes), __FILE__, __LINE__, 0);
-#endif
-            if (p) state.farBlocks.push_back(p);
-            return p;
-        }
-
-        State& EnsureState(CM2Shared* shared)
-        {
-            if (!shared->m_wxl) shared->m_wxl = new State();
-            return *shared->m_wxl;
+            // Out of spare room: a block near the model, which the caller releases with the model.
+            return t.mem->allocNear ? t.mem->allocNear(t.mem->ctx, t.md, bytes) : nullptr;
         }
 
         template <class T>
@@ -675,19 +673,18 @@ namespace wxl::modernm2
         /// Writes the working copy back: model arrays into the model block (or near it), skin arrays into a
         /// re-seated skin block when their size changed. Memory is gathered first and nothing is modified
         /// until every allocation succeeded.
-        bool Commit(CM2Shared* shared, uint32_t skinBytes, Work& w, const char* name)
+        bool Commit(Target& t, uint32_t skinBytes, Work& w, const char* name)
         {
-            M2Data* md = shared->m_data;
-            M2SkinProfile* sk = shared->m_skinData;
-            State& state = EnsureState(shared);
+            M2Data* md = t.md;
+            M2SkinProfile* sk = t.sk;
 
             // --- model-level arrays
             uint16_t* pBoneCombos = nullptr; uint16_t* pTexCoord = nullptr;
             uint16_t* pCombiner = nullptr;   uint16_t* pTransform = nullptr;
-            if (w.boneCombosChanged && !(pBoneCombos = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.boneCombos.size() * 2)))) return false;
-            if (w.texCoordChanged && !(pTexCoord = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.texCoord.size() * 2)))) return false;
-            if (w.combinerChanged && !(pCombiner = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.combiner.size() * 2)))) return false;
-            if (w.transformChanged && !(pTransform = static_cast<uint16_t*>(PlaceInModelBlock(shared, state, w.transformCombos.size() * 2)))) return false;
+            if (w.boneCombosChanged && !(pBoneCombos = static_cast<uint16_t*>(PlaceInModelBlock(t, w.boneCombos.size() * 2)))) return false;
+            if (w.texCoordChanged && !(pTexCoord = static_cast<uint16_t*>(PlaceInModelBlock(t, w.texCoord.size() * 2)))) return false;
+            if (w.combinerChanged && !(pCombiner = static_cast<uint16_t*>(PlaceInModelBlock(t, w.combiner.size() * 2)))) return false;
+            if (w.transformChanged && !(pTransform = static_cast<uint16_t*>(PlaceInModelBlock(t, w.transformCombos.size() * 2)))) return false;
 
             // --- skin block
             const bool reseat = w.geometryChanged || w.batches.size() != sk->m_batches.m_count;
@@ -705,7 +702,8 @@ namespace wxl::modernm2
                 }
                 offSections = take(w.sections.size() * sizeof(M2SkinSection));
                 offBatches = take(w.batches.size() * sizeof(M2Batch));
-                newBlock = static_cast<uint8_t*>(SIMD::AllocA16(static_cast<uint32_t>(at), __FILE__, __LINE__));
+                if (at > 0xFFFFFFFFu) return false;
+                newBlock = static_cast<uint8_t*>(t.mem->alloc(t.mem->ctx, static_cast<uint32_t>(at)));
                 if (!newBlock) return false;
             }
 
@@ -751,8 +749,8 @@ namespace wxl::modernm2
                 std::memcpy(newBlock + offBatches, w.batches.data(), w.batches.size() * sizeof(M2Batch));
                 ok &= SetArray(nsk->m_skinSections, reinterpret_cast<M2SkinSection*>(newBlock + offSections), static_cast<uint32_t>(w.sections.size()));
                 ok &= SetArray(nsk->m_batches, reinterpret_cast<M2Batch*>(newBlock + offBatches), static_cast<uint32_t>(w.batches.size()));
-                shared->m_skinData = nsk;
-                SIMD::FreeA16(sk);
+                t.sk = nsk;
+                t.mem->release(t.mem->ctx, sk);
             }
             else
             {
@@ -777,27 +775,32 @@ namespace wxl::modernm2
                     sections[i].m_boneInfluences = 1;
         }
 
-        /// The shadow-pass animate step reads the shared's bone-flag tally (m_billboardBoneCount): at zero it
-        /// takes a fast path that never rebuilds the bone palette, so the palette keeps an older frame's view
-        /// matrix while the shadow renderer uploads the current one and the shadow drifts with the camera.
-        /// Stock content always has the count > 0; a model from a toolchain that ships empty bone flags
-        /// would not. Runtime object only, never the model data.
-        void ForceShadowAnimGate(CM2Shared* shared)
+        /// What the caller copies after the call returns: the full index starts of the sections. One per thread,
+        /// so concurrent model loads on the client's async threads never share it.
+        std::vector<uint32_t>& StartsOut()
         {
-            if (shared->m_billboardBoneCount == 0) shared->m_billboardBoneCount = 1;
+            thread_local std::vector<uint32_t> starts;
+            return starts;
         }
     }
 
     // ----------------------------------------------------------------------------------------- FinalizeSkin
-    void FinalizeSkin(CM2Shared* shared, uint32_t skinBytes)
+    // (The shadow-pass gate on the shared's bone-flag tally, m_billboardBoneCount, is a runtime object of the
+    // client, not model data: the client sets it after this returns. See ModernM2.cpp.)
+    int FinalizeSkin(const WxlM2Alloc* mem, WxlM2SkinJob* job)
     {
-        M2Data* md = shared->m_data;
-        M2SkinProfile* sk = shared->m_skinData;
-        if (!md || !sk) return;
+        job->newSkin = job->skin;
+        job->committed = 1;
+        job->extendedIndexStart = 0;
+        job->startCount = 0;
+        job->indexStart = nullptr;
 
-        const char* name = shared->m_fileName;
-        const State* existing = shared->m_wxl;
-        const bool modern = existing && existing->modern;
+        M2Data* md = static_cast<M2Data*>(job->model);
+        M2SkinProfile* sk = static_cast<M2SkinProfile*>(job->skin);
+        if (!md || !sk || !mem || !mem->alloc || !mem->release) return 1;
+
+        const char* name = job->name ? job->name : "?";
+        const bool modern = job->modern != 0;
         const bool extended = UsesExtendedIndexStart(name);
 
         bool anyLevel = false;
@@ -810,13 +813,14 @@ namespace wxl::modernm2
 
         const bool split = NeedsSplit(sk, extended);
 
-        // Stock content with nothing to rebuild: only the two unconditional fixes.
+        // Stock content with nothing to rebuild: only the unconditional boneInfluences fix.
         if (!modern && !split && !anyLevel)
         {
             NormalizeBoneInfluences(sk);
-            ForceShadowAnimGate(shared);
-            return;
+            return 0;
         }
+
+        Target target{ mem, md, sk, job->reserveBase, job->reserveCap, job->reserveUsed };
 
         Work w;
         {
@@ -857,29 +861,32 @@ namespace wxl::modernm2
         }
 
         // Extended encoding: the high half of an index start rides in the section's level. Take it out of
-        // the section id (the rest of the client reads that as a plain id) and keep the full starts here.
-        std::vector<uint32_t> sourceStart;
+        // the section id (the rest of the client reads that as a plain id) and keep the full starts for the caller.
+        std::vector<uint32_t>& starts = StartsOut();
+        starts.clear();
         if (extended && anyLevel)
         {
-            sourceStart.resize(w.sections.size());
+            starts.resize(w.sections.size());
             for (size_t i = 0; i < w.sections.size(); ++i)
             {
-                sourceStart[i] = FullIndexStart(w.sections[i], true);
+                starts[i] = FullIndexStart(w.sections[i], true);
                 SetLevel(w.sections[i], 0);
             }
         }
 
-        if (!Commit(shared, skinBytes, w, name))
+        const bool committed = Commit(target, job->skinBytes, w, name);
+        if (!committed)
             wxl::LogCat("M2", "'%s' skin finalize could not commit", name);
 
-        if (!sourceStart.empty())
+        job->newSkin = target.sk;
+        job->reserveUsed = target.reserveUsed;
+        job->committed = committed ? 1 : 0;
+        if (!starts.empty())
         {
-            State& state = EnsureState(shared);
-            state.extendedIndexStart = true;
-            state.sectionStart = sourceStart;
-            state.sourceStart = std::move(sourceStart);
+            job->extendedIndexStart = 1;
+            job->startCount = static_cast<uint32_t>(starts.size());
+            job->indexStart = starts.data();
         }
-
-        ForceShadowAnimGate(shared);
+        return 0;
     }
 }
