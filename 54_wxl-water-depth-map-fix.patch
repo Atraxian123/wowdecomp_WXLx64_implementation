@@ -1,0 +1,180 @@
+diff --git a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
+index 1ccd7cb..35f6f67 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
++++ b/Engine/Source/Gx/CGxDeviceD3d/CGxDeviceD3d.cpp
+@@ -1,5 +1,6 @@
+ #include "Engine/Source/WXL/DrawContext.h"
+ #include "Engine/Source/WXL/Hooks.h"
++#include "Engine/Source/WXL/WaterHooks.h"
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
+@@ -3639,7 +3640,7 @@ void CGxDeviceD3d::DeviceRestoreDepthSurface() {
+         return;
+     }
+ 
+-    this->m_d3dDevice->SetDepthStencilSurface(s_savedDepthSurface);
++    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(s_savedDepthSurface)); // WXL: the modern water substitutes its sampleable depth
+ }
+ 
+ // VERIFY: c0ba5e6c manual
+@@ -3751,7 +3752,7 @@ void CGxDeviceD3d::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, uint
+     }
+ 
+     this->m_d3dDevice->SetRenderTarget(0, colorSurface);
+-    this->m_d3dDevice->SetDepthStencilSurface(depthSurface);
++    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(depthSurface)); // WXL: the modern water substitutes its sampleable depth
+ 
+     GxXformSetViewport(this->m_viewport.m_x.m_l, this->m_viewport.m_x.m_h, this->m_viewport.m_y.m_l, this->m_viewport.m_y.m_h, this->m_viewport.m_z.m_l, this->m_viewport.m_z.m_h);
+ 
+diff --git a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
+index 1ccf79c..8b3729e 100644
+--- a/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
++++ b/Engine/Source/Gx/CGxDeviceD3d9Ex/CGxDeviceD3d9Ex.cpp
+@@ -1,5 +1,6 @@
+ #include "Engine/Source/WXL/DrawContext.h"
+ #include "Engine/Source/WXL/Hooks.h"
++#include "Engine/Source/WXL/WaterHooks.h"
+ #include <cmath>
+ #include <cstdint>
+ #include <cstring>
+@@ -3440,7 +3441,7 @@ void CGxDeviceD3d9Ex::DeviceRestoreDepthSurface() {
+         return;
+     }
+ 
+-    this->m_d3dDevice->SetDepthStencilSurface(s_savedDepthSurface);
++    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(s_savedDepthSurface)); // WXL: the modern water substitutes its sampleable depth
+ }
+ 
+ // VERIFY: 84dfbd5f manual
+@@ -3552,7 +3553,7 @@ void CGxDeviceD3d9Ex::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, u
+     }
+ 
+     this->m_d3dDevice->SetRenderTarget(0, colorSurface);
+-    this->m_d3dDevice->SetDepthStencilSurface(depthSurface);
++    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(depthSurface)); // WXL: the modern water substitutes its sampleable depth
+ 
+     GxXformSetViewport(this->m_viewport.m_x.m_l, this->m_viewport.m_x.m_h, this->m_viewport.m_y.m_l, this->m_viewport.m_y.m_h, this->m_viewport.m_z.m_l, this->m_viewport.m_z.m_h);
+ 
+diff --git a/Engine/Source/WXL/Sdk/wxl_water_api.h b/Engine/Source/WXL/Sdk/wxl_water_api.h
+index 1badf9e..a47a773 100644
+--- a/Engine/Source/WXL/Sdk/wxl_water_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_water_api.h
+@@ -82,6 +82,7 @@ typedef struct WxlWaterCallbacks
+     int  (*tagDraw)(const void* liquidSettings);          /* a water material is about to draw; 1 = tagged */
+     void (*untagDraw)(void);                              /* and it has drawn */
+     void (*frameEnd)(void);                               /* the world render is over */
++    void* (*mapDepth)(void* depthSurface);                /* the client binds this IDirect3DSurface9 as its depth: return the one to bind instead (the same pointer to leave it) */
+ } WxlWaterCallbacks;
+ 
+ typedef struct WxlWaterService
+diff --git a/Engine/Source/WXL/WaterHooks.h b/Engine/Source/WXL/WaterHooks.h
+index b1cfc95..1f4b5ce 100644
+--- a/Engine/Source/WXL/WaterHooks.h
++++ b/Engine/Source/WXL/WaterHooks.h
+@@ -19,6 +19,7 @@ namespace wxl::waterhooks
+         int  (*tagDraw)(const void* settings)   = nullptr; // a water material is about to draw; non-zero = tagged
+         void (*untagDraw)()                     = nullptr; // and it has drawn
+         void (*frameEnd)()                      = nullptr; // the world render is over
++        void* (*mapDepth)(void* depthSurface)   = nullptr; // the client is about to bind this depth surface; returns the one to bind
+     };
+ 
+     inline Callbacks& Table()
+@@ -32,6 +33,15 @@ namespace wxl::waterhooks
+     inline void PassEnd()                         { if (auto f = Table().passEnd) f(); }
+     inline void FrameEnd()                        { if (auto f = Table().frameEnd) f(); }
+ 
++    /// The depth surface the client should bind in place of `depthSurface` (the same pointer unless the water module
++    /// substitutes its sampleable depth). Called at the client's own depth binds, so it does not depend on patching the
++    /// D3D9 device.
++    template <typename T> inline T* MapDepth(T* depthSurface)
++    {
++        auto f = Table().mapDepth;
++        return f ? static_cast<T*>(f(depthSurface)) : depthSurface;
++    }
++
+     /// Brackets one water material draw: tags it on entry, untags it on every way out of the function.
+     class ScopedDrawTag
+     {
+diff --git a/Engine/Source/WXLApi/WaterHost.cpp b/Engine/Source/WXLApi/WaterHost.cpp
+index 0e4db83..cbdbc77 100644
+--- a/Engine/Source/WXLApi/WaterHost.cpp
++++ b/Engine/Source/WXLApi/WaterHost.cpp
+@@ -26,6 +26,7 @@
+ #include "WoW/Source/WorldClient/World.h"
+ #include "WoW/Source/WorldClient/WorldScene.h"
+ 
++#include <cstddef>
+ #include <cstring>
+ 
+ static_assert(sizeof(C44Matrix) == 16 * sizeof(float), "the matrix reads below copy 16 floats");
+@@ -243,6 +244,9 @@ void SetCallbacks(const WxlWaterCallbacks* callbacks)
+     table.tagDraw = callbacks->tagDraw;
+     table.untagDraw = callbacks->untagDraw;
+     table.frameEnd = callbacks->frameEnd;
++    // members added after the first version exist only when the caller's struct is big enough to hold them
++    if (callbacks->structSize >= offsetof(WxlWaterCallbacks, mapDepth) + sizeof(callbacks->mapDepth))
++        table.mapDepth = callbacks->mapDepth;
+ }
+ 
+ const WxlWaterService kService = {
+diff --git a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+index ea57af9..98a388e 100644
+--- a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
++++ b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+@@ -1454,6 +1454,15 @@ void ReleaseAdoptedDevice()
+     device->Release(); // the destructor releases the INTZ depth, the water resources and the real device reference
+ }
+ 
++void* MapEngineDepth(void* engineDepth)
++{
++    auto* surface = static_cast<IDirect3DSurface9*>(engineDepth);
++    FogDevice* device = g_adoptedDevice;
++    if (device && device->SwapsEngineDepth(surface))
++        return device->AdoptedDepthSurface();
++    return engineDepth;
++}
++
+ void SetRealDirect3DCreate9(Direct3DCreate9Fn fn)
+ {
+     g_realCreate = fn;
+diff --git a/Engine/Source/WXLModules/Water/d3d9_wrap.h b/Engine/Source/WXLModules/Water/d3d9_wrap.h
+index a61772b..51f0aef 100644
+--- a/Engine/Source/WXLModules/Water/d3d9_wrap.h
++++ b/Engine/Source/WXLModules/Water/d3d9_wrap.h
+@@ -28,6 +28,11 @@ bool AdoptExistingDevice();
+ // Undoes AdoptExistingDevice before the client resets its device.
+ void ReleaseAdoptedDevice();
+ 
++// The depth surface the client should bind instead of `engineDepth` (an IDirect3DSurface9*): the sampleable INTZ depth
++// of the adopted device when `engineDepth` is the client's own scene depth, else `engineDepth` itself. Called from the
++// client's own depth binds, so it works whether or not the device's vtable hook is reached.
++void* MapEngineDepth(void* engineDepth);
++
+ void AllowFogOnNewDevices(bool allowedOnNewDevices);
+ 
+ class FogDevice;
+diff --git a/Engine/Source/WXLModules/Water/water_driver.cpp b/Engine/Source/WXLModules/Water/water_driver.cpp
+index 93938ae..e9e30e0 100644
+--- a/Engine/Source/WXLModules/Water/water_driver.cpp
++++ b/Engine/Source/WXLModules/Water/water_driver.cpp
+@@ -370,6 +370,11 @@ void EndFrameUnsafe()
+     ReleaseWaterWhenOff();
+ }
+ 
++void* OnMapDepth(void* depthSurface)
++{
++    return MapEngineDepth(depthSurface);
++}
++
+ void OnFrameEnd()
+ {
+     if (!Guarded("water frame end", [] { EndFrameUnsafe(); }))
+@@ -440,6 +445,7 @@ bool Start(const WxlApi* api)
+     callbacks.tagDraw = &OnTagDraw;
+     callbacks.untagDraw = &OnUntagDraw;
+     callbacks.frameEnd = &OnFrameEnd;
++    callbacks.mapDepth = &OnMapDepth;
+     host->setCallbacks(&callbacks);
+ 
+     g_installed = true;

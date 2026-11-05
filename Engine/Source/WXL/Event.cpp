@@ -88,6 +88,8 @@ namespace wxl::events
             case Event::OnItemSlotChange:    return "OnItemSlotChange";
             case Event::OnItemSlotClear:     return "OnItemSlotClear";
             case Event::OnHandItemAttached:  return "OnHandItemAttached";
+            case Event::OnDeviceLost:        return "OnDeviceLost";
+            case Event::OnDeviceReset:       return "OnDeviceReset";
             default:                         return "Event#?";
         }
     }

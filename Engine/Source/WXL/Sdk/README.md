@@ -75,6 +75,12 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
 | Client files | `fileExists` (can the client open this name? opens and closes, reads nothing) |
 | Misc | `workingDirectory` |
 
+The water module (`Engine/Source/WXLModules/Water`) is the module that draws the world's liquids: it renders through the
+client's `IDirect3DDevice9` (the one non-C thing it receives, as an opaque COM pointer). The client's state reaches it
+through the `"wxl.water.v1"` service the core registers before any module loads (`wxl_water_api.h`: camera, matrices,
+day/night light and water colours, liquid types, units standing in liquid, and `setCallbacks` for the five moments of
+the world frame it acts at). It starts only with `[Water] Enabled=1`.
+
 The listfile (`Engine/Source/WXLModules/Listfile`) is the fourth module: a file id -> path service (`"wxl.listfile.v1"`, `wxl_listfile_api.h`) other modules call.
 
 ### Moving code that was written inside the client

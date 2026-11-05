@@ -1,0 +1,69 @@
+diff --git a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+index 608790f..ea57af9 100644
+--- a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
++++ b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+@@ -153,12 +153,41 @@ public:
+             m_engineDepthSurface->Release();
+         m_engineDepthSurface = depth;
+     }
+-    bool SwapsEngineDepth(IDirect3DSurface9* surface) const
++    // True when the surface the client is binding as its depth must be replaced by the INTZ one. That is the
++    // depth the client had when the device was adopted, and also any other single-sampled depth of the same size
++    // and format: the client renders the world into an offscreen scene target with a depth surface of its own, and
++    // that one is what the water has to see. Each such surface is kept (referenced) so its pointer stays valid.
++    bool SwapsEngineDepth(IDirect3DSurface9* surface)
+     {
+-        return surface && surface == m_engineDepthSurface && m_depthSurface != nullptr;
++        if (!surface || !m_depthSurface || surface == m_depthSurface)
++            return false;
++        if (surface == m_engineDepthSurface)
++            return true;
++        for (int i = 0; i < m_swappedDepthCount; ++i)
++            if (m_swappedDepths[i] == surface)
++                return true;
++        if (m_swappedDepthCount >= kMaxSwappedDepths)
++            return false;
++        D3DSURFACE_DESC desc = {};
++        D3DSURFACE_DESC intz = {};
++        if (FAILED(surface->GetDesc(&desc)) || FAILED(m_depthSurface->GetDesc(&intz)))
++            return false;
++        const D3DFORMAT format = m_depthFormat != D3DFMT_UNKNOWN ? m_depthFormat : D3DFMT_D24S8;
++        if (!(desc.Usage & D3DUSAGE_DEPTHSTENCIL) || desc.MultiSampleType != D3DMULTISAMPLE_NONE ||
++            desc.Format != format || desc.Width != intz.Width || desc.Height != intz.Height)
++            return false;
++        surface->AddRef();
++        m_swappedDepths[m_swappedDepthCount++] = surface;
++        VF_LOG_INFO("device adoption: the client's depth %p (%ux%u fmt %d) is swapped for the INTZ depth",
++                    static_cast<void*>(surface), desc.Width, desc.Height, static_cast<int>(desc.Format));
++        return true;
+     }
+     IDirect3DSurface9* AdoptedDepthSurface() const { return m_depthSurface; }
+-    IDirect3DSurface9* EngineDepthSurface() const { return m_engineDepthSurface; }
++    // The client's own depth to hand back to the device before a Reset: the last swapped one, else the captured one.
++    IDirect3DSurface9* EngineDepthSurface() const
++    {
++        return m_swappedDepthCount > 0 ? m_swappedDepths[m_swappedDepthCount - 1] : m_engineDepthSurface;
++    }
+     bool BeginWater(const FrameInputs& in, const WaterInputs& water, const Config& cfg, const char** skip);
+     void TagWater(WaterClass waterClass) { m_water.Tag(m_real, waterClass); }
+     void UntagWater() { m_water.Untag(m_real); }
+@@ -595,6 +624,9 @@ private:
+     IDirect3DSurface9* m_depthSurface = nullptr;
+     IDirect3DSurface9* m_clientDepth = nullptr;
+     IDirect3DSurface9* m_engineDepthSurface = nullptr;
++    static constexpr int kMaxSwappedDepths = 8;
++    IDirect3DSurface9* m_swappedDepths[kMaxSwappedDepths] = {};
++    int m_swappedDepthCount = 0;
+     DepthCopy m_depthCopy;
+     MultisamplingStatus m_multisampling;
+     Renderer m_renderer;
+@@ -980,6 +1012,9 @@ void FogDevice::ReleaseDepth()
+     ReleaseReference(m_clientDepth);
+     ReleaseReference(m_depthSurface);
+     ReleaseReference(m_engineDepthSurface);
++    for (int i = 0; i < m_swappedDepthCount; ++i)
++        ReleaseReference(m_swappedDepths[i]);
++    m_swappedDepthCount = 0;
+     ReleaseReference(m_depthTexture);
+ }
+ 

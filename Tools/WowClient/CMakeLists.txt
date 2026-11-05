@@ -47,7 +47,7 @@ foreach (wxl_module wxl_equip wxl_outline)
 endforeach ()
 
 # The modules are DLLs the client loads at run time (WXL\Modules next to the exe); building the client builds them.
-foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile)
+foreach (wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
     if (TARGET ${wxl_module})
         add_dependencies(WowClient ${wxl_module})
     endif ()

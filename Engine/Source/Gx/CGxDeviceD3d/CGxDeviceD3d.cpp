@@ -1,5 +1,6 @@
 #include "Engine/Source/WXL/DrawContext.h"
 #include "Engine/Source/WXL/Hooks.h"
+#include "Engine/Source/WXL/WaterHooks.h"
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -2722,6 +2723,7 @@ int32_t CGxDeviceD3d::DeviceWM(EGxWM wm, uintptr_t param1, uintptr_t param2) {
                     this->m_context = 1;
                     this->m_intF5C = 0;
                     this->NotifyOnDeviceRestored();
+                    wxl::events::EmitIfAny(wxl::events::Event::OnDeviceReset, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
                     this->m_viewportDirty = 1;
                     break;
                 }
@@ -3211,6 +3213,7 @@ void CGxDeviceD3d::ISceneBegin() {
                 this->m_intF5C = 0;
                 this->m_d3dStereoDirty = 1;
                 this->NotifyOnDeviceRestored();
+                wxl::events::EmitIfAny(wxl::events::Event::OnDeviceReset, wxl::events::DeviceResetArgs{ this->m_d3dDevice, nullptr });
             }
         }
 
@@ -3637,7 +3640,7 @@ void CGxDeviceD3d::DeviceRestoreDepthSurface() {
         return;
     }
 
-    this->m_d3dDevice->SetDepthStencilSurface(s_savedDepthSurface);
+    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(s_savedDepthSurface)); // WXL: the modern water substitutes its sampleable depth
 }
 
 // VERIFY: c0ba5e6c manual
@@ -3749,7 +3752,7 @@ void CGxDeviceD3d::DeviceSetRenderTarget(EGxBuffer buffer, CGxTex* texture, uint
     }
 
     this->m_d3dDevice->SetRenderTarget(0, colorSurface);
-    this->m_d3dDevice->SetDepthStencilSurface(depthSurface);
+    this->m_d3dDevice->SetDepthStencilSurface(wxl::waterhooks::MapDepth(depthSurface)); // WXL: the modern water substitutes its sampleable depth
 
     GxXformSetViewport(this->m_viewport.m_x.m_l, this->m_viewport.m_x.m_h, this->m_viewport.m_y.m_l, this->m_viewport.m_y.m_h, this->m_viewport.m_z.m_l, this->m_viewport.m_z.m_h);
 

@@ -1,0 +1,44 @@
+diff --git a/Engine/Source/WXLModules/Water/water_driver.cpp b/Engine/Source/WXLModules/Water/water_driver.cpp
+index e9e30e0..5f0f66b 100644
+--- a/Engine/Source/WXLModules/Water/water_driver.cpp
++++ b/Engine/Source/WXLModules/Water/water_driver.cpp
+@@ -43,6 +43,9 @@ bool g_shadedThisFrame = false;
+ bool g_ripplesAvailable = true;
+ unsigned g_classesThisPass = 0;
+ WaterFrameStatus g_status = {false, "waiting for the world to render"};
++// What the last logged "water drawn" line said, so a line is written when water starts drawing or its classes change.
++unsigned g_lastDrawnKey = ~0u;
++unsigned g_drawnLines = 0;
+ StatusLog g_log;
+ unsigned g_drawnClassesTextMask = 0;
+ char g_drawnClassesText[kDrawnWaterClassesTextSize] = "";
+@@ -134,6 +137,7 @@ void ReloadConfigAfterInterval()
+ 
+ void RecordSkip(const char* reason)
+ {
++    g_lastDrawnKey = ~0u;
+     g_status = {false, reason};
+     const StatusLogLine line = g_log.Skip(reason);
+     if (line.write)
+@@ -142,6 +146,7 @@ void RecordSkip(const char* reason)
+ 
+ void RecordIdle(const char* state)
+ {
++    g_lastDrawnKey = ~0u;
+     g_status = {false, state};
+     const StatusLogLine line = g_log.Idle(state);
+     if (line.write)
+@@ -181,6 +186,13 @@ void RecordDrawn(unsigned classMask, bool flatWaves)
+ {
+     g_status = {true, DrawnClassesText(classMask, flatWaves)};
+     g_log.Drawn();
++    const unsigned key = classMask | (flatWaves ? kFlatWavesBit : 0u);
++    if (key != g_lastDrawnKey && g_drawnLines < 40)
++    {
++        g_lastDrawnKey = key;
++        ++g_drawnLines;
++        LogWrite(LogLevel::Info, "water drawn: %s", g_status.reason);
++    }
+ }
+ 
+ // ---- the water pass ----
