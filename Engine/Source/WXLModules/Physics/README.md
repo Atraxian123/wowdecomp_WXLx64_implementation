@@ -186,6 +186,47 @@ Notes:
 * Log lines: `physics: multipliers: GravityScale=0.5 ...` at start-up and on every re-read; `physics: ini: <key> ...`
   for a bad value. `Stats::modelsTuned` counts the models a multiplier changed.
 
+## Underwater multipliers
+
+A second section, `[Physics.Underwater]`, holds **the same multipliers** (every key above except `WatchIni`). They are
+applied **on top of** the effective values of a model (the `[Physics]` ones, or the `PhysicsOverride.csv` row of its
+display where it has one), and **only while the model belongs to a swimming unit**: a creature or player, an item in
+its hand or on its back, a rider on a mount. Out of the water nothing changes.
+
+```ini
+[Physics.Underwater]
+; Enabled=0 switches the section off without deleting it (default 1). Comments go on their own line.
+Enabled=1
+; the effective multiplier is (global or CSV value) x (this one): 1.0 x -0.2 = -0.2, so the parts drift up
+GravityScale=-0.2
+LinearDampingScale=6
+AngularDampingScale=6
+; seconds the change takes after the unit enters or leaves the water (0 = at once, default 0.4, max 10)
+BlendSeconds=0.4
+```
+
+* **"Swimming" is the client's own swim state**, the one that picks the swim animations (`CGUnit_C::UpdateSwimmingStatus`,
+  the swim bit that is set as soon as the unit is deep enough). It is the same for the local player and for every
+  other unit, and it is not a world query: the unit reports it, and the module reads that.
+* **An item counts as swimming when the unit it hangs on does** (the walk goes up the attach chain: weapon -> character
+  -> mount), so a cloak and a staff change together with their owner.
+* **Smooth, with no jump.** The multipliers move linearly from 1 to the underwater value over `BlendSeconds`, in 8
+  steps. Each step is a tuned copy of the model for that display, built the first time it is needed and kept; a running
+  instance is switched to it with `Instance::Retune`, which keeps its pose, velocities and joint state (only the
+  constants change: gravity, damping, inertia, density and so on). The blend is linear in the multiplier, so a negative
+  gravity is crossed without a jump. A unit that appears already in the water starts with the underwater values.
+* **The underwater values multiply a CSV row's values too**, they do not replace them: a display with `GravityScale=-1`
+  in the CSV and `-0.5` here gets `0.5` underwater.
+* **Ranges are the same as above** (`GravityScale` -100 .. 100, the rest as listed), and the product is clamped to the
+  range too. A key that is missing is 1. If every key is missing (or `Enabled=0`), nothing is done underwater.
+* **Gravity is a multiplier on each body's own file value**, so a body whose `.phy2` gravity is 0 stays at 0 whatever
+  the scale: a negative `GravityScale` lifts only the bodies that have gravity.
+* **Needs the core's `instanceSwimming` call** (`WxlApi`, checked at start-up). With an older core the section is
+  read and logged but not applied, and the log says so.
+* Log lines: `physics: underwater multipliers (on top of the above): ...` at start-up and on every re-read, and
+  `physics: '<model>' enters / leaves the water (blend step n of 8)` for the first 40 transitions.
+* `WatchIni=1` re-reads this section too.
+
 # Different physics for single items: PhysicsOverride.csv
 
 The multipliers above apply to every model. `PhysicsOverride.csv` sets some of them again for **one item display**

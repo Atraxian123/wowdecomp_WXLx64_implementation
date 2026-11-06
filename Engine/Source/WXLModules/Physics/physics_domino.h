@@ -118,6 +118,13 @@ public:
     // with; false for a body that does not write its bone.
     bool Output(size_t body, double out[16]) const;
     const Model* model() const { return m_; }
+    // WXL extension (not in the client): switch a RUNNING instance to the constants of `m`, a model with the
+    // same bodies, shapes and joints as the one it was built from (a tuned copy of it; see PhysicsTuning).
+    // Only numbers change: body gravity / damping / inertia scale / carry, shape friction / restitution /
+    // density (the masses are recomputed), joint limits and springs. Positions, velocities and the contact
+    // and limit state are kept, so the parts do not jump. False, and nothing changed, when `m` does not have
+    // the same layout. `m` must outlive the instance (or the next Retune).
+    bool Retune(const Model* m);
     struct World;
     struct State;
 private:

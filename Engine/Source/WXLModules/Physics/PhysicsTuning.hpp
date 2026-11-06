@@ -39,6 +39,20 @@
 //     ; their pose for a moment). Default 0.
 //     WatchIni=0
 //
+// UNDERWATER. A second section holds the same multipliers (every key above except WatchIni), applied ON TOP of
+// the effective ones (the ones above, or a PhysicsOverride.csv row where the display has one), only while the
+// model belongs to a swimming unit (or hangs on one: an item in its hand):
+//
+//     [Physics.Underwater]
+//     GravityScale=-0.2
+//     LinearDampingScale=6
+//     AngularDampingScale=6
+//     BlendSeconds=0.4          ; how long the change takes after the unit enters or leaves the water
+//
+// The effective gravity underwater is therefore (the global or CSV gravity) x [Physics.Underwater] GravityScale.
+// A key that is missing is 1 (no change); with every key missing, or Enabled=0, nothing is done underwater.
+// Blend() computes the multipliers for a model that is part of the way in.
+//
 // Every multiplier is read as a decimal number, "1.25" or "1,25" (a leading "-" is allowed); a value outside its
 // range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
 // unless listed above (GravityScale: -100 .. 100).
@@ -108,6 +122,13 @@ namespace wxl::equip::physics::tuning
     /// gravity, damping, inertia on dynamic bodies; density on their shapes; friction and restitution on all
     /// shapes; limits and springs on shoulder, revolute and weld joints; carry on kinematic bodies.
     std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& t, int* changed = nullptr);
+
+    /// The multipliers to use while a model is `t` of the way into the water: base x (1 + (under - 1) x t) for
+    /// each one, t clamped to 0 .. 1. t = 0 is `base` as it is, t = 1 is base x under (the underwater
+    /// multipliers stack on the ones of [Physics]). The blend is linear in the multiplier, so a value of 0 or
+    /// a negative gravity is crossed smoothly instead of being jumped to. Each result is brought into its
+    /// key's range.
+    Tuning Blend(const Tuning& base, const Tuning& under, float t);
 
     /// "GravityScale=0.5 SwingLimitScale=1.2 ..." for every multiplier that is not 1 ("none" otherwise).
     std::string Describe(const Tuning& t);

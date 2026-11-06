@@ -442,6 +442,12 @@ typedef struct WxlApi
     /* 1 when the model batch about to be drawn may be stamped into an outline mask (an opaque or alpha-tested batch
      * that writes depth); *alphaRef receives the cutout reference (0..1) the engine is using for it. */
     int (*outlineBatchState)(float* alphaRef);
+
+    /* ---- unit state, added for the physics module: check WXL_API_HAS(api, instanceSwimming) once ---- */
+    /* 1 when `instance`, or a model it is attached to (an item in a hand, a rider on a mount), belongs to a unit
+       that is swimming: the client's own swim state, the one that picks the swim animations. 0 otherwise, also
+       for an instance that is not a unit's. Cheap, thread-safe, never touches the map. */
+    int (*instanceSwimming)(void* instance);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

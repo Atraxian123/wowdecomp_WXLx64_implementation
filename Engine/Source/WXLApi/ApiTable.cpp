@@ -235,6 +235,8 @@ namespace wxl::api
             &wxl::api::outlinehost::Units,
             &wxl::api::outlinehost::QuestTargets,
             &wxl::api::outlinehost::BatchState,
+            // unit state for the physics module (ModelAccess.cpp, UnitState.h)
+            &wxl::api::model::InstanceSwimming,
         };
     }
 

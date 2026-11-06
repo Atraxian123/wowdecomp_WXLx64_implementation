@@ -8,6 +8,10 @@
 //     one is carried by its parent's delta;
 //   * time comes from the scene's clock (ms); a second build in one frame takes 0 s;
 //   * state per instance, forgotten when unseen for 2 s;
+//   * underwater: a unit that swims (WxlApi::instanceSwimming, which also answers for an item in its hand) gets
+//     the [Physics.Underwater] multipliers on top of the [Physics] ones, blended in over BlendSeconds. The
+//     blend is quantised into kUwLevels steps; each step is a tuned copy of the model (built once, cached) and
+//     a running instance is switched to it with Instance::Retune, which keeps its pose and velocities;
 //   * stuck items: see PhysicsGuard.hpp. The model is prepared once (extra anchors carry their followers),
 //     and each frame the simulated bones are compared with the animated ones; an instance that stays far
 //     off, or whose placement teleports, is dropped (it is re-seeded from the animated pose next frame)
@@ -55,6 +59,7 @@ namespace wxl::equip::physics
         using Clock = std::chrono::steady_clock;
 
         constexpr uint32_t kForgetMs = 2000;
+        constexpr int kUwLevels = 8;   // steps of the underwater blend: level 0 = dry, kUwLevels = fully under
 
         uint32_t NowMs()
         {
@@ -84,6 +89,10 @@ namespace wxl::equip::physics
             guard::State  judge;
             Display  display;                     // the item or creature display this instance shows (id 0: none known)
             uint32_t bindGen = 0;                 // g_bindGen when `display` was worked out
+            std::shared_ptr<phys::Model> dry;     // the dry variant `model` was made from (the instance is rebuilt when it changes)
+            float uwBlend = 0;                    // 0 = dry .. 1 = fully underwater, eased towards the target
+            int   uwLevel = 0;                    // the blend step `model` is at (0 = dry, kUwLevels = fully under)
+            bool  uwRetuneFailed = false;         // Retune refused this model once: stop trying
         };
 
         // Instances that had to be re-seeded: too many times in a short while switches them off for a bit.
@@ -100,7 +109,9 @@ namespace wxl::equip::physics
             std::string                  stem;    // the path it was looked up under (a slot can be reused)
             std::shared_ptr<phys::Model> base;    // null: no physics for this model. Carry groups added, no multipliers yet
             // base with the multipliers laid on: key 0 = the global ones, (1 << 32 | id) = the global ones with that
-            // item display's PhysicsOverride.csv row on top, (2 << 32 | id) the same for a creature display
+            // item display's PhysicsOverride.csv row on top, (2 << 32 | id) the same for a creature display.
+            // Bits 48 and up hold the underwater blend step (0 = dry, see kUwLevels): the same multipliers with
+            // [Physics.Underwater] blended in that far.
             std::unordered_map<uint64_t, std::shared_ptr<phys::Model>> variants;
         };
 
@@ -169,6 +180,11 @@ namespace wxl::equip::physics
         // [Physics] ...Scale multipliers (PhysicsTuning.hpp). Written by Init (before any hook can run), by
         // ReloadFiles and by the WatchIni poll, the last two under g_lock; read under g_lock.
         tuning::Tuning g_tuning;
+        // [Physics.Underwater]: the same multipliers, stacked on the effective ones while a unit swims. Same locking.
+        tuning::Tuning g_underwater;
+        bool  g_uwActive = false;        // Enabled=1 and at least one multiplier is not 1
+        float g_uwBlendSec = 0.4f;       // BlendSeconds
+        bool  g_hasSwimApi = false;      // the core offers WxlApi::instanceSwimming
         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
         uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
@@ -273,18 +289,23 @@ namespace wxl::equip::physics
 
         // The multipliers a model gets for one display (item or creature): the global ones, with that display's row of
         // PhysicsOverride.csv on top. Built once per (model, display) and kept. Caller holds g_lock.
-        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, const Display& display, const char* stem)
+        // `level` (0 .. kUwLevels) is how far [Physics.Underwater] is blended in on top of those effective
+        // values: 0 is the dry model, kUwLevels the fully underwater one.
+        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, const Display& display, const char* stem, int level = 0)
         {
+            level = g_uwActive ? std::max(0, std::min(level, kUwLevels)) : 0;
             const tuning::Overrides* row = display.id ? g_ovr.Find(display.kind, display.id) : nullptr;
-            const uint64_t key = row ? ((uint64_t(display.kind == overrides::Kind::Creature ? 2 : 1) << 32) | display.id) : 0;
+            const uint64_t key = (row ? ((uint64_t(display.kind == overrides::Kind::Creature ? 2 : 1) << 32) | display.id) : 0) |
+                                 (uint64_t(level) << 48);
             const auto it = e.variants.find(key);
             if (it != e.variants.end()) return it->second;
 
-            const tuning::Tuning effective = row ? tuning::Merge(g_tuning, *row) : g_tuning;
+            tuning::Tuning effective = row ? tuning::Merge(g_tuning, *row) : g_tuning;
+            if (level > 0) effective = tuning::Blend(effective, g_underwater, float(level) / float(kUwLevels));
             int tuned = 0;
             std::shared_ptr<phys::Model> model = tuning::Apply(e.base, effective, &tuned);   // a copy only when something changes
-            if (tuned) ++g_stats.modelsTuned;
-            if (row)
+            if (tuned && level == 0) ++g_stats.modelsTuned;
+            if (row && level == 0)
             {
                 ++g_stats.modelsOverridden;
                 wxl::LogCat("PHYS", "physics: %s display %u on '%s' uses its PhysicsOverride.csv row: %s",
@@ -461,20 +482,50 @@ namespace wxl::equip::physics
             return host::IniGetString("Physics", key, out, cap);
         }
 
+        bool ReadUnderwaterKey(const char* key, char* out, size_t cap)
+        {
+            return host::IniGetString("Physics.Underwater", key, out, cap);
+        }
+
+        // one log line per problem: a value that is not a number, or outside its range
+        void LogProblems(const char* section, const std::string& problems)
+        {
+            for (size_t b = 0; b < problems.size();)
+            {
+                const size_t e = problems.find('\n', b);
+                wxl::LogCat("PHYS", "physics: ini [%s]: %s", section, problems.substr(b, e == std::string::npos ? e : e - b).c_str());
+                if (e == std::string::npos) break;
+                b = e + 1;
+            }
+        }
+
         void LoadTuning()
         {
             std::string problems;
             g_tuning = tuning::FromIni(&ReadPhysicsKey, &problems);
             g_iniStamp = host::IniStamp();
-            // one log line per problem: a value that is not a number, or outside its range
-            for (size_t b = 0; b < problems.size();)
-            {
-                const size_t e = problems.find('\n', b);
-                wxl::LogCat("PHYS", "physics: ini: %s", problems.substr(b, e == std::string::npos ? e : e - b).c_str());
-                if (e == std::string::npos) break;
-                b = e + 1;
-            }
+            LogProblems("Physics", problems);
             wxl::LogCat("PHYS", "physics: multipliers: %s", tuning::Describe(g_tuning).c_str());
+
+            problems.clear();
+            g_underwater = tuning::FromIni(&ReadUnderwaterKey, &problems);
+            LogProblems("Physics.Underwater", problems);
+            g_uwBlendSec = 0.4f;
+            char text[64] = {};
+            if (ReadUnderwaterKey("BlendSeconds", text, sizeof(text)) && text[0])
+            {
+                float v = 0;
+                if (tuning::ParseMultiplier(text, &v)) g_uwBlendSec = std::max(0.0f, std::min(v, 10.0f));
+                else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: BlendSeconds='%s' is not a number; ignored, stays %.2f", text, g_uwBlendSec);
+            }
+            const bool on = host::IniGetBool("Physics.Underwater", "Enabled", true);
+            g_uwActive = on && !g_underwater.Identity();
+            if (g_uwActive)
+                wxl::LogCat("PHYS", "physics: underwater multipliers (on top of the above): %s, blend %.2f s%s",
+                            tuning::Describe(g_underwater).c_str(), g_uwBlendSec,
+                            g_hasSwimApi ? "" : " - but this client cannot tell who swims, so they are NOT applied");
+            else
+                wxl::LogCat("PHYS", "physics: underwater multipliers: off (%s)", on ? "none set" : "Enabled=0");
         }
     }
 
@@ -495,6 +546,7 @@ namespace wxl::equip::physics
         wxl::LogCat("PHYS", "physics: CarryAnchors=%d Unstick=%d UnstickReach=%.0f%% TeleportYards=%.0f",
                     g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
         g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
+        g_hasSwimApi = WXL_API_HAS(api, instanceSwimming) && api->instanceSwimming != nullptr;
         LoadTuning();
         LoadOverrides();
         if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers and %s are re-read whenever they are saved", kOverrideName);
@@ -650,6 +702,11 @@ namespace wxl::equip::physics
         if (mi->second.base) model = VariantLocked(mi->second, display, stem);
         if (!model) return;
 
+        // Underwater: is this instance, or the unit it hangs on, swimming? (the core answers from the unit's own
+        // swim state, so this is a flag read, not a world query)
+        float uwTarget = 0;
+        if (g_uwActive && g_hasSwimApi) uwTarget = api->instanceSwimming(instance) ? 1.0f : 0.0f;
+
         std::vector<float> before(size_t(boneCount) * 16);
         std::vector<int16_t> parents(boneCount);
         std::vector<phys::V3> pivots(boneCount);
@@ -667,12 +724,15 @@ namespace wxl::equip::physics
             }
 
         InstState& st = g_inst[instance];
-        if (st.shared != s.model || !st.sim || st.model != model)
+        if (st.shared != s.model || !st.sim || st.dry != model)
         {
             st = InstState{};
             st.shared = s.model;
-            st.model = model;
-            st.sim = std::make_unique<phys::Instance>(model.get());
+            st.dry = model;
+            st.uwBlend = uwTarget;   // an instance that appears in the water starts with the water's constants
+            st.uwLevel = g_uwActive ? int(std::lround(uwTarget * kUwLevels)) : 0;
+            st.model = st.uwLevel ? VariantLocked(mi->second, display, stem, st.uwLevel) : model;   // keeps it alive
+            st.sim = std::make_unique<phys::Instance>(st.model.get());
             if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), boneCount, g_guardCfg);
         }
         st.lastSeen = now;
@@ -699,6 +759,33 @@ namespace wxl::equip::physics
         st.haveClock = true;
         st.lastClock = s.clockMs;
         st.lastTime = t0;
+
+        // Underwater blend: ease towards the target (0 dry, 1 swimming) over BlendSeconds, and when the step
+        // changes, switch the running instance to that level's constants. Retune keeps the pose and velocities.
+        if (g_uwActive || st.uwLevel != 0)
+        {
+            const float step = g_uwBlendSec > 0.0f ? dt / g_uwBlendSec : 1.0f;
+            st.uwBlend += std::max(-step, std::min(uwTarget - st.uwBlend, step));
+            const int level = int(std::lround(std::max(0.0f, std::min(st.uwBlend, 1.0f)) * kUwLevels));
+            if (level != st.uwLevel && !st.uwRetuneFailed)
+            {
+                const std::shared_ptr<phys::Model> lm = VariantLocked(mi->second, display, stem, level);
+                if (lm && st.sim->Retune(lm.get()))
+                {
+                    if ((level == 0) != (st.uwLevel == 0) && wxl::LogThrottle("phys.uw", 40, 0))
+                        wxl::LogCat("PHYS", "physics: '%s' %s the water (blend step %d of %d)", stem,
+                                    level > st.uwLevel ? "enters" : "leaves", level, kUwLevels);
+                    st.model = lm;   // the instance now reads this copy: keep it alive
+                    st.uwLevel = level;
+                }
+                else
+                {
+                    st.uwRetuneFailed = true;
+                    if (wxl::LogThrottle("phys.uwfail", 10, 0))
+                        wxl::LogCat("PHYS", "physics: '%s' cannot switch to its underwater constants (layout differs)", stem);
+                }
+            }
+        }
 
         // inputs
         std::vector<double> world(size_t(boneCount) * 16);

@@ -2790,6 +2790,86 @@ void Instance::Make(float scale, V3 pos, Q rot) {
     s_->made = true;
 }
 
+// WXL extension: see physics_domino.h. Mirrors what Make() reads from the model, minus everything that is a
+// position or a state.
+bool Instance::Retune(const Model* m) {
+    if (!m || !m_) return false;
+    if (m == m_) return true;
+    if (!s_->made) {   // Make() has not run yet: it will read the new model
+        m_ = m;
+        return true;
+    }
+    World& w = s_->w;
+    if (m->bodies.size() != m_->bodies.size() || m->shapes.size() != m_->shapes.size() ||
+        m->joints.size() != m_->joints.size() || w.bodies.size() != m->bodies.size() ||
+        w.shapes.size() != m->shapes.size() || w.joints.size() != m->joints.size() ||
+        s_->entries.size() != m->bodies.size())
+        return false;
+    // the layout must be the same, or the live state would no longer belong to the definitions
+    for (size_t i = 0; i < m->bodies.size(); ++i) {
+        const BodyDef& a = m->bodies[i];
+        const BodyDef& o = m_->bodies[i];
+        if (a.type != o.type || a.bone != o.bone || a.group != o.group) return false;
+    }
+    for (size_t i = 0; i < m->shapes.size(); ++i) {
+        const ShapeDef& a = m->shapes[i];
+        const ShapeDef& o = m_->shapes[i];
+        if (a.type != o.type || a.body != o.body || a.hull != o.hull) return false;
+    }
+    for (size_t i = 0; i < m->joints.size(); ++i) {
+        const JointDef& a = m->joints[i];
+        const JointDef& o = m_->joints[i];
+        if (a.type != o.type || a.a != o.a || a.b != o.b) return false;
+    }
+
+    for (size_t i = 0; i < m->bodies.size(); ++i) {
+        const BodyDef& d = m->bodies[i];
+        Body& b = w.bodies[i];
+        b.gs = d.gravity;
+        b.is = d.inertia;
+        b.ld = d.linDamp;
+        b.ad = d.angDamp;
+        s_->entries[i].carry = d.carry;
+    }
+    for (size_t i = 0; i < m->shapes.size(); ++i) {
+        const ShapeDef& d = m->shapes[i];
+        Shape& s = w.shapes[i];
+        s.friction = d.friction;
+        s.restitution = d.restitution;
+        s.density = d.density;
+    }
+    for (Body& b : w.bodies) w.ResetMass(b);   // density and the inertia scale feed the mass properties
+    constexpr float kDeg = 0.0174532942f;
+    for (size_t i = 0; i < m->joints.size(); ++i) {
+        const JointDef& d = m->joints[i];
+        Joint& j = w.joints[i];
+        if (d.type == kJointShoulder) {
+            j.twLo = d.f[0] * kDeg;
+            j.twHi = d.f[1] * kDeg;   // twState (limit on / off) is a state: kept
+            j.cone = std::max(0.174532935f, std::min(d.f[2] * kDeg, 2.96705961f));
+            j.maxT = d.f[3];
+            j.hz = d.f[4];
+            j.zeta = d.f[5];
+        } else if (d.type == kJointRevolute) {
+            const float lo = d.f[0] * kDeg, hi = d.f[1] * kDeg;
+            const float lower = lo > 2 * kPi ? 2 * kPi : (lo < -2 * kPi ? -2 * kPi : lo);
+            const float upper = hi < lower ? lower : (hi > 2 * kPi ? 2 * kPi : hi);
+            j.revCenter = (upper + lower) * 0.5f;
+            j.revHalf = (upper - lower) * 0.5f;
+            j.maxT = d.f[2];
+            j.hz = d.f[3];
+            j.zeta = d.f[4];
+        } else if (d.type == kJointWeld) {
+            j.angHz = d.f[0];
+            j.angZeta = d.f[1];
+            j.linHz = d.f[2];
+            j.linZeta = d.f[3];
+        }
+    }
+    m_ = m;
+    return true;
+}
+
 namespace {
 // 0x1011B4370: one kinematic body towards its bone. A fraction s of the move
 // is a teleport, the rest is velocity; true when it teleported. The origin

@@ -13,6 +13,7 @@
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Model2/M2Shared.h"
+#include "Engine/Source/WXL/UnitState.h"
 
 #include <windows.h>
 
@@ -121,5 +122,20 @@ namespace wxl::api::model
         if (stage) return stage;
         if (count != r.boneCount) return WXL_READ_BONE_COUNT;
         return SafeCopy(const_cast<C44Matrix*>(r.palette), palette, size_t(count) * 64) ? WXL_READ_OK : WXL_READ_NO_PALETTE;
+    }
+
+    int InstanceSwimming(void* instance)
+    {
+        // The instance itself, then the models it hangs on (a weapon -> the character -> the mount). The walk is
+        // bounded, and each hop is a guarded read, so a stale instance answers 0 instead of crashing.
+        const CM2Model* m = static_cast<const CM2Model*>(instance);
+        for (int hop = 0; m && hop < 8; ++hop)
+        {
+            if (wxl::unitstate::IsSwimming(m)) return 1;
+            const CM2Model* parent = nullptr;
+            if (!SafeCopy(&parent, &m->m_attachParent, sizeof(parent))) return 0;
+            m = parent;
+        }
+        return 0;
     }
 }

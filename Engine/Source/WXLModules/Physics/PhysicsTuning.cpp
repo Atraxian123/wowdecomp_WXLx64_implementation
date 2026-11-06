@@ -274,6 +274,20 @@ namespace wxl::equip::physics::tuning
         return out;
     }
 
+    Tuning Blend(const Tuning& base, const Tuning& under, float t)
+    {
+        t = std::isfinite(t) ? Clamp(t, 0.0f, 1.0f) : 0.0f;
+        Tuning r;
+        for (const Key& k : kKeys)
+        {
+            float b = base.*(k.field), u = under.*(k.field);
+            if (!std::isfinite(b)) b = 1.0f;
+            if (!std::isfinite(u)) u = 1.0f;
+            r.*(k.field) = Clamp(b * (1.0f + (u - 1.0f) * t), k.lo, k.hi);
+        }
+        return r;
+    }
+
     std::string Describe(const Tuning& t)
     {
         std::string s;

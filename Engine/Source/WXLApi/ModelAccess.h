@@ -13,4 +13,5 @@ namespace wxl::api::model
     int ReadInstance(void* instance, WxlInstanceView* out);
     int ReadBones(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots);
     int WritePalette(void* instance, const float* palette, uint32_t count);
+    int InstanceSwimming(void* instance);
 }

@@ -9,6 +9,7 @@
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Model2/ModernM2/FlightAnim.h"
 #include "Engine/Source/WXL/CastAnim.h"
+#include "Engine/Source/WXL/UnitState.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Model2/M2Shared.h"
 #include "Engine/Source/Os/TimeManager.h"
@@ -10376,6 +10377,9 @@ void CGUnit_C::ClearWeaponTrailHandles() {
 // VERIFY: e7c232db manual
 // OFFSET: [0x00734B50, 0x00737BA0]
 CGUnit_C::~CGUnit_C() {
+    // [UnitState] this unit can no longer be reported as swimming (see Engine/Source/WXL/UnitState.h).
+    wxl::unitstate::ForgetUnit(this);
+
     while (this->m_missiles) {
         this->m_missiles->DeleteSelf();
     }
@@ -20636,6 +20640,10 @@ void CGUnit_C::UpdateSwimmingStatus(uint32_t time, int32_t a3) {
     if (this->m_obj->m_guid == ClntObjMgrGetActivePlayer() && wasSwimming != (this->m_clientFlags & 0x200000)) {
         CGSpellBook::UpdateUsable();
     }
+
+    // [UnitState] tell the WXL modules whether this unit is in the water (the physics module scales its
+    // constants for swimming units). The client swim bit is the same one that picks the swim animations.
+    wxl::unitstate::NoteUnit(this, this->m_worldModel, this->m_mountModel, (this->m_clientFlags & 0x200000) != 0);
 }
 
 // VERIFY: c709791a manual
