@@ -148,11 +148,12 @@ JointStiffnessScale=1.0   ; joint spring frequency (only where the file has a mo
 JointDampingScale=1.0     ; joint spring damping (same)
 MotorTorqueScale=1.0      ; strongest motor push (same)
 FollowScale=1.0           ; how much of a fast move the anchors take at once (carry, result 0 .. 1)
+Buoyancy=1.0              ; gravity multiplier while the unit is UNDERWATER; replaces GravityScale there (-100 .. 100)
 
 WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
 ```
 
-Ranges are 0 .. 100 unless noted (`GravityScale`: -100 .. 100). What each key does to what is in the file:
+Ranges are 0 .. 100 unless noted (`GravityScale` and `Buoyancy`: -100 .. 100). What each key does to what is in the file:
 
 | Key | Changes | On |
 | --- | --- | --- |
@@ -193,16 +194,29 @@ applied **on top of** the effective values of a model (the `[Physics]` ones, or 
 display where it has one), and **only while the model belongs to a swimming unit**: a creature or player, an item in
 its hand or on its back, a rider on a mount. Out of the water nothing changes.
 
+**Gravity underwater is the `Buoyancy`, not a product.** The underwater calculation uses `Buoyancy` *instead of* the
+gravity multiplier: the effective gravity multiplier of a model in the water is its `Buoyancy` (the `[Physics]` key, or
+the `Buoyancy` cell of its `PhysicsOverride.csv` row), whatever its `GravityScale` is on land. `GravityScale` and
+`Buoyancy` inside `[Physics.Underwater]` are not used (the module logs a line when they are set). `Buoyancy=1` (the
+default) is the file's own gravity, `0` makes the loose parts hang weightless, a negative value floats them up.
+
 ```ini
 [Physics.Underwater]
 ; Enabled=0 switches the section off without deleting it (default 1). Comments go on their own line.
 Enabled=1
-; the effective multiplier is (global or CSV value) x (this one): 1.0 x -0.2 = -0.2, so the parts drift up
-GravityScale=-0.2
+; the effective multiplier is (global or CSV value) x (this one). Gravity is not one of them: it is the
+; Buoyancy of [Physics] (or of the CSV row), see above
 LinearDampingScale=6
 AngularDampingScale=6
 ; seconds the change takes after the unit enters or leaves the water (0 = at once, default 0.4, max 10)
 BlendSeconds=0.4
+```
+
+and in `[Physics]`:
+
+```ini
+[Physics]
+Buoyancy=-0.2    ; underwater the parts drift up, whatever GravityScale is on land
 ```
 
 * **"Swimming" is the client's own swim state**, the one that picks the swim animations (`CGUnit_C::UpdateSwimmingStatus`,
@@ -210,17 +224,20 @@ BlendSeconds=0.4
   other unit, and it is not a world query: the unit reports it, and the module reads that.
 * **An item counts as swimming when the unit it hangs on does** (the walk goes up the attach chain: weapon -> character
   -> mount), so a cloak and a staff change together with their owner.
-* **Smooth, with no jump.** The multipliers move linearly from 1 to the underwater value over `BlendSeconds`, in 8
+* **Smooth, with no jump.** The multipliers move linearly from their dry value to the underwater one (for gravity: to
+  the `Buoyancy`) over `BlendSeconds`, in 8
   steps. Each step is a tuned copy of the model for that display, built the first time it is needed and kept; a running
   instance is switched to it with `Instance::Retune`, which keeps its pose, velocities and joint state (only the
   constants change: gravity, damping, inertia, density and so on). The blend is linear in the multiplier, so a negative
   gravity is crossed without a jump. A unit that appears already in the water starts with the underwater values.
-* **The underwater values multiply a CSV row's values too**, they do not replace them: a display with `GravityScale=-1`
-  in the CSV and `-0.5` here gets `0.5` underwater.
-* **Ranges are the same as above** (`GravityScale` -100 .. 100, the rest as listed), and the product is clamped to the
-  range too. A key that is missing is 1. If every key is missing (or `Enabled=0`), nothing is done underwater.
+* **The underwater values multiply a CSV row's values too** (damping, inertia, ...), they do not replace them. Gravity is
+  the exception: a display with `Buoyancy=0.2` in the CSV has gravity `0.2` underwater, whatever its `GravityScale`.
+* **Ranges are the same as above** (`GravityScale` and `Buoyancy` -100 .. 100, the rest as listed), and the product is
+  clamped to the range too. A key that is missing is 1. If nothing differs in the water (no key but gravity/`Buoyancy`
+  set, and `Buoyancy` equal to `GravityScale` everywhere, or `Enabled=0`), nothing is done underwater.
 * **Gravity is a multiplier on each body's own file value**, so a body whose `.phy2` gravity is 0 stays at 0 whatever
-  the scale: a negative `GravityScale` lifts only the bodies that have gravity.
+  the scale: a negative `Buoyancy` lifts only the bodies that have gravity.
+* **Upgrading:** an old `[Physics.Underwater] GravityScale=-0.2` is no longer used. Put `Buoyancy=-0.2` in `[Physics]`.
 * **Needs the core's `instanceSwimming` call** (`WxlApi`, checked at start-up). With an older core the section is
   read and logged but not applied, and the log says so.
 * Log lines: `physics: underwater multipliers (on top of the above): ...` at start-up and on every re-read, and
@@ -236,17 +253,17 @@ the `.phy2` has them, the other with gravity turned around. The file is optional
 `PhysicsOverride.example.csv` in this folder is a ready template; copy it next to the client as `PhysicsOverride.csv`.
 
 ```csv
-Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
-Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,upside-down variant of the staff
-Item,12346,0.5,,,,,100,0,,,,,,2,half gravity - sticky - no bounce - follows fast moves
-Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter mount
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note
+Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,upside-down variant of the staff
+Item,12346,0.5,,,,,100,0,,,,,,2,-0.3,half gravity - sticky - no bounce - follows fast moves - floats up when swimming
+Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,Default,a looser and lighter mount
 ```
 
 * **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
   through the client's reader, `DBFilesClient\PhysicsOverride.csv` or `PhysicsOverride.csv` in `Data\` or an
   archive (so a patch can ship one). The first one found is used.
 * **Header:** the first line that is not empty and not a comment. It needs `Kind`, `DisplayId` and **the whole set of
-  13 parameters**, named exactly like the ini keys (`GravityScale` ... `FollowScale`, see the table above), in any
+  14 parameters**, named exactly like the ini keys (`GravityScale` ... `FollowScale`, `Buoyancy`, see the table above), in any
   order, not case sensitive. A header that lacks one is refused with the missing names listed, and nothing is read.
   A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
   unknown column is ignored with one log line.
@@ -258,18 +275,19 @@ Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,De
   ini). Like the ini keys it is a factor of what the model's `.phy2` says, so `1` is "as the file has it": the file
   holds different numbers per body and joint, and one absolute number would flatten them. A cell that is **empty, or
   says `NA`, `N/A`, `#N/A`, `Default`, `Ini` or a lone `-`,** uses the ini's value (or 1.0 where the ini has no key).
-  The ranges of the ini keys apply (a value outside is clamped and logged); `GravityScale` may be negative.
+  The ranges of the ini keys apply (a value outside is clamped and logged); `GravityScale` and `Buoyancy` may be negative.
 * **Separators:** a comma. If the header line has semicolons and no commas, the file uses `;` (a spreadsheet in an
   Italian locale writes that) and a decimal comma (`1,25`) works too. A cell can be put in double quotes.
   Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds
   one) is ignored.
 * **Mistakes** skip or trim that row and are logged (category `PHYS`, with the line number); the rest still works.
   A cell that is neither a number nor one of the words above is ignored (the ini's value is used) and logged. A row
-  whose 13 cells are all empty/NA/Default has nothing to override and is skipped. A display listed twice: the later
+  whose 14 cells are all empty/NA/Default has nothing to override and is skipped. A display listed twice: the later
   row wins.
-* **Underwater:** `[Physics.Underwater]` (see above) stacks on top of a row: the row's number replaces the ini's, then
-  the underwater multiplier is applied to it. A display with `GravityScale` `-1` here and `-0.5` underwater gets `0.5`
-  while its unit swims. A cell that says `NA`/`Default` takes the ini's value first, and underwater multiplies that.
+* **Underwater:** `Buoyancy` is the gravity multiplier of the display while its unit swims, and it **replaces**
+  `GravityScale` there: a row with `GravityScale` `-1` and `Buoyancy` `0.2` is pulled up on land and sinks slowly in
+  the water. A `Buoyancy` cell that says `NA`/`Default` takes the ini's `[Physics] Buoyancy` (1 when it has none).
+  The other underwater multipliers of `[Physics.Underwater]` (see above) still stack on top of a row's numbers.
 * **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
   moment); `PhysicsLive::ReloadFiles()` does too.
 * **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;

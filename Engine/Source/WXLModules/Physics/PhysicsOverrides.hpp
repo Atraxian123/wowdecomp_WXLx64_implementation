@@ -10,14 +10,14 @@
 // Nothing here touches the engine: Parse() turns the text of the file into a Table, which the module consults
 // with the display of an instance. Unit-testable (Tools/PhysicsGuardTest/physics_override_test.cpp).
 //
-//     Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale
-//     Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
-//     Creature,6789,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2
+//     Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy
+//     Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
+//     Creature,6789,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,-0.3
 //
 //   * The first line that is not empty and not a comment is the header. It must have Kind, DisplayId and the
 //     WHOLE set of parameters, named exactly like the ini keys: GravityScale, LinearDampingScale,
 //     AngularDampingScale, InertiaScale, MassScale, FrictionScale, RestitutionScale, SwingLimitScale,
-//     TwistLimitScale, JointStiffnessScale, JointDampingScale, MotorTorqueScale, FollowScale. Any order; names
+//     TwistLimitScale, JointStiffnessScale, JointDampingScale, MotorTorqueScale, FollowScale, Buoyancy. Any order; names
 //     and Kind are not case sensitive. A header that lacks one is refused, naming what is missing, and nothing
 //     is read. A column called Note, Notes, Comment, Comments, Name or Description is ignored without a word;
 //     any other unknown column is ignored with one log line.
@@ -28,7 +28,10 @@
 //   * A number in a parameter column is the value for that display. It replaces the ini's value (the ini key
 //     as it is, or 1.0 when the ini has none); like the ini keys it is a factor of what the model's .phy2 says,
 //     so 1 is "as the file has it". A cell that is empty, or says NA, N/A, #N/A, Default, Ini or a lone dash,
-//     uses the ini's value. Ranges are those of the ini keys; GravityScale may be negative.
+//     uses the ini's value. Ranges are those of the ini keys; GravityScale and Buoyancy may be negative.
+//   * Buoyancy is the gravity multiplier of the display while its unit is underwater: it replaces GravityScale
+//     there (a row with GravityScale=-1 and Buoyancy=0.2 falls up on land and sinks slowly in the water). It does
+//     nothing out of the water. A Buoyancy cell that is empty/NA/Default uses the ini's [Physics] Buoyancy (1).
 //   * Lines starting with # or // are comments. The separator is a comma; if the header line has semicolons
 //     and no commas, it is a semicolon (what a spreadsheet in an Italian locale writes), and then a decimal
 //     comma ("1,25") works as well. A cell may be put in double quotes.

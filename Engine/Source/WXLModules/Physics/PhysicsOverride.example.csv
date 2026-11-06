@@ -5,9 +5,11 @@
 # CreatureDisplayInfo id). A number REPLACES the ini's value for that display; it is a factor of the
 # model's .phy2 numbers, like the ini keys (1 = as the file has it). Empty, NA or Default = use the ini's
 # value. GravityScale may be negative (parts rise). Every column below must be present.
+# Buoyancy is the gravity multiplier while the unit is UNDERWATER: it replaces GravityScale there (it is not
+# multiplied with it); negative = the parts float up. Out of the water it does nothing.
 #
 # These example rows use display ids that probably do not exist: edit or delete them.
-Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
-Item,900001,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,same model as another display - gravity turned around
-Item,900002,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,half gravity - sticky - no bounce - follows fast moves
-Creature,900003,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter creature or mount
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note
+Item,900001,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,same model as another display - gravity turned around
+Item,900002,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,-0.3,half gravity - sticky - no bounce - follows fast moves - floats up when swimming
+Creature,900003,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,Default,a looser and lighter creature or mount

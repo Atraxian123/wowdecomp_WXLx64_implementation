@@ -35,6 +35,12 @@
 //     ; ---- following a fast move ----
 //     FollowScale=1.0           ; how much of a fast move of the item the anchors take at once (carry, 0 .. 1)
 //
+//     ; ---- in the water ----
+//     Buoyancy=1.0              ; the gravity multiplier of a model that is underwater: while its unit swims,
+//                               ; this REPLACES GravityScale (it is not multiplied with it). 1 = the file's own
+//                               ; gravity, 0 = the loose parts hang weightless, negative (down to -100) = they
+//                               ; float up. Out of the water it does nothing.
+//
 //     ; Re-read these keys whenever the ini is saved, without restarting the client (the parts snap back to
 //     ; their pose for a moment). Default 0.
 //     WatchIni=0
@@ -44,20 +50,22 @@
 // model belongs to a swimming unit (or hangs on one: an item in its hand):
 //
 //     [Physics.Underwater]
-//     GravityScale=-0.2
 //     LinearDampingScale=6
 //     AngularDampingScale=6
 //     BlendSeconds=0.4          ; how long the change takes after the unit enters or leaves the water
 //
-// The effective gravity underwater is therefore (the global or CSV gravity) x [Physics.Underwater] GravityScale.
-// A key that is missing is 1 (no change); with every key missing, or Enabled=0, nothing is done underwater.
+// GRAVITY UNDERWATER IS NOT MULTIPLIED. The effective gravity multiplier of a model in the water is its
+// Buoyancy (the [Physics] key, or the PhysicsOverride.csv cell of its display): the underwater calculation uses
+// Buoyancy INSTEAD of GravityScale. GravityScale and Buoyancy in [Physics.Underwater] itself are therefore not
+// used (the module logs a line if they are set). A key that is missing is 1 (no change); with every other key
+// missing, Buoyancy equal to GravityScale and Enabled=0, nothing is done underwater.
 // Blend() computes the multipliers for a model that is part of the way in.
 //
 // Every multiplier is read as a decimal number, "1.25" or "1,25" (a leading "-" is allowed); a value outside its
 // range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
 // unless listed above (GravityScale: -100 .. 100).
 //
-// The same keys can be given for single item or creature displays in PhysicsOverride.csv
+// The same keys (Buoyancy included) can be given for single item or creature displays in PhysicsOverride.csv
 // (PhysicsOverrides.hpp): Merge() lays such a row over the global values, and a number in the row replaces the
 // ini's value (it is not multiplied with it).
 #pragma once
@@ -80,6 +88,7 @@ namespace wxl::equip::physics::tuning
         float swingLimit = 1, twistLimit = 1;
         float jointStiffness = 1, jointDamping = 1, motorTorque = 1;
         float follow = 1;
+        float buoyancy = 1;   // gravity multiplier while underwater; replaces `gravity` there (see Blend)
 
         /// True when every multiplier is exactly 1 (Apply then returns its input untouched).
         bool Identity() const;
@@ -94,7 +103,7 @@ namespace wxl::equip::physics::tuning
         bool Any() const { return set != 0; }
     };
 
-    constexpr int kKeyCount = 13;
+    constexpr int kKeyCount = 14;
     /// The ini name of key i ("GravityScale"...), nullptr when i is out of range.
     const char* KeyName(int i);
     /// The index of a key by its ini name, ignoring case; -1 when it is none of them.
@@ -124,11 +133,13 @@ namespace wxl::equip::physics::tuning
     /// shapes; limits and springs on shoulder, revolute and weld joints; carry on kinematic bodies.
     std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& t, int* changed = nullptr);
 
-    /// The multipliers to use while a model is `t` of the way into the water: base x (1 + (under - 1) x t) for
-    /// each one, t clamped to 0 .. 1. t = 0 is `base` as it is, t = 1 is base x under (the underwater
-    /// multipliers stack on the ones of [Physics]). The blend is linear in the multiplier, so a value of 0 or
-    /// a negative gravity is crossed smoothly instead of being jumped to. Each result is brought into its
-    /// key's range.
+    /// The multipliers to use while a model is `t` of the way into the water, t clamped to 0 .. 1.
+    ///  * every key but gravity and Buoyancy: base x (1 + (under - 1) x t). t = 0 is `base` as it is, t = 1 is
+    ///    base x under (the underwater multipliers stack on the ones of [Physics]).
+    ///  * gravity: base.gravity + (base.buoyancy - base.gravity) x t. Underwater (t = 1) the gravity multiplier
+    ///    IS base.buoyancy; `under.gravity` and `under.buoyancy` are not used. Buoyancy itself is kept.
+    /// The blend is linear in the multiplier, so a value of 0 or a negative gravity is crossed smoothly instead
+    /// of being jumped to. Each result is brought into its key's range.
     Tuning Blend(const Tuning& base, const Tuning& under, float t);
 
     /// "GravityScale=0.5 SwingLimitScale=1.2 ..." for every multiplier that is not 1 ("none" otherwise).

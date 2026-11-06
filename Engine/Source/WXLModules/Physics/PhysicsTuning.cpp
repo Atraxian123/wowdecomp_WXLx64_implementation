@@ -36,6 +36,7 @@ namespace wxl::equip::physics::tuning
             {"JointDampingScale", &Tuning::jointDamping, 0.0f, 100.0f},
             {"MotorTorqueScale", &Tuning::motorTorque, 0.0f, 100.0f},
             {"FollowScale", &Tuning::follow, 0.0f, 100.0f},
+            {"Buoyancy", &Tuning::buoyancy, -100.0f, 100.0f},        // gravity multiplier underwater; negative: the parts float up
         };
 
         static_assert(sizeof(kKeys) / sizeof(kKeys[0]) == kKeyCount, "kKeyCount follows the key table");
@@ -205,7 +206,7 @@ namespace wxl::equip::physics::tuning
     std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& requested, int* changed)
     {
         if (changed) *changed = 0;
-        if (!in || requested.Identity()) return in;
+        if (!in) return in;
 
         // Safe whatever the caller passes: every multiplier is brought into its own range (a NaN becomes 1),
         // the same ranges FromIni uses. Zero inertia or mass would make the solver divide by nothing.
@@ -215,6 +216,10 @@ namespace wxl::equip::physics::tuning
             float& v = t.*(k.field);
             v = std::isfinite(v) ? Clamp(v, k.lo, k.hi) : 1.0f;
         }
+        // Buoyancy is not a constant of the model: it only picks the gravity of the underwater variant (Blend),
+        // so on its own it changes nothing here.
+        t.buoyancy = 1.0f;
+        if (t.Identity()) return in;
 
         auto out = std::make_shared<phys::Model>(*in);
         int n = 0;
@@ -285,6 +290,14 @@ namespace wxl::equip::physics::tuning
             if (!std::isfinite(u)) u = 1.0f;
             r.*(k.field) = Clamp(b * (1.0f + (u - 1.0f) * t), k.lo, k.hi);
         }
+
+        // Gravity underwater is the Buoyancy, not gravity x something: ease from the dry gravity to it.
+        float g = base.gravity, buoy = base.buoyancy;
+        if (!std::isfinite(g)) g = 1.0f;
+        if (!std::isfinite(buoy)) buoy = 1.0f;
+        buoy = Clamp(buoy, kKeys[0].lo, kKeys[0].hi);
+        r.gravity = Clamp(g + (buoy - g) * t, kKeys[0].lo, kKeys[0].hi);
+        r.buoyancy = buoy;   // not scaled by the underwater section
         return r;
     }
 

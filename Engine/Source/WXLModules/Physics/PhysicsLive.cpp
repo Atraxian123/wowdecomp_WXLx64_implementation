@@ -182,7 +182,8 @@ namespace wxl::equip::physics
         tuning::Tuning g_tuning;
         // [Physics.Underwater]: the same multipliers, stacked on the effective ones while a unit swims. Same locking.
         tuning::Tuning g_underwater;
-        bool  g_uwActive = false;        // Enabled=1 and at least one multiplier is not 1
+        bool  g_uwOn = true;             // [Physics.Underwater] Enabled
+        bool  g_uwActive = false;        // Enabled=1 and the water changes at least one multiplier (see UpdateUnderwaterActive)
         float g_uwBlendSec = 0.4f;       // BlendSeconds
         bool  g_hasSwimApi = false;      // the core offers WxlApi::instanceSwimming
         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
@@ -262,6 +263,33 @@ namespace wxl::equip::physics
             return false;
         }
 
+        // Does the water change anything? Yes when [Physics.Underwater] sets a multiplier other than gravity and
+        // Buoyancy (those two are not used there: underwater, the gravity multiplier IS the Buoyancy), or when
+        // the Buoyancy of the global values or of any PhysicsOverride.csv row differs from the gravity multiplier
+        // it replaces. Written after LoadTuning and LoadOverrides, under the same locking.
+        void UpdateUnderwaterActive()
+        {
+            bool matters = false;
+            tuning::Tuning others = g_underwater;
+            others.gravity = 1.0f;
+            others.buoyancy = 1.0f;
+            if (!others.Identity()) matters = true;
+            if (g_tuning.buoyancy != g_tuning.gravity) matters = true;
+            auto rowMatters = [&](const tuning::Overrides& row) {
+                const tuning::Tuning m = tuning::Merge(g_tuning, row);
+                return m.buoyancy != m.gravity;
+            };
+            for (const auto& kv : g_ovr.items)     if (!matters && rowMatters(kv.second)) matters = true;
+            for (const auto& kv : g_ovr.creatures) if (!matters && rowMatters(kv.second)) matters = true;
+
+            const bool was = g_uwActive;
+            g_uwActive = g_uwOn && matters;
+            if (g_uwActive != was || g_uwActive)
+                wxl::LogCat("PHYS", "physics: underwater: %s; gravity underwater = Buoyancy (global %.3g)%s",
+                            g_uwActive ? "on" : "off (nothing differs in the water)", g_tuning.buoyancy,
+                            g_uwActive && !g_hasSwimApi ? " - but this client cannot tell who swims, so it is NOT applied" : "");
+        }
+
         void LoadOverrides()
         {
             g_ovr = overrides::Table{};
@@ -271,6 +299,7 @@ namespace wxl::equip::physics
             if (!ReadOverrideText(text, g_ovrWhere))
             {
                 wxl::LogCat("PHYS", "physics: no %s (optional): no per-display multipliers", kOverrideName);
+                UpdateUnderwaterActive();
                 return;
             }
             std::string problems;
@@ -285,6 +314,7 @@ namespace wxl::equip::physics
             wxl::LogCat("PHYS", "physics: %s: %zu item row(s), %zu creature row(s)%s", g_ovrWhere.c_str(), g_ovr.items.size(),
                         g_ovr.creatures.size(), "");
             g_stats.overrideRows = uint32_t(g_ovr.Rows());
+            UpdateUnderwaterActive();
         }
 
         // The multipliers a model gets for one display (item or creature): the global ones, with that display's row of
@@ -518,14 +548,14 @@ namespace wxl::equip::physics
                 if (tuning::ParseMultiplier(text, &v)) g_uwBlendSec = std::max(0.0f, std::min(v, 10.0f));
                 else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: BlendSeconds='%s' is not a number; ignored, stays %.2f", text, g_uwBlendSec);
             }
-            const bool on = host::IniGetBool("Physics.Underwater", "Enabled", true);
-            g_uwActive = on && !g_underwater.Identity();
-            if (g_uwActive)
-                wxl::LogCat("PHYS", "physics: underwater multipliers (on top of the above): %s, blend %.2f s%s",
-                            tuning::Describe(g_underwater).c_str(), g_uwBlendSec,
-                            g_hasSwimApi ? "" : " - but this client cannot tell who swims, so they are NOT applied");
-            else
-                wxl::LogCat("PHYS", "physics: underwater multipliers: off (%s)", on ? "none set" : "Enabled=0");
+            g_uwOn = host::IniGetBool("Physics.Underwater", "Enabled", true);
+            if (g_underwater.gravity != 1.0f || g_underwater.buoyancy != 1.0f)
+                wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: GravityScale and Buoyancy are not used there; underwater the "
+                                    "gravity multiplier is the Buoyancy of [Physics] (or of the PhysicsOverride.csv row)");
+            wxl::LogCat("PHYS", "physics: underwater multipliers (on top of the above): %s, blend %.2f s, Buoyancy %.3g%s",
+                        tuning::Describe(g_underwater).c_str(), g_uwBlendSec, g_tuning.buoyancy, g_uwOn ? "" : " (Enabled=0)");
+            // g_uwActive is settled by UpdateUnderwaterActive once PhysicsOverride.csv has been read too
+            g_uwActive = false;
         }
     }
 
@@ -635,6 +665,7 @@ namespace wxl::equip::physics
             {
                 if (iniSaved) LoadTuning();
                 if (csvSaved) LoadOverrides();
+                else UpdateUnderwaterActive();   // LoadTuning cleared g_uwActive; the csv rows in memory still count
                 g_models.clear();
                 g_inst.clear();
                 g_stats.live = 0;
