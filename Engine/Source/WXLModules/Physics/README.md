@@ -227,39 +227,49 @@ BlendSeconds=0.4
   `physics: '<model>' enters / leaves the water (blend step n of 8)` for the first 40 transitions.
 * `WatchIni=1` re-reads this section too.
 
-# Different physics for single items: PhysicsOverride.csv
+# Different physics for single displays: PhysicsOverride.csv
 
-The multipliers above apply to every model. `PhysicsOverride.csv` sets some of them again for **one item display**
-(`ItemDisplayInfo` id), so two displays that share a model file can move differently: one with dangling bits as
-the `.phy2` has them, the other with gravity turned around. It is optional: without the file nothing changes.
+The `[Physics]` keys of the ini tune every model. `PhysicsOverride.csv` gives the **same set of parameters for one
+item display** (`ItemDisplayInfo` id) **or one creature display** (`CreatureDisplayInfo` id), and they **replace**
+the ini's values for it. Two displays that share a model file can then move differently: one with dangling bits as
+the `.phy2` has them, the other with gravity turned around. The file is optional: without it nothing changes.
+`PhysicsOverride.example.csv` in this folder is a ready template; copy it next to the client as `PhysicsOverride.csv`.
 
 ```csv
-# Kind,DisplayId, then any of the [Physics] multiplier names (any order, any subset)
-Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note
-Item,12345,-1,,,upside-down variant of the staff
-Item,12346,,1.5,0.5,floppier and lighter
-Creature,6789,0.5,,,a creature (or a mount) with half gravity
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
+Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,upside-down variant of the staff
+Item,12346,0.5,,,,,100,0,,,,,,2,half gravity - sticky - no bounce - follows fast moves
+Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter mount
 ```
 
 * **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
   through the client's reader, `DBFilesClient\PhysicsOverride.csv` or `PhysicsOverride.csv` in `Data\` or an
   archive (so a patch can ship one). The first one found is used.
-* **Header:** the first line that is not empty and not a comment. It needs `Kind` and `DisplayId`; the rest are
-  multiplier names exactly as in the ini (`GravityScale`, `SwingLimitScale`, ...). Names are not case sensitive.
+* **Header:** the first line that is not empty and not a comment. It needs `Kind`, `DisplayId` and **the whole set of
+  13 parameters**, named exactly like the ini keys (`GravityScale` ... `FollowScale`, see the table above), in any
+  order, not case sensitive. A header that lacks one is refused with the missing names listed, and nothing is read.
   A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
   unknown column is ignored with one log line.
 * **Kind:** `Item` or `Creature`. Item rows apply to held items: main hand, off hand, ranged, shield. Creature rows
   apply to the model of a unit (a creature, a pet, a shapeshifted player) and to the model of a mount, and need the
   creature's model to have a `.phy2` like any other model. An item id and a creature id never meet, even if the
   numbers are equal.
-* **Values:** an empty cell keeps the global value. A filled cell **replaces** the global value for that display
-  (`GravityScale` `-1` is -1, not -1 times the ini value). The ranges of the ini keys apply (a value outside is
-  clamped and logged); `GravityScale` may be negative.
+* **Values:** a number is the value for that display. It **replaces** the ini's value (nothing is multiplied with the
+  ini). Like the ini keys it is a factor of what the model's `.phy2` says, so `1` is "as the file has it": the file
+  holds different numbers per body and joint, and one absolute number would flatten them. A cell that is **empty, or
+  says `NA`, `N/A`, `#N/A`, `Default`, `Ini` or a lone `-`,** uses the ini's value (or 1.0 where the ini has no key).
+  The ranges of the ini keys apply (a value outside is clamped and logged); `GravityScale` may be negative.
 * **Separators:** a comma. If the header line has semicolons and no commas, the file uses `;` (a spreadsheet in an
   Italian locale writes that) and a decimal comma (`1,25`) works too. A cell can be put in double quotes.
-  Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds one) is ignored.
+  Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds
+  one) is ignored.
 * **Mistakes** skip or trim that row and are logged (category `PHYS`, with the line number); the rest still works.
-  A display listed twice: the later row wins.
+  A cell that is neither a number nor one of the words above is ignored (the ini's value is used) and logged. A row
+  whose 13 cells are all empty/NA/Default has nothing to override and is skipped. A display listed twice: the later
+  row wins.
+* **Underwater:** `[Physics.Underwater]` (see above) stacks on top of a row: the row's number replaces the ini's, then
+  the underwater multiplier is applied to it. A display with `GravityScale` `-1` here and `-0.5` underwater gets `0.5`
+  while its unit swims. A cell that says `NA`/`Default` takes the ini's value first, and underwater multiplies that.
 * **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
   moment); `PhysicsLive::ReloadFiles()` does too.
 * **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;

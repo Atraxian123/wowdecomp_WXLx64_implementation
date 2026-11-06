@@ -1,0 +1,6 @@
+# Copy next to the client exe. A number REPLACES the ini value for that display.
+# Empty / NA / Default = use the ini's value.
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note
+Item,12345,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,1,rises on land but hangs normally when swimming
+Item,12346,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,-0.3,half gravity and sticky; floats up when swimming
+Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,0,lighter mount; weightless when swimming

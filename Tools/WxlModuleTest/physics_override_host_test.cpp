@@ -53,6 +53,7 @@ namespace
     struct Sub { std::string event; WxlEventHandler fn; void* user; };
     std::vector<Sub> g_subs;
     std::set<std::string> g_virtual;          // paths the fake core says were minted by VirtualPath
+    std::set<void*> g_swimming;               // instances the fake core says belong to a swimming unit
 
     void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
     int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
@@ -99,6 +100,7 @@ namespace
         return name && g_virtual.count(name) ? 1 : 0;
     }
     const char* ApiWorkingDirectory() { return ""; }   // the module then looks in the current folder
+    int ApiInstanceSwimming(void* inst) { return g_swimming.count(inst) ? 1 : 0; }
 
     // "<dir>\<stem>_<digits>.m2" -> id
     int ApiDecode(const char* path, char* out, size_t cap, uint32_t* id)
@@ -196,6 +198,7 @@ namespace
         a.readInstance = ApiReadInstance; a.readBones = ApiReadBones; a.writePalette = ApiWritePalette;
         a.workingDirectory = ApiWorkingDirectory; a.vpathDecodeGlobalVirtualKey = ApiDecode;
         a.modelInfo = ApiModelInfo; a.findAttachedChild = ApiFindAttachedChild; a.itemDisplayInfo = ApiItemDisplayInfo;
+        a.instanceSwimming = ApiInstanceSwimming;
         return a;
     }
 
@@ -267,10 +270,25 @@ namespace
         return TipHeight(i);
     }
 
-    void WriteCsv(const char* text)
+    void WriteCsv(const std::string& text)
     {
         std::ofstream f("PhysicsOverride.csv", std::ios::binary | std::ios::trunc);
         f << text;
+    }
+
+    // The file needs the whole set of 14 parameters in every row. Row() writes one with only GravityScale (and
+    // optionally Buoyancy) given; the other cells say Default (or are empty when `fill` is empty), i.e. "use the
+    // ini's value".
+    const char* const kHeader = "Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,"
+                                "FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,"
+                                "JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note";
+    std::string Row(const char* kind, int id, const char* gravity, const char* note = "", const char* fill = "Default",
+                    const char* buoyancy = nullptr)
+    {
+        std::string r = std::string(kind) + "," + std::to_string(id) + "," + gravity;
+        for (int i = 0; i < 12; ++i) r += std::string(",") + fill;
+        r += std::string(",") + (buoyancy ? buoyancy : fill);   // the last parameter: Buoyancy
+        return r + "," + note + "\n";
     }
     bool LogHas(const char* part)
     {
@@ -291,17 +309,20 @@ int main(int argc, char** argv)
 
     // ---- the files ----
     WriteCsv(
-        "# per-display physics\n"
-        "Kind,DisplayId,GravityScale,Note\n"
-        "Item,1001,-1,upside down\n"            // a plain model, found through the attach event
-        "Creature,1002,-1,must never reach an item\n"
-        "Item,1003,-1,a baked variant\n"        // found through its virtual path
-        "Item,1005,-1,\n"
-        "Creature,2001,-1,a plain creature model, found through the creature event\n"
-        "Creature,2002,-1,a baked creature variant\n"
-        "Item,1004,nonsense,bad cell\n");        // a bad cell: logged, row skipped (nothing else set)
+        std::string("# per-display physics\n") + kHeader + "\n" +
+        Row("Item", 1001, "-1", "upside down", "Default", "1") +       // a plain model, found through the attach event; Buoyancy 1: hangs in the water
+        Row("Creature", 1002, "-1", "must never reach an item", "NA") +
+        Row("Item", 1003, "-1", "a baked variant", "") +                // found through its virtual path; empty cells too
+        Row("Item", 1005, "-1") +
+        Row("Creature", 2001, "-1", "a plain creature model - found through the creature event") +
+        Row("Creature", 2002, "-1", "a baked creature variant") +
+        Row("Item", 1004, "nonsense", "bad cell: ignored - nothing else set so the row is skipped"));
     g_ini["Physics"]["Enabled"] = "1";
     g_ini["Physics"]["WatchIni"] = "1";
+    // underwater, the gravity multiplier is the Buoyancy (it replaces GravityScale there): -1 by default, so loose parts
+    // rise; the row of 1001 says Buoyancy 1 instead. BlendSeconds is short so a test second is plenty.
+    g_ini["Physics"]["Buoyancy"] = "-1";
+    g_ini["Physics.Underwater"]["BlendSeconds"] = "0.05";
 
     WxlApi api = MakeApi();
     WxlModuleInfo info = {}; info.structSize = sizeof(info);
@@ -397,11 +418,29 @@ int main(int argc, char** argv)
     e1->modelId = reinterpret_cast<const void*>(0x6000);
     Check(Play(*e1, 6.0) < -0.2, "a creature binding is dropped when the instance now shows another file");
 
+    std::printf("4c. underwater: Buoyancy replaces the gravity multiplier\n");
+    a->parent = wearer;
+    FireHand(wearer, 15, 1, 1001, false);                       // display 1001: its row says GravityScale -1
+    const double dry1001 = Play(*a, 6.0);
+    const double dry1002 = Play(*b, 6.0);                       // display 1002: no item row, the ini's gravity 1
+    Check(dry1001 > dry1002 + 0.25, "dry: 1001 (row -1) lifts, 1002 (ini 1) hangs");
+    g_swimming.insert(a);
+    g_swimming.insert(b);
+    const double wet1001 = Play(*a, 6.0);
+    const double wet1002 = Play(*b, 6.0);
+    std::printf("     swimming: 1001 -> %.3f   1002 -> %.3f\n", wet1001, wet1002);
+    Check(wet1001 < -0.2, "swimming: the row's Buoyancy 1 replaces its GravityScale -1, so 1001 now hangs");
+    Check(wet1002 > wet1001 + 0.25, "swimming: the ini's Buoyancy -1 replaces the gravity 1, so 1002 now lifts (a row is not needed for it)");
+    Check(LogHas("enters the water"), "the log says a model entered the water");
+    g_swimming.clear();
+    Check(Play(*a, 6.0) > wet1001 + 0.25, "out of the water again: 1001 is back to its row");
+    Check(Play(*b, 6.0) < -0.2, "...and 1002 hangs again");
+
     std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
     a->parent = wearer;
     FireHand(wearer, 15, 1, 1001, false);
     Check(Play(*a, 6.0) > tipB + 0.25, "before: 1001 inverted");
-    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");     // swap: 1002 inverted, 1001 normal
+    WriteCsv(std::string(kHeader) + "\n" + Row("Item", 1002, "-1"));      // swap: 1002 inverted, 1001 normal
     std::this_thread::sleep_for(std::chrono::milliseconds(1300)); // the module looks once a second
     const double tipA3 = Play(*a, 6.0);
     const double tipB3 = Play(*b, 6.0);
@@ -410,7 +449,12 @@ int main(int argc, char** argv)
     Check(tipB3 > tipA3 + 0.25, "...and 1002 lifts");
     Check(LogHas("csv saved"), "the reload is logged");
 
-    std::printf("6. no csv at all\n");
+    std::printf("6. a file without the whole set, then no file at all\n");
+    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");              // the header lacks 13 of the 14 parameters
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+    const double tipB4 = Play(*b, 6.0);   // the module looks at the file while a frame runs
+    Check(LogHas("must list the whole set") && LogHas("missing: LinearDampingScale"), "a header without the whole set is refused, and the log names what is missing");
+    Check(tipB4 < -0.2, "...and nothing of that file applies (1002 hangs)");
     std::remove("PhysicsOverride.csv");
     std::this_thread::sleep_for(std::chrono::milliseconds(1300));
     Play(*b, 6.0);

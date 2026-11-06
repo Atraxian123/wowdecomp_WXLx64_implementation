@@ -3,7 +3,8 @@
 //   P=<repo root>/Engine/Source/WXLModules/Physics
 //   g++ -std=c++17 -O1 -I $P physics_override_test.cpp $P/PhysicsOverrides.cpp $P/PhysicsTuning.cpp
 //       $P/physics_domino.cpp -o physics_override_test      (one command line)
-//   ./physics_override_test         (exit code 0 = every check passed)
+//   ./physics_override_test <repo root>/Engine/Source/WXLModules/Physics/PhysicsOverride.example.csv
+//                                   (the argument is optional: it also checks the shipped template; exit code 0 = ok)
 //
 // Checks: the CSV parser (header, separators, quoting, every kind of bad row), Merge (a row replaces the
 // global value), the signed multiplier, and, on the real engine (physics_domino.cpp, unchanged), that a chain
@@ -13,6 +14,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -94,8 +98,9 @@ namespace
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    const char* exampleFile = argc > 1 ? argv[1] : nullptr;
     std::printf("1. the signed multiplier\n");
     {
         float v = 0;
@@ -122,57 +127,105 @@ int main()
         Check(tn::Merge(base, tn::Overrides{}).gravity == base.gravity, "an empty row changes nothing");
     }
 
-    std::printf("3. PhysicsOverride.csv\n");
+    std::printf("3. PhysicsOverride.csv: the whole set of parameters\n");
     {
         std::string problems;
+        // all 14 parameters, in the ini's order; Row() writes one row, every parameter "Default" unless given
+        const std::string header = "Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,"
+                                   "FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,"
+                                   "JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy";
+        auto Row = [](const char* kind, int id, std::map<std::string, std::string> given, const char* fill = "Default",
+                      const char* tail = "") {
+            std::string r = std::string(kind) + "," + std::to_string(id);
+            for (int k = 0; k < tn::kKeyCount; ++k)
+            {
+                const auto it = given.find(tn::KeyName(k));
+                r += "," + (it == given.end() ? std::string(fill) : it->second);
+            }
+            return r + tail;
+        };
+        auto Bit = [](const char* name) { return 1u << tn::FindKey(name); };
+
         const std::string csv =
-            "\xEF\xBB\xBF# my weapons\n"
-            "Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note\n"
-            "Item,12345,-1,,,\"upside down, on purpose\"\n"
-            "item,12346,,1.5,0.5,\n"
+            "\xEF\xBB\xBF# my weapons\n" + header + ",Note\n" +
+            Row("Item", 12345, { { "GravityScale", "-1" } }, "NA", ",\"upside down, on purpose\"") + "\n" +
+            Row("item", 12346, { { "SwingLimitScale", "1.5" }, { "MassScale", "0.5" } }, "", ",") + "\n" +
             "// another comment\n"
-            "\n"
-            "Creature,6789,0.5,,,\n";
+            "\n" +
+            Row("Creature", 6789, { { "GravityScale", "0.5" }, { "FollowScale", "2" } }) + ",\n";
         ov::Table t = ov::Parse(csv, &problems);
         Check(problems.empty(), "a clean file produces no problem lines");
         Check(t.items.size() == 2 && t.creatures.size() == 1 && t.Rows() == 3, "two item rows, one creature row");
         const tn::Overrides* a = t.Find(ov::Kind::Item, 12345);
-        Check(a && Near(a->values.gravity, -1) && a->set == (1u << tn::FindKey("GravityScale")), "item 12345: only GravityScale, -1");
+        Check(a && Near(a->values.gravity, -1) && a->set == Bit("GravityScale"), "item 12345: only GravityScale (-1); the NA cells use the ini's values");
         const tn::Overrides* b = t.Find(ov::Kind::Item, 12346);
-        Check(b && Near(b->values.swingLimit, 1.5f) && Near(b->values.mass, 0.5f) && b->set == ((1u << tn::FindKey("SwingLimitScale")) | (1u << tn::FindKey("MassScale"))),
-              "item 12346: SwingLimitScale and MassScale (kind is case-insensitive)");
-        Check(t.Find(ov::Kind::Creature, 12345) == nullptr && t.Find(ov::Kind::Item, 6789) == nullptr,
-              "item and creature ids do not collide");
-        Check(t.Find(ov::Kind::Creature, 6789) != nullptr, "the creature row is read");
+        Check(b && Near(b->values.swingLimit, 1.5f) && Near(b->values.mass, 0.5f) && b->set == (Bit("SwingLimitScale") | Bit("MassScale")),
+              "item 12346: SwingLimitScale and MassScale; the empty cells use the ini's values (kind is case-insensitive)");
+        const tn::Overrides* c6 = t.Find(ov::Kind::Creature, 6789);
+        Check(c6 && Near(c6->values.gravity, 0.5f) && Near(c6->values.follow, 2) && c6->set == (Bit("GravityScale") | Bit("FollowScale")),
+              "creature 6789: GravityScale and FollowScale; the Default cells use the ini's values");
+        Check(t.Find(ov::Kind::Creature, 12345) == nullptr && t.Find(ov::Kind::Item, 6789) == nullptr, "item and creature ids do not collide");
 
-        // header order, subset, case; semicolons and decimal commas
-        t = ov::Parse("displayid;KIND;frictionscale;GravityScale\r\n77;Item;1,25;-2\r\n", &problems);
-        const tn::Overrides* c = t.Find(ov::Kind::Item, 77);
-        Check(problems.empty() && c && Near(c->values.friction, 1.25f) && Near(c->values.gravity, -2), "';' file, columns in any order, decimal comma, CRLF");
-
-        // problems
+        // every spelling of "use the ini's value"
         problems.clear();
-        t = ov::Parse("Kind,DisplayId,GravityScale,MassScale,Bogus\n"
-                      "Weapon,1,-1,,\n"           // unknown kind
-                      "Item,abc,-1,,\n"           // bad id
-                      "Item,0,-1,,\n"             // id 0
-                      "Item,5,fast,2,\n"          // bad number, other cell still used
-                      "Item,6,-500,,\n"           // clamped
-                      "Item,7,,,\n"               // nothing set
-                      "Item,8,1,,\n"
-                      "Item,8,-1,,\n"             // duplicate: later wins
-                      "Item\n", &problems);       // too short
+        t = ov::Parse(header + "\nItem,1,-2,na,N/A,#N/A,default,INI,-,,Default,NA,NA,NA,NA,NA\n", &problems);
+        const tn::Overrides* tok = t.Find(ov::Kind::Item, 1);
+        Check(problems.empty() && tok && tok->set == Bit("GravityScale"), "empty, NA, N/A, #N/A, Default, Ini and a lone dash all mean: the ini's value (no problem logged)");
+
+        // header: any order, semicolons, decimal commas
+        const std::string semi = "FollowScale;DisplayId;KIND;GravityScale;LinearDampingScale;AngularDampingScale;InertiaScale;MassScale;"
+                                 "frictionscale;RestitutionScale;SwingLimitScale;TwistLimitScale;JointStiffnessScale;JointDampingScale;MotorTorqueScale;Buoyancy\r\n"
+                                 "0,25;77;Item;-2;NA;NA;NA;NA;1,25;NA;NA;NA;NA;NA;NA;-0,5\r\n";
+        problems.clear();
+        t = ov::Parse(semi, &problems);
+        const tn::Overrides* sm = t.Find(ov::Kind::Item, 77);
+        Check(problems.empty() && sm && Near(sm->values.friction, 1.25f) && Near(sm->values.gravity, -2) && Near(sm->values.follow, 0.25f) &&
+                  Near(sm->values.buoyancy, -0.5f) && (sm->set & Bit("Buoyancy")),
+              "';' file, columns in any order and any case, decimal comma, CRLF (Buoyancy included)");
+
+        // the whole set is required
+        problems.clear();
+        t = ov::Parse("Kind,DisplayId,GravityScale,SwingLimitScale\nItem,5,-1,NA\n", &problems);
+        Check(t.Empty() && Has(problems, "must list the whole set") && Has(problems, "LinearDampingScale") && Has(problems, "FollowScale") &&
+                  Has(problems, "nothing was read"),
+              "a header without the whole set is refused, naming what is missing");
+        problems.clear();
+        {
+            std::string h = header;
+            h.erase(h.find(",MassScale"), 10);   // drop one column only
+            t = ov::Parse(h + "\nItem,5,-1\n", &problems);
+            Check(t.Empty() && Has(problems, "missing: MassScale") && !Has(problems, "GravityScale,"), "...down to a single missing column");
+        }
+        problems.clear();
+        t = ov::Parse(header + ",GravityScale\nItem,5,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,-3\n", &problems);
+        const tn::Overrides* dup = t.Find(ov::Kind::Item, 5);
+        Check(Has(problems, "column 'GravityScale' is listed twice") && dup && Near(dup->values.gravity, -3), "a column listed twice: reported, the later one is used");
+
+        // problems in rows
+        problems.clear();
+        t = ov::Parse(header + ",Bogus\n" +
+                      Row("Weapon", 1, { { "GravityScale", "-1" } }) + ",\n" +      // unknown kind
+                      Row("Item", 0, { { "GravityScale", "-1" } }) + ",\n" +         // id 0
+                      "Item,abc," + Row("X", 0, {}).substr(5) + "\n" +               // bad id
+                      Row("Item", 5, { { "GravityScale", "fast" }, { "MassScale", "2" } }) + ",\n" +   // bad cell, other cell still used
+                      Row("Item", 6, { { "GravityScale", "-500" } }) + ",\n" +       // clamped
+                      Row("Item", 7, {}) + ",\n" +                                   // nothing to override
+                      Row("Item", 8, { { "GravityScale", "1" } }) + ",\n" +
+                      Row("Item", 8, { { "GravityScale", "-1" } }) + ",\n" +         // duplicate: later wins
+                      "Item\n",                                                       // too short
+                      &problems);
         Check(Has(problems, "unknown column 'Bogus'"), "unknown column is reported");
-        Check(Has(problems, "line 2") && Has(problems, "unknown Kind 'Weapon'"), "unknown Kind is reported with its line");
+        Check(Has(problems, "unknown Kind 'Weapon'"), "unknown Kind is reported");
         Check(Has(problems, "DisplayId 'abc'") && Has(problems, "DisplayId '0'"), "bad ids are reported");
         const tn::Overrides* d = t.Find(ov::Kind::Item, 5);
-        Check(Has(problems, "GravityScale='fast' is not a number") && d && Near(d->values.mass, 2) && !(d->set & (1u << tn::FindKey("GravityScale"))),
-              "a bad cell is dropped, the rest of the row stays");
+        Check(Has(problems, "GravityScale='fast' is not a number") && Has(problems, "write NA or Default") && d && Near(d->values.mass, 2) &&
+                  !(d->set & Bit("GravityScale")),
+              "a bad cell is dropped (the ini's value is used), the rest of the row stays");
         const tn::Overrides* e = t.Find(ov::Kind::Item, 6);
         Check(Has(problems, "clamped to -100") && e && Near(e->values.gravity, -100), "an out-of-range value is clamped and reported");
-        Check(Has(problems, "no multiplier set") && t.Find(ov::Kind::Item, 7) == nullptr, "an empty row is skipped");
+        Check(Has(problems, "nothing to override") && t.Find(ov::Kind::Item, 7) == nullptr, "a row of only empty/NA/Default cells is skipped");
         const tn::Overrides* f = t.Find(ov::Kind::Item, 8);
-        Check(Has(problems, "listed twice") && f && Near(f->values.gravity, -1), "a duplicate: the later row wins");
+        Check(Has(problems, "listed twice") && f && Near(f->values.gravity, -1), "a display listed twice: the later row wins");
         Check(Has(problems, "row too short"), "a short row is skipped");
 
         problems.clear();
@@ -181,6 +234,22 @@ int main()
         problems.clear();
         Check(ov::Parse("", &problems).Empty() && Has(problems, "no header"), "an empty file is not an error, but says so");
         Check(ov::Parse("# only a comment\n").Empty(), "comments only");
+
+        // the template that ships with the module must itself be a valid file
+        if (exampleFile)
+        {
+            std::ifstream in(exampleFile, std::ios::binary);
+            std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            problems.clear();
+            t = ov::Parse(text, &problems);
+            Check(!text.empty() && problems.empty() && t.items.size() == 2 && t.creatures.size() == 1, "PhysicsOverride.example.csv parses cleanly (2 item rows, 1 creature row)");
+            const tn::Overrides* ex = t.Find(ov::Kind::Item, 900001);
+            Check(ex && Near(ex->values.gravity, -1), "...and its first row turns gravity around");
+            const tn::Overrides* ex2 = t.Find(ov::Kind::Item, 900002);
+            Check(ex2 && Near(ex2->values.buoyancy, -0.3f) && (ex2->set & Bit("Buoyancy")), "...and its second row sets Buoyancy (-0.3)");
+        }
+        else
+            std::printf("  (pass PhysicsOverride.example.csv as the first argument to check the template as well)\n");
     }
 
     std::printf("4. gravity really turns around (real engine)\n");
@@ -193,6 +262,48 @@ int main()
         Check(down < -0.5, "default: the chain hangs below its anchor");
         Check(up > 0.3, "GravityScale=-1: the chain stands above its anchor");
         Check(std::isfinite(up) && std::isfinite(down), "nothing blows up");
+    }
+
+    std::printf("5. Buoyancy: the gravity multiplier underwater\n");
+    {
+        Check(tn::FindKey("buoyancy") == tn::kKeyCount - 1 && std::strcmp(tn::KeyName(tn::kKeyCount - 1), "Buoyancy") == 0, "Buoyancy is a key");
+        float v = 0; bool clamped = false;
+        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "-0,25", &v, &clamped) && Near(v, -0.25f) && !clamped, "Buoyancy may be negative");
+        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "-500", &v, &clamped) && Near(v, -100) && clamped, "Buoyancy -500 clamps to -100");
+        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "500", &v, &clamped) && Near(v, 100) && clamped, "Buoyancy 500 clamps to 100");
+
+        tn::Tuning base; base.gravity = 2.0f; base.buoyancy = -0.2f;
+        tn::Tuning under; under.gravity = 7.0f; under.buoyancy = 9.0f; under.linearDamping = 6.0f;
+        const tn::Tuning dry = tn::Blend(base, under, 0), half = tn::Blend(base, under, 0.5f), wet = tn::Blend(base, under, 1);
+        Check(Near(dry.gravity, 2.0f) && Near(dry.linearDamping, 1.0f), "t = 0: the dry values");
+        Check(Near(wet.gravity, -0.2f), "t = 1: gravity IS the Buoyancy (-0.2), not 2 x anything");
+        Check(Near(half.gravity, 0.9f), "t = 0.5: halfway from the dry gravity (2) to the Buoyancy (-0.2)");
+        Check(Near(wet.buoyancy, -0.2f), "the underwater section's own Buoyancy/GravityScale are not used");
+        Check(Near(wet.linearDamping, 6.0f), "the other keys still stack (1 x 6)");
+
+        // a CSV row's Buoyancy replaces the ini's, and drives the underwater gravity
+        tn::Overrides row;
+        tn::SetOverride(row, tn::FindKey("Buoyancy"), 0.5f);
+        const tn::Tuning eff = tn::Merge(base, row);
+        Check(Near(eff.buoyancy, 0.5f) && Near(eff.gravity, 2.0f), "Merge: the row replaces Buoyancy only");
+        Check(Near(tn::Blend(eff, under, 1).gravity, 0.5f), "...and underwater the gravity is the row's Buoyancy");
+
+        // Apply: Buoyancy alone changes nothing in the model
+        auto m = std::make_shared<ph::Model>();
+        ph::BodyDef b; b.type = ph::kBodyDynamic; b.bone = 0; b.gravity = 1; b.linDamp = 2; b.angDamp = 2;
+        m->bodies.push_back(b);
+        tn::Tuning onlyB; onlyB.buoyancy = -3.0f;
+        int changed = -1;
+        Check(tn::Apply(m, onlyB, &changed) == m && changed == 0, "Apply: a Buoyancy on its own returns the model untouched");
+
+        // the real engine: a chain with a negative Buoyancy rises when it is under water, and hangs when dry
+        tn::Tuning chain; chain.buoyancy = -1.0f;
+        tn::Tuning uw; // nothing else underwater
+        const double dryTip = ChainTipZ(tn::Blend(chain, uw, 0), 6.0);
+        const double wetTip = ChainTipZ(tn::Blend(chain, uw, 1), 6.0);
+        std::printf("     chain tip z after 6 s: %.3f dry, %.3f underwater with Buoyancy -1\n", dryTip, wetTip);
+        Check(dryTip < -0.5, "dry: Buoyancy does nothing, the chain hangs");
+        Check(wetTip > 0.3 && std::isfinite(wetTip), "underwater: Buoyancy -1 turns gravity around, the chain stands above its anchor");
     }
 
     std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);

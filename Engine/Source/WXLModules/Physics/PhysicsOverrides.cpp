@@ -72,6 +72,16 @@ namespace wxl::equip::physics::overrides
             return true;
         }
 
+        // A cell that says "use the ini's value": empty is handled by the caller, these are the spelled-out forms
+        // (NA, N/A, a spreadsheet's #N/A, Default, Ini, or a lone dash).
+        bool IsUseIniToken(const std::string& cell)
+        {
+            static const char* const tokens[] = { "na", "n/a", "#n/a", "default", "ini", "-" };
+            for (const char* t : tokens)
+                if (EqualsNoCase(cell, t)) return true;
+            return false;
+        }
+
         bool IsSilentColumn(const std::string& name)
         {
             static const char* const names[] = { "note", "notes", "comment", "comments", "name", "description" };
@@ -141,6 +151,7 @@ namespace wxl::equip::physics::overrides
 
                 const std::vector<std::string> cols = Split(trimmed, sep);
                 keyOfColumn.assign(cols.size(), -1);
+                uint32_t seen = 0;
                 for (size_t c = 0; c < cols.size(); ++c)
                 {
                     if (EqualsNoCase(cols[c], "kind")) kindCol = int(c);
@@ -149,13 +160,29 @@ namespace wxl::equip::physics::overrides
                     else
                     {
                         const int key = tuning::FindKey(cols[c].c_str());
-                        if (key >= 0) keyOfColumn[c] = key;
-                        else problems.Add(lineNo, "unknown column '%s' ignored (the multipliers are named like the ini keys, e.g. GravityScale)", cols[c]);
+                        if (key >= 0)
+                        {
+                            if (seen & (1u << key))
+                                problems.Add(lineNo, "column '%s' is listed twice; the later one is used%s", cols[c]);
+                            seen |= 1u << key;
+                            keyOfColumn[c] = key;
+                        }
+                        else problems.Add(lineNo, "unknown column '%s' ignored (the parameters are named like the ini keys, e.g. GravityScale)", cols[c]);
                     }
                 }
                 if (kindCol < 0 || idCol < 0)
                 {
                     problems.Add(lineNo, "the header needs the columns Kind and DisplayId (found: '%s'); nothing was read", trimmed);
+                    return Table{};
+                }
+                // the whole set is required: a row then states every parameter, or says to use the ini's value
+                const uint32_t all = (1u << tuning::kKeyCount) - 1;
+                if ((seen & all) != all)
+                {
+                    std::string missing;
+                    for (int k = 0; k < tuning::kKeyCount; ++k)
+                        if (!(seen & (1u << k))) missing += (missing.empty() ? "" : ", ") + std::string(tuning::KeyName(k));
+                    problems.Add(lineNo, "the header must list the whole set of parameters; missing: %s (see PhysicsOverride.example.csv); nothing was read", missing);
                     return Table{};
                 }
                 continue;
@@ -187,12 +214,12 @@ namespace wxl::equip::physics::overrides
             for (size_t c = 0; c < cells.size() && c < keyOfColumn.size(); ++c)
             {
                 const int key = keyOfColumn[c];
-                if (key < 0 || cells[c].empty()) continue;
+                if (key < 0 || cells[c].empty() || IsUseIniToken(cells[c])) continue;   // the ini's value stays
                 float v = 1.0f;
                 bool clamped = false;
                 if (!tuning::ParseKeyValue(key, cells[c].c_str(), &v, &clamped))
                 {
-                    problems.Add(lineNo, (std::string(tuning::KeyName(key)) + "='%s' is not a number (use 1.25, or 1,25 in a ';' file); that cell is ignored%s").c_str(),
+                    problems.Add(lineNo, (std::string(tuning::KeyName(key)) + "='%s' is not a number (use 1.25, or 1,25 in a ';' file; leave it empty, or write NA or Default, for the ini's value); that cell is ignored%s").c_str(),
                                  cells[c]);
                     continue;
                 }
@@ -206,7 +233,7 @@ namespace wxl::equip::physics::overrides
             }
             if (!row.Any())
             {
-                problems.Add(lineNo, "no multiplier set for this row; skipped%s", std::string());
+                problems.Add(lineNo, "every parameter of this row is empty, NA or Default (nothing to override); skipped%s", std::string());
                 continue;
             }
 

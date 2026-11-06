@@ -1,2 +1,17 @@
-Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note
-Item,71110,1,,,upside-down variant
+# PhysicsOverride.csv - physics parameters for single displays.
+# Put it next to the client exe (or in DBFilesClient\). With WatchIni=1 it reloads when saved.
+#
+# Kind      = Item (ItemDisplayInfo id) or Creature (CreatureDisplayInfo id; also mounts and pets)
+# DisplayId = the display id (not the item id, not the creature entry)
+# A number REPLACES the ini value for that display (it is not multiplied with it). It is a factor of what the
+# model's .phy2 says, so 1 = as the file has it.
+# Empty, NA, N/A, Default, Ini or - = use the value from WXLExtendedEquipment.ini.
+# GravityScale may be negative (the loose parts rise). [Physics.Underwater] still multiplies on top while swimming.
+# Every column must be present. Column order does not matter. Replace the example ids with your own.
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
+Item,900001,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,same model as another display - gravity inverted so the dangling bits rise
+Item,900002,0.5,2,2,NA,NA,100,0,NA,NA,NA,NA,NA,2,floaty and well damped - sticky - no bounce - follows fast moves
+Item,900003,1.5,NA,NA,NA,3,NA,NA,0.6,0.6,NA,NA,NA,NA,heavy and stiff - falls faster - swings less
+Item,900004,0,6,6,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,zero gravity - heavy damping - hangs in the air where the animation puts it
+Creature,900005,NA,NA,NA,NA,0.5,NA,NA,1.5,NA,NA,NA,NA,NA,a looser and lighter creature or mount
+Creature,900006,-0.3,3,3,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,drifts upward like a ghost

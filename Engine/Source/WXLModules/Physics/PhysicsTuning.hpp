@@ -57,8 +57,9 @@
 // range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
 // unless listed above (GravityScale: -100 .. 100).
 //
-// The same keys can be set for single items in PhysicsOverride.csv (PhysicsOverrides.hpp): Merge() lays such a
-// row over the global values.
+// The same keys can be given for single item or creature displays in PhysicsOverride.csv
+// (PhysicsOverrides.hpp): Merge() lays such a row over the global values, and a number in the row replaces the
+// ini's value (it is not multiplied with it).
 #pragma once
 
 #include "physics_domino.h"

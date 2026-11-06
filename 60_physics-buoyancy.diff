@@ -1,0 +1,580 @@
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp	2026-11-06 11:55:13.000000000 +0000
++++ Engine/Source/WXLModules/Physics/PhysicsLive.cpp	2026-11-06 12:32:38.982544023 +0000
+@@ -182,7 +182,8 @@
+         tuning::Tuning g_tuning;
+         // [Physics.Underwater]: the same multipliers, stacked on the effective ones while a unit swims. Same locking.
+         tuning::Tuning g_underwater;
+-        bool  g_uwActive = false;        // Enabled=1 and at least one multiplier is not 1
++        bool  g_uwOn = true;             // [Physics.Underwater] Enabled
++        bool  g_uwActive = false;        // Enabled=1 and the water changes at least one multiplier (see UpdateUnderwaterActive)
+         float g_uwBlendSec = 0.4f;       // BlendSeconds
+         bool  g_hasSwimApi = false;      // the core offers WxlApi::instanceSwimming
+         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
+@@ -262,6 +263,33 @@
+             return false;
+         }
+ 
++        // Does the water change anything? Yes when [Physics.Underwater] sets a multiplier other than gravity and
++        // Buoyancy (those two are not used there: underwater, the gravity multiplier IS the Buoyancy), or when
++        // the Buoyancy of the global values or of any PhysicsOverride.csv row differs from the gravity multiplier
++        // it replaces. Written after LoadTuning and LoadOverrides, under the same locking.
++        void UpdateUnderwaterActive()
++        {
++            bool matters = false;
++            tuning::Tuning others = g_underwater;
++            others.gravity = 1.0f;
++            others.buoyancy = 1.0f;
++            if (!others.Identity()) matters = true;
++            if (g_tuning.buoyancy != g_tuning.gravity) matters = true;
++            auto rowMatters = [&](const tuning::Overrides& row) {
++                const tuning::Tuning m = tuning::Merge(g_tuning, row);
++                return m.buoyancy != m.gravity;
++            };
++            for (const auto& kv : g_ovr.items)     if (!matters && rowMatters(kv.second)) matters = true;
++            for (const auto& kv : g_ovr.creatures) if (!matters && rowMatters(kv.second)) matters = true;
++
++            const bool was = g_uwActive;
++            g_uwActive = g_uwOn && matters;
++            if (g_uwActive != was || g_uwActive)
++                wxl::LogCat("PHYS", "physics: underwater: %s; gravity underwater = Buoyancy (global %.3g)%s",
++                            g_uwActive ? "on" : "off (nothing differs in the water)", g_tuning.buoyancy,
++                            g_uwActive && !g_hasSwimApi ? " - but this client cannot tell who swims, so it is NOT applied" : "");
++        }
++
+         void LoadOverrides()
+         {
+             g_ovr = overrides::Table{};
+@@ -271,6 +299,7 @@
+             if (!ReadOverrideText(text, g_ovrWhere))
+             {
+                 wxl::LogCat("PHYS", "physics: no %s (optional): no per-display multipliers", kOverrideName);
++                UpdateUnderwaterActive();
+                 return;
+             }
+             std::string problems;
+@@ -285,6 +314,7 @@
+             wxl::LogCat("PHYS", "physics: %s: %zu item row(s), %zu creature row(s)%s", g_ovrWhere.c_str(), g_ovr.items.size(),
+                         g_ovr.creatures.size(), "");
+             g_stats.overrideRows = uint32_t(g_ovr.Rows());
++            UpdateUnderwaterActive();
+         }
+ 
+         // The multipliers a model gets for one display (item or creature): the global ones, with that display's row of
+@@ -518,14 +548,14 @@
+                 if (tuning::ParseMultiplier(text, &v)) g_uwBlendSec = std::max(0.0f, std::min(v, 10.0f));
+                 else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: BlendSeconds='%s' is not a number; ignored, stays %.2f", text, g_uwBlendSec);
+             }
+-            const bool on = host::IniGetBool("Physics.Underwater", "Enabled", true);
+-            g_uwActive = on && !g_underwater.Identity();
+-            if (g_uwActive)
+-                wxl::LogCat("PHYS", "physics: underwater multipliers (on top of the above): %s, blend %.2f s%s",
+-                            tuning::Describe(g_underwater).c_str(), g_uwBlendSec,
+-                            g_hasSwimApi ? "" : " - but this client cannot tell who swims, so they are NOT applied");
+-            else
+-                wxl::LogCat("PHYS", "physics: underwater multipliers: off (%s)", on ? "none set" : "Enabled=0");
++            g_uwOn = host::IniGetBool("Physics.Underwater", "Enabled", true);
++            if (g_underwater.gravity != 1.0f || g_underwater.buoyancy != 1.0f)
++                wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: GravityScale and Buoyancy are not used there; underwater the "
++                                    "gravity multiplier is the Buoyancy of [Physics] (or of the PhysicsOverride.csv row)");
++            wxl::LogCat("PHYS", "physics: underwater multipliers (on top of the above): %s, blend %.2f s, Buoyancy %.3g%s",
++                        tuning::Describe(g_underwater).c_str(), g_uwBlendSec, g_tuning.buoyancy, g_uwOn ? "" : " (Enabled=0)");
++            // g_uwActive is settled by UpdateUnderwaterActive once PhysicsOverride.csv has been read too
++            g_uwActive = false;
+         }
+     }
+ 
+@@ -635,6 +665,7 @@
+             {
+                 if (iniSaved) LoadTuning();
+                 if (csvSaved) LoadOverrides();
++                else UpdateUnderwaterActive();   // LoadTuning cleared g_uwActive; the csv rows in memory still count
+                 g_models.clear();
+                 g_inst.clear();
+                 g_stats.live = 0;
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/PhysicsOverride.example.csv Engine/Source/WXLModules/Physics/PhysicsOverride.example.csv
+--- a/Engine/Source/WXLModules/Physics/PhysicsOverride.example.csv	2026-11-06 12:18:04.000000000 +0000
++++ Engine/Source/WXLModules/Physics/PhysicsOverride.example.csv	2026-11-06 12:32:51.096990017 +0000
+@@ -5,9 +5,11 @@
+ # CreatureDisplayInfo id). A number REPLACES the ini's value for that display; it is a factor of the
+ # model's .phy2 numbers, like the ini keys (1 = as the file has it). Empty, NA or Default = use the ini's
+ # value. GravityScale may be negative (parts rise). Every column below must be present.
++# Buoyancy is the gravity multiplier while the unit is UNDERWATER: it replaces GravityScale there (it is not
++# multiplied with it); negative = the parts float up. Out of the water it does nothing.
+ #
+ # These example rows use display ids that probably do not exist: edit or delete them.
+-Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
+-Item,900001,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,same model as another display - gravity turned around
+-Item,900002,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,half gravity - sticky - no bounce - follows fast moves
+-Creature,900003,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter creature or mount
++Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note
++Item,900001,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,same model as another display - gravity turned around
++Item,900002,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,-0.3,half gravity - sticky - no bounce - follows fast moves - floats up when swimming
++Creature,900003,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,Default,a looser and lighter creature or mount
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp	2026-11-06 12:18:04.000000000 +0000
++++ Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp	2026-11-06 12:32:51.096607500 +0000
+@@ -10,14 +10,14 @@
+ // Nothing here touches the engine: Parse() turns the text of the file into a Table, which the module consults
+ // with the display of an instance. Unit-testable (Tools/PhysicsGuardTest/physics_override_test.cpp).
+ //
+-//     Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale
+-//     Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
+-//     Creature,6789,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2
++//     Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy
++//     Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA
++//     Creature,6789,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,-0.3
+ //
+ //   * The first line that is not empty and not a comment is the header. It must have Kind, DisplayId and the
+ //     WHOLE set of parameters, named exactly like the ini keys: GravityScale, LinearDampingScale,
+ //     AngularDampingScale, InertiaScale, MassScale, FrictionScale, RestitutionScale, SwingLimitScale,
+-//     TwistLimitScale, JointStiffnessScale, JointDampingScale, MotorTorqueScale, FollowScale. Any order; names
++//     TwistLimitScale, JointStiffnessScale, JointDampingScale, MotorTorqueScale, FollowScale, Buoyancy. Any order; names
+ //     and Kind are not case sensitive. A header that lacks one is refused, naming what is missing, and nothing
+ //     is read. A column called Note, Notes, Comment, Comments, Name or Description is ignored without a word;
+ //     any other unknown column is ignored with one log line.
+@@ -28,7 +28,10 @@
+ //   * A number in a parameter column is the value for that display. It replaces the ini's value (the ini key
+ //     as it is, or 1.0 when the ini has none); like the ini keys it is a factor of what the model's .phy2 says,
+ //     so 1 is "as the file has it". A cell that is empty, or says NA, N/A, #N/A, Default, Ini or a lone dash,
+-//     uses the ini's value. Ranges are those of the ini keys; GravityScale may be negative.
++//     uses the ini's value. Ranges are those of the ini keys; GravityScale and Buoyancy may be negative.
++//   * Buoyancy is the gravity multiplier of the display while its unit is underwater: it replaces GravityScale
++//     there (a row with GravityScale=-1 and Buoyancy=0.2 falls up on land and sinks slowly in the water). It does
++//     nothing out of the water. A Buoyancy cell that is empty/NA/Default uses the ini's [Physics] Buoyancy (1).
+ //   * Lines starting with # or // are comments. The separator is a comma; if the header line has semicolons
+ //     and no commas, it is a semicolon (what a spreadsheet in an Italian locale writes), and then a decimal
+ //     comma ("1,25") works as well. A cell may be put in double quotes.
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp	2026-11-06 11:55:13.000000000 +0000
++++ Engine/Source/WXLModules/Physics/PhysicsTuning.cpp	2026-11-06 12:32:10.680117409 +0000
+@@ -36,6 +36,7 @@
+             {"JointDampingScale", &Tuning::jointDamping, 0.0f, 100.0f},
+             {"MotorTorqueScale", &Tuning::motorTorque, 0.0f, 100.0f},
+             {"FollowScale", &Tuning::follow, 0.0f, 100.0f},
++            {"Buoyancy", &Tuning::buoyancy, -100.0f, 100.0f},        // gravity multiplier underwater; negative: the parts float up
+         };
+ 
+         static_assert(sizeof(kKeys) / sizeof(kKeys[0]) == kKeyCount, "kKeyCount follows the key table");
+@@ -205,7 +206,7 @@
+     std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& requested, int* changed)
+     {
+         if (changed) *changed = 0;
+-        if (!in || requested.Identity()) return in;
++        if (!in) return in;
+ 
+         // Safe whatever the caller passes: every multiplier is brought into its own range (a NaN becomes 1),
+         // the same ranges FromIni uses. Zero inertia or mass would make the solver divide by nothing.
+@@ -215,6 +216,10 @@
+             float& v = t.*(k.field);
+             v = std::isfinite(v) ? Clamp(v, k.lo, k.hi) : 1.0f;
+         }
++        // Buoyancy is not a constant of the model: it only picks the gravity of the underwater variant (Blend),
++        // so on its own it changes nothing here.
++        t.buoyancy = 1.0f;
++        if (t.Identity()) return in;
+ 
+         auto out = std::make_shared<phys::Model>(*in);
+         int n = 0;
+@@ -285,6 +290,14 @@
+             if (!std::isfinite(u)) u = 1.0f;
+             r.*(k.field) = Clamp(b * (1.0f + (u - 1.0f) * t), k.lo, k.hi);
+         }
++
++        // Gravity underwater is the Buoyancy, not gravity x something: ease from the dry gravity to it.
++        float g = base.gravity, buoy = base.buoyancy;
++        if (!std::isfinite(g)) g = 1.0f;
++        if (!std::isfinite(buoy)) buoy = 1.0f;
++        buoy = Clamp(buoy, kKeys[0].lo, kKeys[0].hi);
++        r.gravity = Clamp(g + (buoy - g) * t, kKeys[0].lo, kKeys[0].hi);
++        r.buoyancy = buoy;   // not scaled by the underwater section
+         return r;
+     }
+ 
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp	2026-11-06 12:18:04.000000000 +0000
++++ Engine/Source/WXLModules/Physics/PhysicsTuning.hpp	2026-11-06 12:32:10.679784555 +0000
+@@ -35,6 +35,12 @@
+ //     ; ---- following a fast move ----
+ //     FollowScale=1.0           ; how much of a fast move of the item the anchors take at once (carry, 0 .. 1)
+ //
++//     ; ---- in the water ----
++//     Buoyancy=1.0              ; the gravity multiplier of a model that is underwater: while its unit swims,
++//                               ; this REPLACES GravityScale (it is not multiplied with it). 1 = the file's own
++//                               ; gravity, 0 = the loose parts hang weightless, negative (down to -100) = they
++//                               ; float up. Out of the water it does nothing.
++//
+ //     ; Re-read these keys whenever the ini is saved, without restarting the client (the parts snap back to
+ //     ; their pose for a moment). Default 0.
+ //     WatchIni=0
+@@ -44,20 +50,22 @@
+ // model belongs to a swimming unit (or hangs on one: an item in its hand):
+ //
+ //     [Physics.Underwater]
+-//     GravityScale=-0.2
+ //     LinearDampingScale=6
+ //     AngularDampingScale=6
+ //     BlendSeconds=0.4          ; how long the change takes after the unit enters or leaves the water
+ //
+-// The effective gravity underwater is therefore (the global or CSV gravity) x [Physics.Underwater] GravityScale.
+-// A key that is missing is 1 (no change); with every key missing, or Enabled=0, nothing is done underwater.
++// GRAVITY UNDERWATER IS NOT MULTIPLIED. The effective gravity multiplier of a model in the water is its
++// Buoyancy (the [Physics] key, or the PhysicsOverride.csv cell of its display): the underwater calculation uses
++// Buoyancy INSTEAD of GravityScale. GravityScale and Buoyancy in [Physics.Underwater] itself are therefore not
++// used (the module logs a line if they are set). A key that is missing is 1 (no change); with every other key
++// missing, Buoyancy equal to GravityScale and Enabled=0, nothing is done underwater.
+ // Blend() computes the multipliers for a model that is part of the way in.
+ //
+ // Every multiplier is read as a decimal number, "1.25" or "1,25" (a leading "-" is allowed); a value outside its
+ // range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
+ // unless listed above (GravityScale: -100 .. 100).
+ //
+-// The same keys can be given for single item or creature displays in PhysicsOverride.csv
++// The same keys (Buoyancy included) can be given for single item or creature displays in PhysicsOverride.csv
+ // (PhysicsOverrides.hpp): Merge() lays such a row over the global values, and a number in the row replaces the
+ // ini's value (it is not multiplied with it).
+ #pragma once
+@@ -80,6 +88,7 @@
+         float swingLimit = 1, twistLimit = 1;
+         float jointStiffness = 1, jointDamping = 1, motorTorque = 1;
+         float follow = 1;
++        float buoyancy = 1;   // gravity multiplier while underwater; replaces `gravity` there (see Blend)
+ 
+         /// True when every multiplier is exactly 1 (Apply then returns its input untouched).
+         bool Identity() const;
+@@ -94,7 +103,7 @@
+         bool Any() const { return set != 0; }
+     };
+ 
+-    constexpr int kKeyCount = 13;
++    constexpr int kKeyCount = 14;
+     /// The ini name of key i ("GravityScale"...), nullptr when i is out of range.
+     const char* KeyName(int i);
+     /// The index of a key by its ini name, ignoring case; -1 when it is none of them.
+@@ -124,11 +133,13 @@
+     /// shapes; limits and springs on shoulder, revolute and weld joints; carry on kinematic bodies.
+     std::shared_ptr<phys::Model> Apply(const std::shared_ptr<phys::Model>& in, const Tuning& t, int* changed = nullptr);
+ 
+-    /// The multipliers to use while a model is `t` of the way into the water: base x (1 + (under - 1) x t) for
+-    /// each one, t clamped to 0 .. 1. t = 0 is `base` as it is, t = 1 is base x under (the underwater
+-    /// multipliers stack on the ones of [Physics]). The blend is linear in the multiplier, so a value of 0 or
+-    /// a negative gravity is crossed smoothly instead of being jumped to. Each result is brought into its
+-    /// key's range.
++    /// The multipliers to use while a model is `t` of the way into the water, t clamped to 0 .. 1.
++    ///  * every key but gravity and Buoyancy: base x (1 + (under - 1) x t). t = 0 is `base` as it is, t = 1 is
++    ///    base x under (the underwater multipliers stack on the ones of [Physics]).
++    ///  * gravity: base.gravity + (base.buoyancy - base.gravity) x t. Underwater (t = 1) the gravity multiplier
++    ///    IS base.buoyancy; `under.gravity` and `under.buoyancy` are not used. Buoyancy itself is kept.
++    /// The blend is linear in the multiplier, so a value of 0 or a negative gravity is crossed smoothly instead
++    /// of being jumped to. Each result is brought into its key's range.
+     Tuning Blend(const Tuning& base, const Tuning& under, float t);
+ 
+     /// "GravityScale=0.5 SwingLimitScale=1.2 ..." for every multiplier that is not 1 ("none" otherwise).
+diff -ruN --strip-trailing-cr a/Engine/Source/WXLModules/Physics/README.md Engine/Source/WXLModules/Physics/README.md
+--- a/Engine/Source/WXLModules/Physics/README.md	2026-11-06 12:18:04.000000000 +0000
++++ Engine/Source/WXLModules/Physics/README.md	2026-11-06 12:33:11.807095798 +0000
+@@ -148,11 +148,12 @@
+ JointDampingScale=1.0     ; joint spring damping (same)
+ MotorTorqueScale=1.0      ; strongest motor push (same)
+ FollowScale=1.0           ; how much of a fast move the anchors take at once (carry, result 0 .. 1)
++Buoyancy=1.0              ; gravity multiplier while the unit is UNDERWATER; replaces GravityScale there (-100 .. 100)
+ 
+ WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
+ ```
+ 
+-Ranges are 0 .. 100 unless noted (`GravityScale`: -100 .. 100). What each key does to what is in the file:
++Ranges are 0 .. 100 unless noted (`GravityScale` and `Buoyancy`: -100 .. 100). What each key does to what is in the file:
+ 
+ | Key | Changes | On |
+ | --- | --- | --- |
+@@ -193,34 +194,50 @@
+ display where it has one), and **only while the model belongs to a swimming unit**: a creature or player, an item in
+ its hand or on its back, a rider on a mount. Out of the water nothing changes.
+ 
++**Gravity underwater is the `Buoyancy`, not a product.** The underwater calculation uses `Buoyancy` *instead of* the
++gravity multiplier: the effective gravity multiplier of a model in the water is its `Buoyancy` (the `[Physics]` key, or
++the `Buoyancy` cell of its `PhysicsOverride.csv` row), whatever its `GravityScale` is on land. `GravityScale` and
++`Buoyancy` inside `[Physics.Underwater]` are not used (the module logs a line when they are set). `Buoyancy=1` (the
++default) is the file's own gravity, `0` makes the loose parts hang weightless, a negative value floats them up.
++
+ ```ini
+ [Physics.Underwater]
+ ; Enabled=0 switches the section off without deleting it (default 1). Comments go on their own line.
+ Enabled=1
+-; the effective multiplier is (global or CSV value) x (this one): 1.0 x -0.2 = -0.2, so the parts drift up
+-GravityScale=-0.2
++; the effective multiplier is (global or CSV value) x (this one). Gravity is not one of them: it is the
++; Buoyancy of [Physics] (or of the CSV row), see above
+ LinearDampingScale=6
+ AngularDampingScale=6
+ ; seconds the change takes after the unit enters or leaves the water (0 = at once, default 0.4, max 10)
+ BlendSeconds=0.4
+ ```
+ 
++and in `[Physics]`:
++
++```ini
++[Physics]
++Buoyancy=-0.2    ; underwater the parts drift up, whatever GravityScale is on land
++```
++
+ * **"Swimming" is the client's own swim state**, the one that picks the swim animations (`CGUnit_C::UpdateSwimmingStatus`,
+   the swim bit that is set as soon as the unit is deep enough). It is the same for the local player and for every
+   other unit, and it is not a world query: the unit reports it, and the module reads that.
+ * **An item counts as swimming when the unit it hangs on does** (the walk goes up the attach chain: weapon -> character
+   -> mount), so a cloak and a staff change together with their owner.
+-* **Smooth, with no jump.** The multipliers move linearly from 1 to the underwater value over `BlendSeconds`, in 8
++* **Smooth, with no jump.** The multipliers move linearly from their dry value to the underwater one (for gravity: to
++  the `Buoyancy`) over `BlendSeconds`, in 8
+   steps. Each step is a tuned copy of the model for that display, built the first time it is needed and kept; a running
+   instance is switched to it with `Instance::Retune`, which keeps its pose, velocities and joint state (only the
+   constants change: gravity, damping, inertia, density and so on). The blend is linear in the multiplier, so a negative
+   gravity is crossed without a jump. A unit that appears already in the water starts with the underwater values.
+-* **The underwater values multiply a CSV row's values too**, they do not replace them: a display with `GravityScale=-1`
+-  in the CSV and `-0.5` here gets `0.5` underwater.
+-* **Ranges are the same as above** (`GravityScale` -100 .. 100, the rest as listed), and the product is clamped to the
+-  range too. A key that is missing is 1. If every key is missing (or `Enabled=0`), nothing is done underwater.
++* **The underwater values multiply a CSV row's values too** (damping, inertia, ...), they do not replace them. Gravity is
++  the exception: a display with `Buoyancy=0.2` in the CSV has gravity `0.2` underwater, whatever its `GravityScale`.
++* **Ranges are the same as above** (`GravityScale` and `Buoyancy` -100 .. 100, the rest as listed), and the product is
++  clamped to the range too. A key that is missing is 1. If nothing differs in the water (no key but gravity/`Buoyancy`
++  set, and `Buoyancy` equal to `GravityScale` everywhere, or `Enabled=0`), nothing is done underwater.
+ * **Gravity is a multiplier on each body's own file value**, so a body whose `.phy2` gravity is 0 stays at 0 whatever
+-  the scale: a negative `GravityScale` lifts only the bodies that have gravity.
++  the scale: a negative `Buoyancy` lifts only the bodies that have gravity.
++* **Upgrading:** an old `[Physics.Underwater] GravityScale=-0.2` is no longer used. Put `Buoyancy=-0.2` in `[Physics]`.
+ * **Needs the core's `instanceSwimming` call** (`WxlApi`, checked at start-up). With an older core the section is
+   read and logged but not applied, and the log says so.
+ * Log lines: `physics: underwater multipliers (on top of the above): ...` at start-up and on every re-read, and
+@@ -236,17 +253,17 @@
+ `PhysicsOverride.example.csv` in this folder is a ready template; copy it next to the client as `PhysicsOverride.csv`.
+ 
+ ```csv
+-Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
+-Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,upside-down variant of the staff
+-Item,12346,0.5,,,,,100,0,,,,,,2,half gravity - sticky - no bounce - follows fast moves
+-Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter mount
++Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note
++Item,12345,-1,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,upside-down variant of the staff
++Item,12346,0.5,,,,,100,0,,,,,,2,-0.3,half gravity - sticky - no bounce - follows fast moves - floats up when swimming
++Creature,6789,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,Default,a looser and lighter mount
+ ```
+ 
+ * **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
+   through the client's reader, `DBFilesClient\PhysicsOverride.csv` or `PhysicsOverride.csv` in `Data\` or an
+   archive (so a patch can ship one). The first one found is used.
+ * **Header:** the first line that is not empty and not a comment. It needs `Kind`, `DisplayId` and **the whole set of
+-  13 parameters**, named exactly like the ini keys (`GravityScale` ... `FollowScale`, see the table above), in any
++  14 parameters**, named exactly like the ini keys (`GravityScale` ... `FollowScale`, `Buoyancy`, see the table above), in any
+   order, not case sensitive. A header that lacks one is refused with the missing names listed, and nothing is read.
+   A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
+   unknown column is ignored with one log line.
+@@ -258,18 +275,19 @@
+   ini). Like the ini keys it is a factor of what the model's `.phy2` says, so `1` is "as the file has it": the file
+   holds different numbers per body and joint, and one absolute number would flatten them. A cell that is **empty, or
+   says `NA`, `N/A`, `#N/A`, `Default`, `Ini` or a lone `-`,** uses the ini's value (or 1.0 where the ini has no key).
+-  The ranges of the ini keys apply (a value outside is clamped and logged); `GravityScale` may be negative.
++  The ranges of the ini keys apply (a value outside is clamped and logged); `GravityScale` and `Buoyancy` may be negative.
+ * **Separators:** a comma. If the header line has semicolons and no commas, the file uses `;` (a spreadsheet in an
+   Italian locale writes that) and a decimal comma (`1,25`) works too. A cell can be put in double quotes.
+   Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds
+   one) is ignored.
+ * **Mistakes** skip or trim that row and are logged (category `PHYS`, with the line number); the rest still works.
+   A cell that is neither a number nor one of the words above is ignored (the ini's value is used) and logged. A row
+-  whose 13 cells are all empty/NA/Default has nothing to override and is skipped. A display listed twice: the later
++  whose 14 cells are all empty/NA/Default has nothing to override and is skipped. A display listed twice: the later
+   row wins.
+-* **Underwater:** `[Physics.Underwater]` (see above) stacks on top of a row: the row's number replaces the ini's, then
+-  the underwater multiplier is applied to it. A display with `GravityScale` `-1` here and `-0.5` underwater gets `0.5`
+-  while its unit swims. A cell that says `NA`/`Default` takes the ini's value first, and underwater multiplies that.
++* **Underwater:** `Buoyancy` is the gravity multiplier of the display while its unit swims, and it **replaces**
++  `GravityScale` there: a row with `GravityScale` `-1` and `Buoyancy` `0.2` is pulled up on land and sinks slowly in
++  the water. A `Buoyancy` cell that says `NA`/`Default` takes the ini's `[Physics] Buoyancy` (1 when it has none).
++  The other underwater multipliers of `[Physics.Underwater]` (see above) still stack on top of a row's numbers.
+ * **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
+   moment); `PhysicsLive::ReloadFiles()` does too.
+ * **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;
+diff -ruN --strip-trailing-cr a/Tools/PhysicsGuardTest/physics_override_test.cpp Tools/PhysicsGuardTest/physics_override_test.cpp
+--- a/Tools/PhysicsGuardTest/physics_override_test.cpp	2026-11-06 12:18:04.000000000 +0000
++++ Tools/PhysicsGuardTest/physics_override_test.cpp	2026-11-06 12:33:44.997122665 +0000
+@@ -130,10 +130,10 @@
+     std::printf("3. PhysicsOverride.csv: the whole set of parameters\n");
+     {
+         std::string problems;
+-        // all 13 parameters, in the ini's order; Row() writes one row, every parameter "Default" unless given
++        // all 14 parameters, in the ini's order; Row() writes one row, every parameter "Default" unless given
+         const std::string header = "Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,"
+                                    "FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,"
+-                                   "JointDampingScale,MotorTorqueScale,FollowScale";
++                                   "JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy";
+         auto Row = [](const char* kind, int id, std::map<std::string, std::string> given, const char* fill = "Default",
+                       const char* tail = "") {
+             std::string r = std::string(kind) + "," + std::to_string(id);
+@@ -168,19 +168,20 @@
+ 
+         // every spelling of "use the ini's value"
+         problems.clear();
+-        t = ov::Parse(header + "\nItem,1,-2,na,N/A,#N/A,default,INI,-,,Default,NA,NA,NA,NA\n", &problems);
++        t = ov::Parse(header + "\nItem,1,-2,na,N/A,#N/A,default,INI,-,,Default,NA,NA,NA,NA,NA\n", &problems);
+         const tn::Overrides* tok = t.Find(ov::Kind::Item, 1);
+         Check(problems.empty() && tok && tok->set == Bit("GravityScale"), "empty, NA, N/A, #N/A, Default, Ini and a lone dash all mean: the ini's value (no problem logged)");
+ 
+         // header: any order, semicolons, decimal commas
+         const std::string semi = "FollowScale;DisplayId;KIND;GravityScale;LinearDampingScale;AngularDampingScale;InertiaScale;MassScale;"
+-                                 "frictionscale;RestitutionScale;SwingLimitScale;TwistLimitScale;JointStiffnessScale;JointDampingScale;MotorTorqueScale\r\n"
+-                                 "0,25;77;Item;-2;NA;NA;NA;NA;1,25;NA;NA;NA;NA;NA;NA\r\n";
++                                 "frictionscale;RestitutionScale;SwingLimitScale;TwistLimitScale;JointStiffnessScale;JointDampingScale;MotorTorqueScale;Buoyancy\r\n"
++                                 "0,25;77;Item;-2;NA;NA;NA;NA;1,25;NA;NA;NA;NA;NA;NA;-0,5\r\n";
+         problems.clear();
+         t = ov::Parse(semi, &problems);
+         const tn::Overrides* sm = t.Find(ov::Kind::Item, 77);
+-        Check(problems.empty() && sm && Near(sm->values.friction, 1.25f) && Near(sm->values.gravity, -2) && Near(sm->values.follow, 0.25f),
+-              "';' file, columns in any order and any case, decimal comma, CRLF");
++        Check(problems.empty() && sm && Near(sm->values.friction, 1.25f) && Near(sm->values.gravity, -2) && Near(sm->values.follow, 0.25f) &&
++                  Near(sm->values.buoyancy, -0.5f) && (sm->set & Bit("Buoyancy")),
++              "';' file, columns in any order and any case, decimal comma, CRLF (Buoyancy included)");
+ 
+         // the whole set is required
+         problems.clear();
+@@ -196,7 +197,7 @@
+             Check(t.Empty() && Has(problems, "missing: MassScale") && !Has(problems, "GravityScale,"), "...down to a single missing column");
+         }
+         problems.clear();
+-        t = ov::Parse(header + ",GravityScale\nItem,5,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,-3\n", &problems);
++        t = ov::Parse(header + ",GravityScale\nItem,5,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,-3\n", &problems);
+         const tn::Overrides* dup = t.Find(ov::Kind::Item, 5);
+         Check(Has(problems, "column 'GravityScale' is listed twice") && dup && Near(dup->values.gravity, -3), "a column listed twice: reported, the later one is used");
+ 
+@@ -244,6 +245,8 @@
+             Check(!text.empty() && problems.empty() && t.items.size() == 2 && t.creatures.size() == 1, "PhysicsOverride.example.csv parses cleanly (2 item rows, 1 creature row)");
+             const tn::Overrides* ex = t.Find(ov::Kind::Item, 900001);
+             Check(ex && Near(ex->values.gravity, -1), "...and its first row turns gravity around");
++            const tn::Overrides* ex2 = t.Find(ov::Kind::Item, 900002);
++            Check(ex2 && Near(ex2->values.buoyancy, -0.3f) && (ex2->set & Bit("Buoyancy")), "...and its second row sets Buoyancy (-0.3)");
+         }
+         else
+             std::printf("  (pass PhysicsOverride.example.csv as the first argument to check the template as well)\n");
+@@ -261,6 +264,48 @@
+         Check(std::isfinite(up) && std::isfinite(down), "nothing blows up");
+     }
+ 
++    std::printf("5. Buoyancy: the gravity multiplier underwater\n");
++    {
++        Check(tn::FindKey("buoyancy") == tn::kKeyCount - 1 && std::strcmp(tn::KeyName(tn::kKeyCount - 1), "Buoyancy") == 0, "Buoyancy is a key");
++        float v = 0; bool clamped = false;
++        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "-0,25", &v, &clamped) && Near(v, -0.25f) && !clamped, "Buoyancy may be negative");
++        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "-500", &v, &clamped) && Near(v, -100) && clamped, "Buoyancy -500 clamps to -100");
++        Check(tn::ParseKeyValue(tn::FindKey("Buoyancy"), "500", &v, &clamped) && Near(v, 100) && clamped, "Buoyancy 500 clamps to 100");
++
++        tn::Tuning base; base.gravity = 2.0f; base.buoyancy = -0.2f;
++        tn::Tuning under; under.gravity = 7.0f; under.buoyancy = 9.0f; under.linearDamping = 6.0f;
++        const tn::Tuning dry = tn::Blend(base, under, 0), half = tn::Blend(base, under, 0.5f), wet = tn::Blend(base, under, 1);
++        Check(Near(dry.gravity, 2.0f) && Near(dry.linearDamping, 1.0f), "t = 0: the dry values");
++        Check(Near(wet.gravity, -0.2f), "t = 1: gravity IS the Buoyancy (-0.2), not 2 x anything");
++        Check(Near(half.gravity, 0.9f), "t = 0.5: halfway from the dry gravity (2) to the Buoyancy (-0.2)");
++        Check(Near(wet.buoyancy, -0.2f), "the underwater section's own Buoyancy/GravityScale are not used");
++        Check(Near(wet.linearDamping, 6.0f), "the other keys still stack (1 x 6)");
++
++        // a CSV row's Buoyancy replaces the ini's, and drives the underwater gravity
++        tn::Overrides row;
++        tn::SetOverride(row, tn::FindKey("Buoyancy"), 0.5f);
++        const tn::Tuning eff = tn::Merge(base, row);
++        Check(Near(eff.buoyancy, 0.5f) && Near(eff.gravity, 2.0f), "Merge: the row replaces Buoyancy only");
++        Check(Near(tn::Blend(eff, under, 1).gravity, 0.5f), "...and underwater the gravity is the row's Buoyancy");
++
++        // Apply: Buoyancy alone changes nothing in the model
++        auto m = std::make_shared<ph::Model>();
++        ph::BodyDef b; b.type = ph::kBodyDynamic; b.bone = 0; b.gravity = 1; b.linDamp = 2; b.angDamp = 2;
++        m->bodies.push_back(b);
++        tn::Tuning onlyB; onlyB.buoyancy = -3.0f;
++        int changed = -1;
++        Check(tn::Apply(m, onlyB, &changed) == m && changed == 0, "Apply: a Buoyancy on its own returns the model untouched");
++
++        // the real engine: a chain with a negative Buoyancy rises when it is under water, and hangs when dry
++        tn::Tuning chain; chain.buoyancy = -1.0f;
++        tn::Tuning uw; // nothing else underwater
++        const double dryTip = ChainTipZ(tn::Blend(chain, uw, 0), 6.0);
++        const double wetTip = ChainTipZ(tn::Blend(chain, uw, 1), 6.0);
++        std::printf("     chain tip z after 6 s: %.3f dry, %.3f underwater with Buoyancy -1\n", dryTip, wetTip);
++        Check(dryTip < -0.5, "dry: Buoyancy does nothing, the chain hangs");
++        Check(wetTip > 0.3 && std::isfinite(wetTip), "underwater: Buoyancy -1 turns gravity around, the chain stands above its anchor");
++    }
++
+     std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
+     return g_failed ? 1 : 0;
+ }
+--- a/Tools/WxlModuleTest/physics_override_host_test.cpp	2026-11-06 12:18:04.000000000 +0000
++++ Tools/WxlModuleTest/physics_override_host_test.cpp	2026-11-06 12:34:15.939743750 +0000
+@@ -276,15 +276,18 @@
+         f << text;
+     }
+ 
+-    // The file needs the whole set of 13 parameters in every row. Row() writes one with only GravityScale given;
+-    // the other twelve cells say Default (or are empty when `fill` is empty), i.e. "use the ini's value".
++    // The file needs the whole set of 14 parameters in every row. Row() writes one with only GravityScale (and
++    // optionally Buoyancy) given; the other cells say Default (or are empty when `fill` is empty), i.e. "use the
++    // ini's value".
+     const char* const kHeader = "Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,"
+                                 "FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,"
+-                                "JointDampingScale,MotorTorqueScale,FollowScale,Note";
+-    std::string Row(const char* kind, int id, const char* gravity, const char* note = "", const char* fill = "Default")
++                                "JointDampingScale,MotorTorqueScale,FollowScale,Buoyancy,Note";
++    std::string Row(const char* kind, int id, const char* gravity, const char* note = "", const char* fill = "Default",
++                    const char* buoyancy = nullptr)
+     {
+         std::string r = std::string(kind) + "," + std::to_string(id) + "," + gravity;
+         for (int i = 0; i < 12; ++i) r += std::string(",") + fill;
++        r += std::string(",") + (buoyancy ? buoyancy : fill);   // the last parameter: Buoyancy
+         return r + "," + note + "\n";
+     }
+     bool LogHas(const char* part)
+@@ -307,7 +310,7 @@
+     // ---- the files ----
+     WriteCsv(
+         std::string("# per-display physics\n") + kHeader + "\n" +
+-        Row("Item", 1001, "-1", "upside down") +                       // a plain model, found through the attach event
++        Row("Item", 1001, "-1", "upside down", "Default", "1") +       // a plain model, found through the attach event; Buoyancy 1: hangs in the water
+         Row("Creature", 1002, "-1", "must never reach an item", "NA") +
+         Row("Item", 1003, "-1", "a baked variant", "") +                // found through its virtual path; empty cells too
+         Row("Item", 1005, "-1") +
+@@ -316,8 +319,9 @@
+         Row("Item", 1004, "nonsense", "bad cell: ignored - nothing else set so the row is skipped"));
+     g_ini["Physics"]["Enabled"] = "1";
+     g_ini["Physics"]["WatchIni"] = "1";
+-    // underwater, on top of everything else: gravity turned around, in a blink (BlendSeconds is short so a test second is plenty)
+-    g_ini["Physics.Underwater"]["GravityScale"] = "-1";
++    // underwater, the gravity multiplier is the Buoyancy (it replaces GravityScale there): -1 by default, so loose parts
++    // rise; the row of 1001 says Buoyancy 1 instead. BlendSeconds is short so a test second is plenty.
++    g_ini["Physics"]["Buoyancy"] = "-1";
+     g_ini["Physics.Underwater"]["BlendSeconds"] = "0.05";
+ 
+     WxlApi api = MakeApi();
+@@ -414,7 +418,7 @@
+     e1->modelId = reinterpret_cast<const void*>(0x6000);
+     Check(Play(*e1, 6.0) < -0.2, "a creature binding is dropped when the instance now shows another file");
+ 
+-    std::printf("4c. [Physics.Underwater] stacks on top of a row\n");
++    std::printf("4c. underwater: Buoyancy replaces the gravity multiplier\n");
+     a->parent = wearer;
+     FireHand(wearer, 15, 1, 1001, false);                       // display 1001: its row says GravityScale -1
+     const double dry1001 = Play(*a, 6.0);
+@@ -425,8 +429,8 @@
+     const double wet1001 = Play(*a, 6.0);
+     const double wet1002 = Play(*b, 6.0);
+     std::printf("     swimming: 1001 -> %.3f   1002 -> %.3f\n", wet1001, wet1002);
+-    Check(wet1001 < -0.2, "swimming: the row's -1 times the underwater -1 = +1, so 1001 now hangs");
+-    Check(wet1002 > wet1001 + 0.25, "swimming: the ini's 1 times the underwater -1 = -1, so 1002 now lifts (a row is not needed for it)");
++    Check(wet1001 < -0.2, "swimming: the row's Buoyancy 1 replaces its GravityScale -1, so 1001 now hangs");
++    Check(wet1002 > wet1001 + 0.25, "swimming: the ini's Buoyancy -1 replaces the gravity 1, so 1002 now lifts (a row is not needed for it)");
+     Check(LogHas("enters the water"), "the log says a model entered the water");
+     g_swimming.clear();
+     Check(Play(*a, 6.0) > wet1001 + 0.25, "out of the water again: 1001 is back to its row");
+@@ -446,7 +450,7 @@
+     Check(LogHas("csv saved"), "the reload is logged");
+ 
+     std::printf("6. a file without the whole set, then no file at all\n");
+-    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");              // the header lacks 12 of the 13 parameters
++    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");              // the header lacks 13 of the 14 parameters
+     std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+     const double tipB4 = Play(*b, 6.0);   // the module looks at the file while a frame runs
+     Check(LogHas("must list the whole set") && LogHas("missing: LinearDampingScale"), "a header without the whole set is refused, and the log names what is missing");

@@ -1,0 +1,13 @@
+# PhysicsOverride.csv: physics parameters for single displays. Copy this file to the client folder
+# (next to the exe) as PhysicsOverride.csv. See Engine/Source/WXLModules/Physics/README.md.
+#
+# One row = one item display (Kind=Item, ItemDisplayInfo id) or one creature/mount display (Kind=Creature,
+# CreatureDisplayInfo id). A number REPLACES the ini's value for that display; it is a factor of the
+# model's .phy2 numbers, like the ini keys (1 = as the file has it). Empty, NA or Default = use the ini's
+# value. GravityScale may be negative (parts rise). Every column below must be present.
+#
+# These example rows use display ids that probably do not exist: edit or delete them.
+Kind,DisplayId,GravityScale,LinearDampingScale,AngularDampingScale,InertiaScale,MassScale,FrictionScale,RestitutionScale,SwingLimitScale,TwistLimitScale,JointStiffnessScale,JointDampingScale,MotorTorqueScale,FollowScale,Note
+Item,900001,-1,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,Default,same model as another display - gravity turned around
+Item,900002,0.5,Default,Default,Default,Default,100,0,Default,Default,Default,Default,Default,2,half gravity - sticky - no bounce - follows fast moves
+Creature,900003,Default,Default,Default,Default,0.5,Default,Default,1.5,Default,Default,Default,Default,Default,a looser and lighter creature or mount
