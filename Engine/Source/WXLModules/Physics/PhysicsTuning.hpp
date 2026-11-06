@@ -11,8 +11,7 @@
 //     Enabled=1
 //
 //     ; ---- how the bones fall and settle (dynamic bodies) ----
-//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are. Negative = they
-//                               ; are pushed up (-100 .. 100); a body whose file gravity is 0 stays at 0.
+//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are.
 //     LinearDampingScale=1.0    ; air drag on movement. Up: slower, gooier. Down: swings longer.
 //     AngularDampingScale=1.0   ; air drag on spinning/twisting. Up: stops turning sooner.
 //     InertiaScale=1.0          ; resistance to being rotated. Up: lazier turns. (0.01 .. 100)
@@ -40,8 +39,7 @@
 //     WatchIni=0
 //
 // Every multiplier is read as a decimal number, "1.25" or "1,25"; a value outside its range is clamped to it
-// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above
-// (GravityScale is -100 .. 100; a negative value for any other key clamps to 0).
+// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
 #pragma once
 
 #include "physics_domino.h"
@@ -69,8 +67,8 @@ namespace wxl::equip::physics::tuning
     /// Reads one key of [Physics]: copies its text into out and returns true when the key exists.
     using ReadFn = bool (*)(const char* key, char* out, size_t cap);
 
-    /// Parses "1.25" / "1,25" / "-0.5" (surrounding spaces ignored; an optional leading + or -). False for
-    /// anything that is not a finite number; *out is untouched then.
+    /// Parses "1.25" / "1,25" (surrounding spaces ignored). False for anything that is not a finite,
+    /// non-negative number; *out is untouched then.
     bool ParseMultiplier(const char* text, float* out);
 
     /// Reads every multiplier through `read`. Problems (a value that is not a number, or out of range) are
