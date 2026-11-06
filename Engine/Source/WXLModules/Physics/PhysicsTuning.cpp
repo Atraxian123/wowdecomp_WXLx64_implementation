@@ -4,6 +4,7 @@
 #include "PhysicsTuning.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -20,9 +21,9 @@ namespace wxl::equip::physics::tuning
         };
 
         // Ranges: a value outside is clamped to it. 0 is meaningful for most (gravity 0 floats, damping 0 never
-        // slows); inertia and mass must stay above 0 or the solver divides by nothing.
+        // slows); inertia and mass must stay above 0 or the solver divides by nothing. Gravity may be negative.
         constexpr Key kKeys[] = {
-            {"GravityScale", &Tuning::gravity, 0.0f, 100.0f},
+            {"GravityScale", &Tuning::gravity, -100.0f, 100.0f},   // negative: the parts rise
             {"LinearDampingScale", &Tuning::linearDamping, 0.0f, 100.0f},
             {"AngularDampingScale", &Tuning::angularDamping, 0.0f, 100.0f},
             {"InertiaScale", &Tuning::inertia, 0.01f, 100.0f},
@@ -36,6 +37,8 @@ namespace wxl::equip::physics::tuning
             {"MotorTorqueScale", &Tuning::motorTorque, 0.0f, 100.0f},
             {"FollowScale", &Tuning::follow, 0.0f, 100.0f},
         };
+
+        static_assert(sizeof(kKeys) / sizeof(kKeys[0]) == kKeyCount, "kKeyCount follows the key table");
 
         constexpr float kMinHalfRangeDeg = 0.5f;   // a limit scaled to nothing stays a (tight) limit
         constexpr float kConeMinDeg = 10.0f;       // the engine clamps the cone to 10 .. 170 degrees itself
@@ -83,6 +86,12 @@ namespace wxl::equip::physics::tuning
     {
         if (!text || !out) return false;
         while (*text == ' ' || *text == '\t') ++text;
+        bool negative = false;
+        if (*text == '-' || *text == '+')
+        {
+            negative = *text == '-';
+            ++text;
+        }
 
         // "123", "1.25", "1,25", ".5": digits with at most one decimal separator. Done by hand because
         // strtod follows the process locale and a "," would stop it on an Italian system.
@@ -104,9 +113,60 @@ namespace wxl::equip::physics::tuning
                 break;
         }
         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
-        if (!digits || *p != '\0') return false;   // nothing numeric, a sign, an exponent, or trailing junk
-        *out = static_cast<float>(value);
-        return std::isfinite(*out);
+        if (!digits || *p != '\0') return false;   // nothing numeric, an exponent, or trailing junk
+        const float result = static_cast<float>(negative ? -value : value);
+        if (!std::isfinite(result)) return false;
+        *out = result;
+        return true;
+    }
+
+    const char* KeyName(int i)
+    {
+        return i >= 0 && i < kKeyCount ? kKeys[i].name : nullptr;
+    }
+
+    int FindKey(const char* name)
+    {
+        if (!name) return -1;
+        for (int i = 0; i < kKeyCount; ++i)
+        {
+            const char* a = kKeys[i].name;
+            const char* b = name;
+            while (*a && *b && std::tolower(static_cast<unsigned char>(*a)) == std::tolower(static_cast<unsigned char>(*b)))
+            {
+                ++a;
+                ++b;
+            }
+            if (!*a && !*b) return i;
+        }
+        return -1;
+    }
+
+    bool ParseKeyValue(int i, const char* text, float* out, bool* clamped)
+    {
+        if (clamped) *clamped = false;
+        if (i < 0 || i >= kKeyCount || !out) return false;
+        float v = 0;
+        if (!ParseMultiplier(text, &v)) return false;
+        const float c = Clamp(v, kKeys[i].lo, kKeys[i].hi);
+        if (clamped) *clamped = c != v;
+        *out = c;
+        return true;
+    }
+
+    void SetOverride(Overrides& o, int i, float v)
+    {
+        if (i < 0 || i >= kKeyCount) return;
+        o.values.*(kKeys[i].field) = std::isfinite(v) ? Clamp(v, kKeys[i].lo, kKeys[i].hi) : 1.0f;
+        o.set |= 1u << i;
+    }
+
+    Tuning Merge(const Tuning& base, const Overrides& o)
+    {
+        Tuning t = base;
+        for (int i = 0; i < kKeyCount; ++i)
+            if (o.set & (1u << i)) t.*(kKeys[i].field) = o.values.*(kKeys[i].field);
+        return t;
     }
 
     Tuning FromIni(ReadFn read, std::string* problems)
@@ -163,7 +223,7 @@ namespace wxl::equip::physics::tuning
         {
             if (b.type == phys::kBodyDynamic)
             {
-                Scale(b.gravity, t.gravity, 0.0f, 1.0e4f, n);
+                Scale(b.gravity, t.gravity, -1.0e4f, 1.0e4f, n);   // negative: the body is pulled up
                 Scale(b.linDamp, t.linearDamping, 0.0f, 1.0e4f, n);
                 Scale(b.angDamp, t.angularDamping, 0.0f, 1.0e4f, n);
                 Scale(b.inertia, t.inertia, 0.0f, 1.0e4f, n);

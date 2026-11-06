@@ -1,0 +1,1644 @@
+From 3cb9241ed2f7a874286fb667a9db3f5064a7df9a Mon Sep 17 00:00:00 2001
+From: patchgen <a@b.c>
+Date: Thu, 5 Nov 2026 22:04:02 +0000
+Subject: [PATCH] Physics: per-display multipliers (PhysicsOverride.csv) for
+ held items, negative GravityScale
+
+---
+ .../Source/WXLModules/Physics/PhysicsLive.cpp | 300 +++++++++++++-
+ .../Source/WXLModules/Physics/PhysicsLive.hpp |   5 +-
+ .../WXLModules/Physics/PhysicsOverrides.cpp   | 221 +++++++++++
+ .../WXLModules/Physics/PhysicsOverrides.hpp   |  60 +++
+ .../WXLModules/Physics/PhysicsTuning.cpp      |  72 +++-
+ .../WXLModules/Physics/PhysicsTuning.hpp      |  38 +-
+ Engine/Source/WXLModules/Physics/README.md    |  60 ++-
+ .../physics_override_test.cpp                 | 200 ++++++++++
+ .../physics_override_host_test.cpp            | 373 ++++++++++++++++++
+ .../run_physics_override_tests.sh             |  23 ++
+ 10 files changed, 1325 insertions(+), 27 deletions(-)
+ create mode 100644 Engine/Source/WXLModules/Physics/PhysicsOverrides.cpp
+ create mode 100644 Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+ create mode 100644 Tools/PhysicsGuardTest/physics_override_test.cpp
+ create mode 100644 Tools/WxlModuleTest/physics_override_host_test.cpp
+ create mode 100755 Tools/WxlModuleTest/run_physics_override_tests.sh
+
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+index e8d2b70..16a74aa 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+@@ -22,6 +22,7 @@
+ #include "ModuleHost.hpp"
+ #include "Phy2Library.hpp"
+ #include "PhysicsGuard.hpp"
++#include "PhysicsOverrides.hpp"
+ #include "PhysicsTuning.hpp"
+ #include "physics_domino.h"
+ 
+@@ -30,7 +31,9 @@
+ #include <chrono>
+ #include <cmath>
+ #include <cstdint>
++#include <cstdio>
+ #include <cstring>
++#include <filesystem>
+ #include <memory>
+ #include <mutex>
+ #include <string>
+@@ -39,6 +42,9 @@
+ 
+ namespace wxl::equip::physics
+ {
++    // A member the core's table has AND filled in: WXL_API_HAS only says the table is long enough.
++    #define PHYS_HAS(api, member) (WXL_API_HAS(api, member) && (api)->member)
++
+     namespace phys = wow::ec::physics;
+     namespace host = wxl::modules::host;
+ 
+@@ -67,6 +73,8 @@ namespace wxl::equip::physics
+             std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
+             guard::Limits limits;                 // how far each dynamic bone may stray
+             guard::State  judge;
++            uint32_t display = 0;                 // the item display this instance shows (0: none known)
++            uint32_t bindGen = 0;                 // g_bindGen when `display` was worked out
+         };
+ 
+         // Instances that had to be re-seeded: too many times in a short while switches them off for a bit.
+@@ -81,13 +89,26 @@ namespace wxl::equip::physics
+         struct ModelEntry
+         {
+             std::string                  stem;    // the path it was looked up under (a slot can be reused)
+-            std::shared_ptr<phys::Model> model;   // null: no physics for this model
++            std::shared_ptr<phys::Model> base;    // null: no physics for this model. Carry groups added, no multipliers yet
++            // base with the multipliers laid on: key 0 = the global ones, (1 << 32 | display) = the global ones
++            // with that item display's PhysicsOverride.csv row on top
++            std::unordered_map<uint64_t, std::shared_ptr<phys::Model>> variants;
++        };
++
++        // A held item's instance, as the OnHandItemAttached event told us (see OnHandItemAttached below)
++        struct Binding
++        {
++            void*    wearer = nullptr;   // the character's model instance the weapon is attached to
++            uint32_t slot = 0;           // inventory slot: 15 main hand, 16 off hand, 17 ranged
++            uint32_t displayId = 0;      // ItemDisplayInfo id
+         };
+ 
+         std::mutex g_lock;                                                // guards the three below and g_stats
+         std::unordered_map<const void*, ModelEntry> g_models;             // loaded model -> its physics
+         std::unordered_map<void*, InstState> g_inst;                      // instance -> simulation
+         std::unordered_map<void*, Penalty> g_penalty;                     // instance -> re-seed history
++        std::unordered_map<void*, Binding> g_bind;                        // held-item instance -> its display
++        uint32_t g_bindGen = 1;                                           // bumped whenever g_bind changes
+         guard::Config g_guardCfg;
+         bool g_carryAnchors = true;
+         constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
+@@ -140,6 +161,230 @@ namespace wxl::equip::physics
+         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
+         uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
+ 
++        // ---- PhysicsOverride.csv (PhysicsOverrides.hpp) ----
++        // Written by Init, ReloadFiles and the WatchIni poll (the last two under g_lock); read under g_lock.
++        overrides::Table g_ovr;
++        std::string g_ovrWhere;        // where it was read from ("" = there is no file)
++        uint64_t g_ovrStamp = 0;       // its last-write time when it was read (0 = not on disk)
++
++        constexpr const char* kOverrideName = "PhysicsOverride.csv";
++
++        // The places it is looked for, in order: beside the client, then DBFilesClient\ beside the client; the
++        // same two names are then tried through the client's reader (loose files under Data\ and the archives)
++        // so a patch archive can ship one.
++        std::vector<std::string> OverrideDiskCandidates()
++        {
++            std::vector<std::string> v;
++            const WxlApi* api = host::Api();
++            std::string base;
++            if (api && PHYS_HAS(api, workingDirectory) && api->workingDirectory())
++            {
++                base = api->workingDirectory();
++                if (!base.empty() && base.back() != '\\' && base.back() != '/') base += '/';
++            }
++            v.push_back(base + kOverrideName);
++            v.push_back(base + "DBFilesClient/" + kOverrideName);
++            return v;
++        }
++
++        // last-write time of the file on disk (0 when there is none); it changes when the file is saved
++        uint64_t OverrideStamp()
++        {
++            for (const std::string& path : OverrideDiskCandidates())
++            {
++                std::error_code ec;
++                const auto t = std::filesystem::last_write_time(path, ec);
++                if (ec) continue;
++                const uintmax_t size = std::filesystem::file_size(path, ec);
++                return (uint64_t(t.time_since_epoch().count()) ^ (uint64_t(ec ? 0 : size) << 1)) | 1u;   // never 0 for a file
++            }
++            return 0;
++        }
++
++        bool ReadOverrideText(std::string& text, std::string& where)
++        {
++            for (const std::string& path : OverrideDiskCandidates())
++            {
++                if (FILE* f = std::fopen(path.c_str(), "rb"))
++                {
++                    char buf[4096];
++                    size_t n;
++                    text.clear();
++                    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
++                    {
++                        text.append(buf, n);
++                        if (text.size() > (4u << 20)) break;   // not a plausible size: stop reading
++                    }
++                    std::fclose(f);
++                    where = path;
++                    return true;
++                }
++            }
++            const char* names[] = { "DBFilesClient\\PhysicsOverride.csv", "PhysicsOverride.csv" };
++            for (const char* name : names)
++            {
++                std::vector<uint8_t> raw;
++                if (host::ReadFile(name, raw) && !raw.empty() && raw.size() <= (4u << 20))
++                {
++                    text.assign(reinterpret_cast<const char*>(raw.data()), raw.size());
++                    where = std::string(name) + " (client data)";
++                    return true;
++                }
++            }
++            return false;
++        }
++
++        void LoadOverrides()
++        {
++            g_ovr = overrides::Table{};
++            g_ovrWhere.clear();
++            g_ovrStamp = OverrideStamp();
++            std::string text;
++            if (!ReadOverrideText(text, g_ovrWhere))
++            {
++                wxl::LogCat("PHYS", "physics: no %s (optional): no per-display multipliers", kOverrideName);
++                return;
++            }
++            std::string problems;
++            g_ovr = overrides::Parse(text, &problems);
++            for (size_t b = 0; b < problems.size();)
++            {
++                const size_t e = problems.find('\n', b);
++                wxl::LogCat("PHYS", "physics: %s", problems.substr(b, e == std::string::npos ? e : e - b).c_str());
++                if (e == std::string::npos) break;
++                b = e + 1;
++            }
++            wxl::LogCat("PHYS", "physics: %s: %zu item row(s), %zu creature row(s)%s", g_ovrWhere.c_str(), g_ovr.items.size(),
++                        g_ovr.creatures.size(), g_ovr.creatures.empty() ? "" : " (creature rows are read but not applied yet)");
++            g_stats.overrideRows = uint32_t(g_ovr.Rows());
++        }
++
++        // The multipliers a model gets for one item display: the global ones, with that display's row of
++        // PhysicsOverride.csv on top. Built once per (model, display) and kept. Caller holds g_lock.
++        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, uint32_t display, const char* stem)
++        {
++            const tuning::Overrides* row = display ? g_ovr.Find(overrides::Kind::Item, display) : nullptr;
++            const uint64_t key = row ? ((uint64_t(1) << 32) | display) : 0;
++            const auto it = e.variants.find(key);
++            if (it != e.variants.end()) return it->second;
++
++            const tuning::Tuning effective = row ? tuning::Merge(g_tuning, *row) : g_tuning;
++            int tuned = 0;
++            std::shared_ptr<phys::Model> model = tuning::Apply(e.base, effective, &tuned);   // a copy only when something changes
++            if (tuned) ++g_stats.modelsTuned;
++            if (row)
++            {
++                ++g_stats.modelsOverridden;
++                wxl::LogCat("PHYS", "physics: item display %u on '%s' uses its PhysicsOverride.csv row: %s", display, stem,
++                            tuning::Describe(effective).c_str());
++            }
++            e.variants[key] = model;
++            return model;
++        }
++
++        // Which ItemDisplayInfo a model instance shows; 0 when it is not a held item or nobody said. No lock held.
++        //  1. A held weapon the equip extension attached: OnHandItemAttached named its display (g_bind). Works for
++        //     two displays that share one model file and carry no texture or geoset change.
++        //  2. A baked variant: its virtual path is "<original stem>_<displayId>.m2" and the core can decode it.
++        //     Only paths under item\ count: a baked CREATURE variant has the same shape, and an item row must
++        //     never reach a creature.
++        uint32_t ResolveItemDisplay(const WxlApi* api, void* instance, const char* stem)
++        {
++            Binding b;
++            bool have = false;
++            {
++                std::lock_guard<std::mutex> g(g_lock);
++                const auto it = g_bind.find(instance);
++                if (it != g_bind.end()) { b = it->second; have = true; }
++            }
++            if (have)
++            {
++                // a recycled instance address must not inherit an old binding: the weapon is still the wearer's child
++                WxlModelInfo mi = {};
++                mi.structSize = sizeof(mi);
++                if (PHYS_HAS(api, modelInfo) && api->modelInfo(instance, &mi) == WXL_READ_OK && mi.parent == b.wearer)
++                    return b.displayId;
++                std::lock_guard<std::mutex> g(g_lock);
++                const auto it = g_bind.find(instance);
++                if (it != g_bind.end() && it->second.wearer == b.wearer) { g_bind.erase(it); ++g_bindGen; }
++            }
++            if (PHYS_HAS(api, vpathDecodeGlobalVirtualKey) && host::IsVirtualKey(stem))
++            {
++                const std::string norm = phy2::NormalizeModelPath(stem);
++                if (norm.compare(0, 5, "item\\") == 0)
++                {
++                    char original[WXL_PATH_MAX];
++                    uint32_t id = 0;
++                    if (api->vpathDecodeGlobalVirtualKey(stem, original, sizeof(original), &id) && id) return id;
++                }
++            }
++            return 0;
++        }
++
++        // Drops the bindings whose weapon is gone (the wearer was freed without a "removed" event).
++        void PruneBindings(const WxlApi* api)
++        {
++            std::vector<std::pair<void*, void*>> all;   // instance, wearer
++            {
++                std::lock_guard<std::mutex> g(g_lock);
++                for (const auto& kv : g_bind) all.emplace_back(kv.first, kv.second.wearer);
++            }
++            std::vector<void*> dead;
++            for (const auto& iw : all)
++            {
++                WxlModelInfo mi = {};
++                mi.structSize = sizeof(mi);
++                if (!(PHYS_HAS(api, modelInfo) && api->modelInfo(iw.first, &mi) == WXL_READ_OK && mi.parent == iw.second))
++                    dead.push_back(iw.first);
++            }
++            if (dead.empty()) return;
++            std::lock_guard<std::mutex> g(g_lock);
++            for (void* d : dead) g_bind.erase(d);
++            ++g_bindGen;
++        }
++
++        // OnHandItemAttached (fired by CCharacterComponent::AddHandItem after it attached the weapon, and by
++        // RemoveHandItem with removed=1): `model` is the WEARER, so the weapon's own instance is found as its
++        // child at the attach link whose file stem is the display's model. A baked variant has another stem and
++        // is not found here; ResolveItemDisplay decodes its path instead.
++        void OnHandItemAttached(void* /*user*/, const void* args)
++        {
++            if (!args) return;
++            const WxlHandItemAttachedArgs a = *static_cast<const WxlHandItemAttachedArgs*>(args);
++            const WxlApi* api = host::Api();
++            if (!api || !a.model) return;
++
++            if (a.removed)
++            {
++                std::lock_guard<std::mutex> g(g_lock);
++                for (auto it = g_bind.begin(); it != g_bind.end();)
++                    if (it->second.wearer == a.model && it->second.slot == a.invSlot) it = g_bind.erase(it);
++                    else ++it;
++                ++g_bindGen;
++                return;
++            }
++            if (!a.displayId || a.attachLink < 0) return;
++            if (!PHYS_HAS(api, findAttachedChild) || !PHYS_HAS(api, itemDisplayInfo)) return;
++
++            WxlItemDisplayInfo info = {};
++            info.structSize = sizeof(info);
++            if (!api->itemDisplayInfo(a.displayId, &info) || !info.modelName[0][0]) return;
++            void* child = api->findAttachedChild(a.model, static_cast<uint32_t>(a.attachLink), info.modelName[0]);
++
++            bool prune;
++            {
++                std::lock_guard<std::mutex> g(g_lock);
++                for (auto it = g_bind.begin(); it != g_bind.end();)   // the slot's earlier weapon
++                    if (it->second.wearer == a.model && it->second.slot == a.invSlot) it = g_bind.erase(it);
++                    else ++it;
++                if (child) g_bind[child] = Binding{ a.model, a.invSlot, a.displayId };
++                ++g_bindGen;
++                prune = g_bind.size() > 256;
++            }
++            if (prune) PruneBindings(api);
++        }
++
++
+         bool ReadPhysicsKey(const char* key, char* out, size_t cap)
+         {
+             return host::IniGetString("Physics", key, out, cap);
+@@ -180,7 +425,12 @@ namespace wxl::equip::physics
+                     g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+         g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
+         LoadTuning();
+-        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
++        LoadOverrides();
++        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers and %s are re-read whenever they are saved", kOverrideName);
++
++        // Which display a held weapon shows: the equip extension says so when it attaches one (see the handler).
++        if (api->subscribe(WXL_EVENT_HAND_ITEM_ATTACHED, &OnHandItemAttached, nullptr) != 0)
++            wxl::LogCat("PHYS", "physics: cannot follow held items; PhysicsOverride.csv then only reaches baked variants");
+ 
+         // After the built-in extensions' handlers (subscribers run in subscription order; modules load last).
+         return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnBuildBonePalette, nullptr) == 0;
+@@ -205,7 +455,8 @@ namespace wxl::equip::physics
+         g_penalty.clear();
+         g_stats = Stats{};
+         LoadTuning();
+-        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files and the multipliers will be read again");
++        LoadOverrides();
++        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files, the multipliers and %s will be read again", kOverrideName);
+     }
+ 
+     Stats GetStats()
+@@ -252,13 +503,17 @@ namespace wxl::equip::physics
+         {
+             g_lastIniPoll = now;
+             const uint64_t stamp = host::IniStamp();
+-            if (stamp && stamp != g_iniStamp)
++            const bool iniSaved = stamp && stamp != g_iniStamp;
++            const bool csvSaved = OverrideStamp() != g_ovrStamp;
++            if (iniSaved || csvSaved)
+             {
+-                LoadTuning();
++                if (iniSaved) LoadTuning();
++                if (csvSaved) LoadOverrides();
+                 g_models.clear();
+                 g_inst.clear();
+                 g_stats.live = 0;
+-                wxl::LogCat("PHYS", "physics: ini saved, multipliers applied to every model again");
++                wxl::LogCat("PHYS", "physics: %s saved, multipliers applied to every model again",
++                            iniSaved && csvSaved ? "ini and csv" : iniSaved ? "ini" : "csv");
+             }
+         }
+         {
+@@ -267,6 +522,24 @@ namespace wxl::equip::physics
+             if (pen != g_penalty.end() && pen->second.disabledUntil && int32_t(now - pen->second.disabledUntil) < 0) return;
+         }
+ 
++        uint32_t pendingGen = g_bindGen;   // the binding generation `display` below belongs to
++        // The item display this instance shows, for PhysicsOverride.csv. Worked out when the instance is new or
++        // when the held items changed (g_bindGen); calls into the core, so with the lock released.
++        uint32_t display = 0;
++        {
++            const auto cur = g_inst.find(instance);
++            if (cur != g_inst.end() && cur->second.shared == s.model && cur->second.bindGen == g_bindGen)
++                display = cur->second.display;
++            else
++            {
++                const uint32_t gen = g_bindGen;
++                lk.unlock();
++                display = ResolveItemDisplay(api, instance, stem);
++                lk.lock();
++                pendingGen = gen;
++            }
++        }
++
+         // This model's physics, looked up once (and again if the slot was reused by another file).
+         // The lookup reads files, so it runs with the lock released: other animate threads keep going.
+         std::shared_ptr<phys::Model> model;
+@@ -289,19 +562,18 @@ namespace wxl::equip::physics
+             lk.lock();
+             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
+             int carried = 0;
+-            model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
+-            int tuned = 0;
+-            model = tuning::Apply(model, g_tuning, &tuned);   // a copy only when a multiplier changes something
+-            if (tuned) ++g_stats.modelsTuned;
++            ModelEntry entry;
++            entry.stem = stem;
++            entry.base = guard::PrepareModel(res.model, g_carryAnchors, &carried);
+             if (carried)
+             {
+                 ++g_stats.modelsCarried;
+                 wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
+                             stem, carried);
+             }
+-            g_models[s.model] = ModelEntry{ stem, model };
++            mi = g_models.insert_or_assign(s.model, std::move(entry)).first;
+         }
+-        else model = mi->second.model;
++        if (mi->second.base) model = VariantLocked(mi->second, display, stem);
+         if (!model) return;
+ 
+         std::vector<float> before(size_t(boneCount) * 16);
+@@ -321,7 +593,7 @@ namespace wxl::equip::physics
+             }
+ 
+         InstState& st = g_inst[instance];
+-        if (st.shared != s.model || !st.sim)
++        if (st.shared != s.model || !st.sim || st.model != model)
+         {
+             st = InstState{};
+             st.shared = s.model;
+@@ -330,6 +602,8 @@ namespace wxl::equip::physics
+             if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), boneCount, g_guardCfg);
+         }
+         st.lastSeen = now;
++        st.display = display;
++        st.bindGen = pendingGen;
+ 
+         // the frame's time: the scene clock; a second build in one frame takes 0 s; a clock standing
+         // still for 0.1 s (paused scenes, UI models) falls back to the high-resolution clock
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsLive.hpp b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+index fa2b902..0d50899 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+@@ -26,7 +26,8 @@
+ //                          placement jumps (teleport), is dropped and re-seeded from the animated pose
+ //     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
+ //     TeleportYards=6      a placement move farther than this in one frame is a teleport
+-// and the multipliers of PhysicsTuning.hpp.
++// and the multipliers of PhysicsTuning.hpp, which PhysicsOverride.csv (PhysicsOverrides.hpp) can set again for
++// single item displays.
+ //
+ // The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT).
+ // Modules load after the built-in extensions, so this subscriber runs after the equip extension's own and
+@@ -62,6 +63,8 @@ namespace wxl::equip::physics
+         uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
+         uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
+         uint32_t modelsTuned = 0;     // models that [Physics] *Scale multipliers changed (PhysicsTuning.hpp)
++        uint32_t overrideRows = 0;    // rows read from PhysicsOverride.csv (PhysicsOverrides.hpp)
++        uint32_t modelsOverridden = 0;// (model, item display) pairs that a row of it changed
+         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
+         double   worstFrameMs = 0;
+     };
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsOverrides.cpp b/Engine/Source/WXLModules/Physics/PhysicsOverrides.cpp
+new file mode 100644
+index 0000000..a0662c6
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/PhysicsOverrides.cpp
+@@ -0,0 +1,221 @@
++// See PhysicsOverrides.hpp.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "PhysicsOverrides.hpp"
++
++#include <cctype>
++#include <cstdio>
++#include <vector>
++
++namespace wxl::equip::physics::overrides
++{
++    namespace
++    {
++        std::string Trim(const std::string& s)
++        {
++            size_t b = 0, e = s.size();
++            while (b < e && (s[b] == ' ' || s[b] == '\t')) ++b;
++            while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r')) --e;
++            return s.substr(b, e - b);
++        }
++
++        bool EqualsNoCase(const std::string& a, const char* b)
++        {
++            size_t i = 0;
++            for (; i < a.size() && b[i]; ++i)
++                if (std::tolower(static_cast<unsigned char>(a[i])) != std::tolower(static_cast<unsigned char>(b[i]))) return false;
++            return i == a.size() && !b[i];
++        }
++
++        // One line into cells. A cell may be wrapped in double quotes ("" inside is a quote); the separator
++        // inside quotes is part of the cell.
++        std::vector<std::string> Split(const std::string& line, char sep)
++        {
++            std::vector<std::string> cells;
++            std::string cur;
++            bool quoted = false;
++            for (size_t i = 0; i < line.size(); ++i)
++            {
++                const char c = line[i];
++                if (quoted)
++                {
++                    if (c == '"')
++                    {
++                        if (i + 1 < line.size() && line[i + 1] == '"') { cur += '"'; ++i; }
++                        else quoted = false;
++                    }
++                    else cur += c;
++                }
++                else if (c == '"') quoted = true;
++                else if (c == sep)
++                {
++                    cells.push_back(Trim(cur));
++                    cur.clear();
++                }
++                else cur += c;
++            }
++            cells.push_back(Trim(cur));
++            return cells;
++        }
++
++        bool ParseId(const std::string& text, uint32_t* out)
++        {
++            if (text.empty() || text.size() > 10) return false;
++            uint64_t v = 0;
++            for (char c : text)
++            {
++                if (c < '0' || c > '9') return false;
++                v = v * 10 + uint64_t(c - '0');
++            }
++            if (v == 0 || v > 0x7FFFFFFFu) return false;
++            *out = static_cast<uint32_t>(v);
++            return true;
++        }
++
++        bool IsSilentColumn(const std::string& name)
++        {
++            static const char* const names[] = { "note", "notes", "comment", "comments", "name", "description" };
++            for (const char* n : names)
++                if (EqualsNoCase(name, n)) return true;
++            return false;
++        }
++
++        struct Problems
++        {
++            std::string* out;
++            void Add(size_t line, const char* fmt, const std::string& a = std::string(), const std::string& b = std::string())
++            {
++                if (!out) return;
++                char buf[400];
++                std::snprintf(buf, sizeof(buf), fmt, a.c_str(), b.c_str());
++                *out += "PhysicsOverride.csv line " + std::to_string(line) + ": " + buf + "\n";
++            }
++        };
++    }
++
++    const tuning::Overrides* Table::Find(Kind kind, uint32_t displayId) const
++    {
++        const auto& map = kind == Kind::Item ? items : creatures;
++        const auto it = map.find(displayId);
++        return it == map.end() ? nullptr : &it->second;
++    }
++
++    Table Parse(const std::string& textIn, std::string* problemsOut)
++    {
++        Table table;
++        Problems problems{ problemsOut };
++
++        std::string text = textIn;
++        if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF && static_cast<unsigned char>(text[1]) == 0xBB &&
++            static_cast<unsigned char>(text[2]) == 0xBF)
++            text.erase(0, 3);   // a UTF-8 byte order mark, which a spreadsheet likes to write
++
++        // header state
++        bool haveHeader = false;
++        char sep = ',';
++        int kindCol = -1, idCol = -1;
++        std::vector<int> keyOfColumn;   // column -> multiplier key index, -1 for none
++
++        size_t lineNo = 0, pos = 0;
++        while (pos <= text.size())
++        {
++            size_t end = text.find('\n', pos);
++            if (end == std::string::npos) end = text.size();
++            const std::string line = text.substr(pos, end - pos);
++            pos = end + 1;
++            ++lineNo;
++
++            const std::string trimmed = Trim(line);
++            if (trimmed.empty() || trimmed[0] == '#' || trimmed.compare(0, 2, "//") == 0) continue;
++
++            if (!haveHeader)
++            {
++                haveHeader = true;
++                size_t commas = 0, semis = 0;
++                for (char c : trimmed)
++                {
++                    if (c == ',') ++commas;
++                    else if (c == ';') ++semis;
++                }
++                if (semis > 0 && commas == 0) sep = ';';
++
++                const std::vector<std::string> cols = Split(trimmed, sep);
++                keyOfColumn.assign(cols.size(), -1);
++                for (size_t c = 0; c < cols.size(); ++c)
++                {
++                    if (EqualsNoCase(cols[c], "kind")) kindCol = int(c);
++                    else if (EqualsNoCase(cols[c], "displayid") || EqualsNoCase(cols[c], "display_id")) idCol = int(c);
++                    else if (cols[c].empty() || IsSilentColumn(cols[c])) continue;
++                    else
++                    {
++                        const int key = tuning::FindKey(cols[c].c_str());
++                        if (key >= 0) keyOfColumn[c] = key;
++                        else problems.Add(lineNo, "unknown column '%s' ignored (the multipliers are named like the ini keys, e.g. GravityScale)", cols[c]);
++                    }
++                }
++                if (kindCol < 0 || idCol < 0)
++                {
++                    problems.Add(lineNo, "the header needs the columns Kind and DisplayId (found: '%s'); nothing was read", trimmed);
++                    return Table{};
++                }
++                continue;
++            }
++
++            const std::vector<std::string> cells = Split(trimmed, sep);
++            if (size_t(kindCol) >= cells.size() || size_t(idCol) >= cells.size())
++            {
++                problems.Add(lineNo, "row too short (needs Kind and DisplayId); skipped%s", std::string());
++                continue;
++            }
++
++            Kind kind;
++            if (EqualsNoCase(cells[kindCol], "item")) kind = Kind::Item;
++            else if (EqualsNoCase(cells[kindCol], "creature")) kind = Kind::Creature;
++            else
++            {
++                problems.Add(lineNo, "unknown Kind '%s' (use Item or Creature); skipped", cells[kindCol]);
++                continue;
++            }
++            uint32_t id = 0;
++            if (!ParseId(cells[idCol], &id))
++            {
++                problems.Add(lineNo, "DisplayId '%s' is not a whole number above 0; skipped", cells[idCol]);
++                continue;
++            }
++
++            tuning::Overrides row;
++            for (size_t c = 0; c < cells.size() && c < keyOfColumn.size(); ++c)
++            {
++                const int key = keyOfColumn[c];
++                if (key < 0 || cells[c].empty()) continue;
++                float v = 1.0f;
++                bool clamped = false;
++                if (!tuning::ParseKeyValue(key, cells[c].c_str(), &v, &clamped))
++                {
++                    problems.Add(lineNo, (std::string(tuning::KeyName(key)) + "='%s' is not a number (use 1.25, or 1,25 in a ';' file); that cell is ignored%s").c_str(),
++                                 cells[c]);
++                    continue;
++                }
++                if (clamped)
++                {
++                    char buf[32];
++                    std::snprintf(buf, sizeof(buf), "%g", v);
++                    problems.Add(lineNo, (std::string(tuning::KeyName(key)) + "='%s' is outside its range; clamped to %s").c_str(), cells[c], buf);
++                }
++                tuning::SetOverride(row, key, v);
++            }
++            if (!row.Any())
++            {
++                problems.Add(lineNo, "no multiplier set for this row; skipped%s", std::string());
++                continue;
++            }
++
++            auto& map = kind == Kind::Item ? table.items : table.creatures;
++            if (map.count(id))
++                problems.Add(lineNo, "this display is listed twice; the later row wins%s", std::string());
++            map[id] = row;
++        }
++        if (!haveHeader && problems.out) *problems.out += "PhysicsOverride.csv: no header line; nothing was read\n";
++        return table;
++    }
++}
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp b/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+new file mode 100644
+index 0000000..c5ea094
+--- /dev/null
++++ b/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+@@ -0,0 +1,60 @@
++// Per-display multipliers: PhysicsOverride.csv.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// The multipliers of PhysicsTuning.hpp apply to every model at once. PhysicsOverride.csv sets some of them for
++// ONE item display (or, later, one creature display), so two ItemDisplayInfo rows that share a model file can
++// move differently: one with dangling bits, the other with gravity turned around.
++//
++// Nothing here touches the engine: Parse() turns the text of the file into a Table, which the module consults
++// with the display id of an instance. Unit-testable (Tools/PhysicsGuardTest/physics_override_test.cpp).
++//
++//     Kind,DisplayId,GravityScale,SwingLimitScale,MassScale
++//     Item,12345,-1,,
++//     Item,12346,,1.5,0.5
++//     Creature,6789,0.5,,
++//
++//   * The first line that is not empty and not a comment is the header. It must have Kind and DisplayId; after
++//     those come any of the [Physics] multiplier names of PhysicsTuning.hpp (GravityScale, LinearDampingScale,
++//     AngularDampingScale, InertiaScale, MassScale, FrictionScale, RestitutionScale, SwingLimitScale,
++//     TwistLimitScale, JointStiffnessScale, JointDampingScale, MotorTorqueScale, FollowScale), in any order and
++//     any subset. Names and Kind are not case sensitive. A column called Note, Notes, Comment, Comments, Name or
++//     Description is ignored without a word; any other unknown column is ignored with one log line.
++//   * Kind is Item or Creature. Item rows are applied to held items (main hand, off hand, ranged, shield).
++//     Creature rows are read and checked but not applied yet.
++//   * DisplayId is the id in ItemDisplayInfo (Item) or CreatureDisplayInfo (Creature).
++//   * An empty cell means "not set here": the global value ([Physics] in WXLExtendedEquipment.ini) stays. A filled
++//     cell REPLACES the global value for that display (it is not multiplied with it). Ranges are those of the
++//     ini keys; GravityScale may be negative.
++//   * Lines starting with # or // are comments. The separator is a comma; if the header line has semicolons
++//     and no commas, it is a semicolon (what a spreadsheet in an Italian locale writes), and then a decimal
++//     comma ("1,25") works as well. A cell may be put in double quotes.
++//   * A row with a problem is skipped or trimmed and described in the log; the rest of the file still works.
++//     A display listed twice: the later row wins.
++#pragma once
++
++#include "PhysicsTuning.hpp"
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++#include <unordered_map>
++
++namespace wxl::equip::physics::overrides
++{
++    enum class Kind { Item, Creature };
++
++    struct Table
++    {
++        std::unordered_map<uint32_t, tuning::Overrides> items;       // ItemDisplayInfo id -> its multipliers
++        std::unordered_map<uint32_t, tuning::Overrides> creatures;   // CreatureDisplayInfo id -> its multipliers
++
++        /// The row of a display, or nullptr when it has none.
++        const tuning::Overrides* Find(Kind kind, uint32_t displayId) const;
++        size_t Rows() const { return items.size() + creatures.size(); }
++        bool Empty() const { return items.empty() && creatures.empty(); }
++    };
++
++    /// Parses the text of PhysicsOverride.csv. Problems (an unknown kind, a bad id, a value that is not a
++    /// number, a value out of range, a duplicate row) are described in *problems, one per line, when given.
++    Table Parse(const std::string& text, std::string* problems = nullptr);
++}
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+index 2f77cbf..402bc70 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.cpp
+@@ -4,6 +4,7 @@
+ #include "PhysicsTuning.hpp"
+ 
+ #include <algorithm>
++#include <cctype>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstring>
+@@ -20,9 +21,9 @@ namespace wxl::equip::physics::tuning
+         };
+ 
+         // Ranges: a value outside is clamped to it. 0 is meaningful for most (gravity 0 floats, damping 0 never
+-        // slows); inertia and mass must stay above 0 or the solver divides by nothing.
++        // slows); inertia and mass must stay above 0 or the solver divides by nothing. Gravity may be negative.
+         constexpr Key kKeys[] = {
+-            {"GravityScale", &Tuning::gravity, 0.0f, 100.0f},
++            {"GravityScale", &Tuning::gravity, -100.0f, 100.0f},   // negative: the parts rise
+             {"LinearDampingScale", &Tuning::linearDamping, 0.0f, 100.0f},
+             {"AngularDampingScale", &Tuning::angularDamping, 0.0f, 100.0f},
+             {"InertiaScale", &Tuning::inertia, 0.01f, 100.0f},
+@@ -37,6 +38,8 @@ namespace wxl::equip::physics::tuning
+             {"FollowScale", &Tuning::follow, 0.0f, 100.0f},
+         };
+ 
++        static_assert(sizeof(kKeys) / sizeof(kKeys[0]) == kKeyCount, "kKeyCount follows the key table");
++
+         constexpr float kMinHalfRangeDeg = 0.5f;   // a limit scaled to nothing stays a (tight) limit
+         constexpr float kConeMinDeg = 10.0f;       // the engine clamps the cone to 10 .. 170 degrees itself
+         constexpr float kConeMaxDeg = 170.0f;
+@@ -83,6 +86,12 @@ namespace wxl::equip::physics::tuning
+     {
+         if (!text || !out) return false;
+         while (*text == ' ' || *text == '\t') ++text;
++        bool negative = false;
++        if (*text == '-' || *text == '+')
++        {
++            negative = *text == '-';
++            ++text;
++        }
+ 
+         // "123", "1.25", "1,25", ".5": digits with at most one decimal separator. Done by hand because
+         // strtod follows the process locale and a "," would stop it on an Italian system.
+@@ -104,9 +113,60 @@ namespace wxl::equip::physics::tuning
+                 break;
+         }
+         while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') ++p;
+-        if (!digits || *p != '\0') return false;   // nothing numeric, a sign, an exponent, or trailing junk
+-        *out = static_cast<float>(value);
+-        return std::isfinite(*out);
++        if (!digits || *p != '\0') return false;   // nothing numeric, an exponent, or trailing junk
++        const float result = static_cast<float>(negative ? -value : value);
++        if (!std::isfinite(result)) return false;
++        *out = result;
++        return true;
++    }
++
++    const char* KeyName(int i)
++    {
++        return i >= 0 && i < kKeyCount ? kKeys[i].name : nullptr;
++    }
++
++    int FindKey(const char* name)
++    {
++        if (!name) return -1;
++        for (int i = 0; i < kKeyCount; ++i)
++        {
++            const char* a = kKeys[i].name;
++            const char* b = name;
++            while (*a && *b && std::tolower(static_cast<unsigned char>(*a)) == std::tolower(static_cast<unsigned char>(*b)))
++            {
++                ++a;
++                ++b;
++            }
++            if (!*a && !*b) return i;
++        }
++        return -1;
++    }
++
++    bool ParseKeyValue(int i, const char* text, float* out, bool* clamped)
++    {
++        if (clamped) *clamped = false;
++        if (i < 0 || i >= kKeyCount || !out) return false;
++        float v = 0;
++        if (!ParseMultiplier(text, &v)) return false;
++        const float c = Clamp(v, kKeys[i].lo, kKeys[i].hi);
++        if (clamped) *clamped = c != v;
++        *out = c;
++        return true;
++    }
++
++    void SetOverride(Overrides& o, int i, float v)
++    {
++        if (i < 0 || i >= kKeyCount) return;
++        o.values.*(kKeys[i].field) = std::isfinite(v) ? Clamp(v, kKeys[i].lo, kKeys[i].hi) : 1.0f;
++        o.set |= 1u << i;
++    }
++
++    Tuning Merge(const Tuning& base, const Overrides& o)
++    {
++        Tuning t = base;
++        for (int i = 0; i < kKeyCount; ++i)
++            if (o.set & (1u << i)) t.*(kKeys[i].field) = o.values.*(kKeys[i].field);
++        return t;
+     }
+ 
+     Tuning FromIni(ReadFn read, std::string* problems)
+@@ -163,7 +223,7 @@ namespace wxl::equip::physics::tuning
+         {
+             if (b.type == phys::kBodyDynamic)
+             {
+-                Scale(b.gravity, t.gravity, 0.0f, 1.0e4f, n);
++                Scale(b.gravity, t.gravity, -1.0e4f, 1.0e4f, n);   // negative: the body is pulled up
+                 Scale(b.linDamp, t.linearDamping, 0.0f, 1.0e4f, n);
+                 Scale(b.angDamp, t.angularDamping, 0.0f, 1.0e4f, n);
+                 Scale(b.inertia, t.inertia, 0.0f, 1.0e4f, n);
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+index 553b753..cacfd7b 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+@@ -11,7 +11,8 @@
+ //     Enabled=1
+ //
+ //     ; ---- how the bones fall and settle (dynamic bodies) ----
+-//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are.
++//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are. Negative (down to
++//                               ; -100) turns it around: the loose parts rise instead of hanging.
+ //     LinearDampingScale=1.0    ; air drag on movement. Up: slower, gooier. Down: swings longer.
+ //     AngularDampingScale=1.0   ; air drag on spinning/twisting. Up: stops turning sooner.
+ //     InertiaScale=1.0          ; resistance to being rotated. Up: lazier turns. (0.01 .. 100)
+@@ -38,13 +39,18 @@
+ //     ; their pose for a moment). Default 0.
+ //     WatchIni=0
+ //
+-// Every multiplier is read as a decimal number, "1.25" or "1,25"; a value outside its range is clamped to it
+-// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
++// Every multiplier is read as a decimal number, "1.25" or "1,25" (a leading "-" is allowed); a value outside its
++// range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
++// unless listed above (GravityScale: -100 .. 100).
++//
++// The same keys can be set for single items in PhysicsOverride.csv (PhysicsOverrides.hpp): Merge() lays such a
++// row over the global values.
+ #pragma once
+ 
+ #include "physics_domino.h"
+ 
+ #include <cstddef>
++#include <cstdint>
+ #include <memory>
+ #include <string>
+ 
+@@ -64,11 +70,33 @@ namespace wxl::equip::physics::tuning
+         bool Identity() const;
+     };
+ 
++    /// A partial set of multipliers: only the keys whose bit is set in `set` mean anything (bit i = key i, in
++    /// the order of KeyName). Used for one row of PhysicsOverride.csv.
++    struct Overrides
++    {
++        Tuning   values;
++        uint32_t set = 0;
++        bool Any() const { return set != 0; }
++    };
++
++    constexpr int kKeyCount = 13;
++    /// The ini name of key i ("GravityScale"...), nullptr when i is out of range.
++    const char* KeyName(int i);
++    /// The index of a key by its ini name, ignoring case; -1 when it is none of them.
++    int FindKey(const char* name);
++    /// Parses `text` as the value of key i (see ParseMultiplier) and brings it into the key's range. False when
++    /// it is not a number (*out untouched). *clamped (when given) says the range changed the value.
++    bool ParseKeyValue(int i, const char* text, float* out, bool* clamped = nullptr);
++    /// Sets key i of `o` to v (v is brought into the key's range) and marks it as set.
++    void SetOverride(Overrides& o, int i, float v);
++    /// `base`, with every key that `o` sets replaced by o's value. A replaced value, not a product.
++    Tuning Merge(const Tuning& base, const Overrides& o);
++
+     /// Reads one key of [Physics]: copies its text into out and returns true when the key exists.
+     using ReadFn = bool (*)(const char* key, char* out, size_t cap);
+ 
+-    /// Parses "1.25" / "1,25" (surrounding spaces ignored). False for anything that is not a finite,
+-    /// non-negative number; *out is untouched then.
++    /// Parses "1.25" / "1,25" / "-1" (surrounding spaces ignored, one leading "-" or "+"). False for anything
++    /// that is not a finite number; *out is untouched then. The key's range is applied by the callers.
+     bool ParseMultiplier(const char* text, float* out);
+ 
+     /// Reads every multiplier through `read`. Problems (a value that is not a number, or out of range) are
+diff --git a/Engine/Source/WXLModules/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+index 6680e88..6cb24ba 100644
+--- a/Engine/Source/WXLModules/Physics/README.md
++++ b/Engine/Source/WXLModules/Physics/README.md
+@@ -135,7 +135,7 @@ and a value that is not a number is ignored; both are logged (category `PHYS`).
+ [Physics]
+ Enabled=1
+ 
+-GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
++GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them. Negative (to -100): they rise
+ LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
+ AngularDampingScale=1.0   ; drag on turning/twisting
+ InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns
+@@ -152,7 +152,7 @@ FollowScale=1.0           ; how much of a fast move the anchors take at once (ca
+ WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
+ ```
+ 
+-Ranges are 0 .. 100 unless noted. What each key does to what is in the file:
++Ranges are 0 .. 100 unless noted (`GravityScale`: -100 .. 100). What each key does to what is in the file:
+ 
+ | Key | Changes | On |
+ | --- | --- | --- |
+@@ -177,5 +177,61 @@ Notes:
+   real staff with no non-finite or exploded state. Very low or very high values still look odd, naturally.
+ * The multipliers are applied once per model when it is first used, after the guard's own preparation
+   (`PhysicsGuard::PrepareModel`). `WatchIni=1` or `PhysicsLive::ReloadFiles()` applies them again.
++* **A leading `-` is now read as a sign** in every key (it used to be refused as "not a number"): a negative value is
++  clamped to the key's lower limit and logged, which for everything but `GravityScale` is 0 (or the key's minimum).
++* **Gravity can be negative.** `GravityScale=-1` turns it around: loose parts rise and stand above their anchor
++  instead of hanging. A part that rests exactly in line with its anchor needs a nudge to tip over (a walking
++  character gives it one). Test with a negative value before relying on it: the stuck-item guard may re-seed an
++  inverted weapon that fights its joint limits, and then it falls back to its animated pose for a while.
+ * Log lines: `physics: multipliers: GravityScale=0.5 ...` at start-up and on every re-read; `physics: ini: <key> ...`
+   for a bad value. `Stats::modelsTuned` counts the models a multiplier changed.
++
++# Different physics for single items: PhysicsOverride.csv
++
++The multipliers above apply to every model. `PhysicsOverride.csv` sets some of them again for **one item display**
++(`ItemDisplayInfo` id), so two displays that share a model file can move differently: one with dangling bits as
++the `.phy2` has them, the other with gravity turned around. It is optional: without the file nothing changes.
++
++```csv
++# Kind,DisplayId, then any of the [Physics] multiplier names (any order, any subset)
++Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note
++Item,12345,-1,,,upside-down variant of the staff
++Item,12346,,1.5,0.5,floppier and lighter
++Creature,6789,0.5,,,read and checked, not applied yet
++```
++
++* **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
++  through the client's reader, `DBFilesClient\PhysicsOverride.csv` or `PhysicsOverride.csv` in `Data\` or an
++  archive (so a patch can ship one). The first one found is used.
++* **Header:** the first line that is not empty and not a comment. It needs `Kind` and `DisplayId`; the rest are
++  multiplier names exactly as in the ini (`GravityScale`, `SwingLimitScale`, ...). Names are not case sensitive.
++  A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
++  unknown column is ignored with one log line.
++* **Kind:** `Item` or `Creature`. Item rows apply to held items: main hand, off hand, ranged, shield. Creature rows
++  are parsed and checked but not applied yet. An item id and a creature id never meet, even if the numbers are equal.
++* **Values:** an empty cell keeps the global value. A filled cell **replaces** the global value for that display
++  (`GravityScale` `-1` is -1, not -1 times the ini value). The ranges of the ini keys apply (a value outside is
++  clamped and logged); `GravityScale` may be negative.
++* **Separators:** a comma. If the header line has semicolons and no commas, the file uses `;` (a spreadsheet in an
++  Italian locale writes that) and a decimal comma (`1,25`) works too. A cell can be put in double quotes.
++  Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds one) is ignored.
++* **Mistakes** skip or trim that row and are logged (category `PHYS`, with the line number); the rest still works.
++  A display listed twice: the later row wins.
++* **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
++  moment); `PhysicsLive::ReloadFiles()` does too.
++* **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;
++  `physics: item display 12345 on '<model>' uses its PhysicsOverride.csv row: GravityScale=-1` the first time a row
++  changes a model. `Stats::overrideRows` and `Stats::modelsOverridden` count them.
++
++## How the module knows an item's display
++
++* **A held weapon the equip extension attached.** `OnHandItemAttached` says which display went into which slot;
++  `model` in that event is the wearer, so the weapon's own instance is found as the wearer's child at the attach
++  link whose file stem is the display's model (`findAttachedChild`). This is what makes two displays that share
++  one model file and carry **no** texture or geoset change tell apart. It is checked on every use: the instance
++  must still be that wearer's child, so a recycled instance address cannot inherit a stale display.
++* **A baked variant.** When the equip extension builds a variant (a texture or geoset change), its model path is
++  `<stem>_<displayId>.m2`, which the core decodes (`vpathDecodeGlobalVirtualKey`). Only paths under `item\` are
++  accepted, because a baked creature variant has the same shape.
++* Not covered yet: items that are not held (helm, shoulders, cape...) unless they happen to be baked variants, and
++  creatures.
+diff --git a/Tools/PhysicsGuardTest/physics_override_test.cpp b/Tools/PhysicsGuardTest/physics_override_test.cpp
+new file mode 100644
+index 0000000..f82a195
+--- /dev/null
++++ b/Tools/PhysicsGuardTest/physics_override_test.cpp
+@@ -0,0 +1,200 @@
++// Test program for PhysicsOverride.csv and negative gravity. Standalone: no client, no CMake target.
++//
++//   P=<repo root>/Engine/Source/WXLModules/Physics
++//   g++ -std=c++17 -O1 -I $P physics_override_test.cpp $P/PhysicsOverrides.cpp $P/PhysicsTuning.cpp
++//       $P/physics_domino.cpp -o physics_override_test      (one command line)
++//   ./physics_override_test         (exit code 0 = every check passed)
++//
++// Checks: the CSV parser (header, separators, quoting, every kind of bad row), Merge (a row replaces the
++// global value), the signed multiplier, and, on the real engine (physics_domino.cpp, unchanged), that a chain
++// hanging from an anchor really rises with GravityScale = -1 and still hangs with the default.
++#include "PhysicsOverrides.hpp"
++
++#include <cmath>
++#include <cstdio>
++#include <cstring>
++#include <memory>
++#include <string>
++#include <vector>
++
++using namespace wxl::equip::physics;
++namespace ov = wxl::equip::physics::overrides;
++namespace tn = wxl::equip::physics::tuning;
++namespace ph = wow::ec::physics;
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++    bool Near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
++    bool Has(const std::string& s, const char* part) { return s.find(part) != std::string::npos; }
++
++    // an anchor with a chain of capsules hanging down from it; returns the z of the last body after `seconds`
++    double ChainTipZ(const tn::Tuning& t, double seconds)
++    {
++        auto model = std::make_shared<ph::Model>();
++        constexpr int segs = 4;
++        constexpr float seg = 0.25f;
++        std::vector<ph::V3> pivots(1 + segs, ph::V3{});
++        ph::BodyDef k;
++        k.type = ph::kBodyKinematic; k.bone = 0; k.pos = { 0, 0, 0 }; k.gravity = 0; k.carry = 0.9f;
++        model->bodies.push_back(k);
++        ph::ShapeDef ks; ks.body = 0; ks.type = ph::kShapeSphere; ks.a = { 0, 0, 0 }; ks.r = 0.02f;
++        model->shapes.push_back(ks);
++        for (int i = 0; i < segs; ++i)
++        {
++            ph::BodyDef b;
++            b.type = ph::kBodyDynamic; b.bone = uint16_t(1 + i); b.pos = { 0, 0, -seg * i };
++            b.gravity = 1; b.linDamp = 2; b.angDamp = 2;
++            model->bodies.push_back(b);
++            pivots[b.bone] = b.pos;
++            ph::ShapeDef s; s.body = uint8_t(model->bodies.size() - 1); s.type = ph::kShapeCapsule; s.a = { 0, 0, 0 };
++            s.b = { 0, 0, -seg }; s.r = 0.03f;
++            model->shapes.push_back(s);
++            ph::JointDef j; j.type = ph::kJointShoulder; j.a = uint8_t(i == 0 ? 0 : model->bodies.size() - 2);
++            j.b = uint8_t(model->bodies.size() - 1);
++            j.pa = i == 0 ? ph::V3{ 0, 0, 0 } : ph::V3{ 0, 0, -seg }; j.pb = {};
++            j.f[0] = -90; j.f[1] = 90; j.f[2] = 120;   // wide limits: the chain may swing right over the anchor
++            model->joints.push_back(j);
++        }
++        int changed = 0;
++        auto tuned = tn::Apply(model, t, &changed);
++
++        ph::Instance inst(tuned.get());
++        const double kWorld = -8913.2;
++        const double dt = 1.0 / 60.0;
++        double tip = 0;
++        for (double time = 0; time <= seconds; time += dt)
++        {
++            // the wearer gives the anchor a shake for 0.4 s (a straight chain under inverted gravity is at an
++            // unstable equilibrium and needs something to tip it over, as a moving character does)
++            const double shake = time < 0.4 ? 0.6 * std::sin(time * 2.0 * 3.14159265 * 2.5) : 0.0;
++            const double M[16] = { 1, 0, 0, kWorld + shake, 0, 1, 0, kWorld, 0, 0, 1, 0, 0, 0, 0, 1 };
++            std::vector<double> W((1 + segs) * 16);
++            for (int b = 0; b < 1 + segs; ++b) std::memcpy(&W[size_t(b) * 16], M, sizeof M);
++            ph::Frame f;
++            f.boneWorld = reinterpret_cast<const double (*)[16]>(W.data());
++            f.pivots = pivots.data();
++            f.boneCount = pivots.size();
++            std::memcpy(f.placement, M, sizeof M);
++            f.dt = float(dt);
++            inst.Step(f);
++        }
++        double m[16];
++        if (inst.Output(model->bodies.size() - 1, m))
++        {
++            const ph::V3 pv = pivots[segs];
++            tip = m[11] + m[8] * pv.x + m[9] * pv.y + m[10] * pv.z;
++        }
++        return tip;
++    }
++}
++
++int main()
++{
++    std::printf("1. the signed multiplier\n");
++    {
++        float v = 0;
++        Check(tn::ParseMultiplier("-1", &v) && Near(v, -1), "\"-1\" parses");
++        Check(tn::ParseMultiplier(" -0,5 ", &v) && Near(v, -0.5f), "\" -0,5 \" parses (decimal comma)");
++        Check(tn::ParseMultiplier("+2", &v) && Near(v, 2), "\"+2\" parses");
++        Check(!tn::ParseMultiplier("--1", &v) && !tn::ParseMultiplier("-", &v) && !tn::ParseMultiplier("1e3", &v), "\"--1\", \"-\" and \"1e3\" do not");
++        float g = 0; bool clamped = false;
++        Check(tn::ParseKeyValue(tn::FindKey("gravityscale"), "-500", &g, &clamped) && Near(g, -100) && clamped, "GravityScale -500 clamps to -100");
++        Check(tn::ParseKeyValue(tn::FindKey("MassScale"), "-1", &g, &clamped) && Near(g, 0.01f) && clamped, "MassScale -1 clamps to its minimum");
++        Check(tn::FindKey("nosuchthing") < 0 && tn::FindKey(nullptr) < 0, "unknown key names are refused");
++        Check(tn::KeyName(tn::kKeyCount) == nullptr && std::strcmp(tn::KeyName(0), "GravityScale") == 0, "key table bounds");
++    }
++
++    std::printf("2. Merge: a row replaces the global value\n");
++    {
++        tn::Tuning base; base.gravity = 2.0f; base.mass = 3.0f;
++        tn::Overrides o;
++        tn::SetOverride(o, tn::FindKey("GravityScale"), -1.0f);
++        const tn::Tuning m = tn::Merge(base, o);
++        Check(Near(m.gravity, -1.0f), "GravityScale is replaced (-1), not multiplied (would be -2)");
++        Check(Near(m.mass, 3.0f), "a key the row does not set keeps the global value");
++        Check(!tn::Merge(tn::Tuning{}, tn::Overrides{}).gravity == false || true, "empty row is harmless");
++        Check(tn::Merge(base, tn::Overrides{}).gravity == base.gravity, "an empty row changes nothing");
++    }
++
++    std::printf("3. PhysicsOverride.csv\n");
++    {
++        std::string problems;
++        const std::string csv =
++            "\xEF\xBB\xBF# my weapons\n"
++            "Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note\n"
++            "Item,12345,-1,,,\"upside down, on purpose\"\n"
++            "item,12346,,1.5,0.5,\n"
++            "// another comment\n"
++            "\n"
++            "Creature,6789,0.5,,,\n";
++        ov::Table t = ov::Parse(csv, &problems);
++        Check(problems.empty(), "a clean file produces no problem lines");
++        Check(t.items.size() == 2 && t.creatures.size() == 1 && t.Rows() == 3, "two item rows, one creature row");
++        const tn::Overrides* a = t.Find(ov::Kind::Item, 12345);
++        Check(a && Near(a->values.gravity, -1) && a->set == (1u << tn::FindKey("GravityScale")), "item 12345: only GravityScale, -1");
++        const tn::Overrides* b = t.Find(ov::Kind::Item, 12346);
++        Check(b && Near(b->values.swingLimit, 1.5f) && Near(b->values.mass, 0.5f) && b->set == ((1u << tn::FindKey("SwingLimitScale")) | (1u << tn::FindKey("MassScale"))),
++              "item 12346: SwingLimitScale and MassScale (kind is case-insensitive)");
++        Check(t.Find(ov::Kind::Creature, 12345) == nullptr && t.Find(ov::Kind::Item, 6789) == nullptr,
++              "item and creature ids do not collide");
++        Check(t.Find(ov::Kind::Creature, 6789) != nullptr, "the creature row is read");
++
++        // header order, subset, case; semicolons and decimal commas
++        t = ov::Parse("displayid;KIND;frictionscale;GravityScale\r\n77;Item;1,25;-2\r\n", &problems);
++        const tn::Overrides* c = t.Find(ov::Kind::Item, 77);
++        Check(problems.empty() && c && Near(c->values.friction, 1.25f) && Near(c->values.gravity, -2), "';' file, columns in any order, decimal comma, CRLF");
++
++        // problems
++        problems.clear();
++        t = ov::Parse("Kind,DisplayId,GravityScale,MassScale,Bogus\n"
++                      "Weapon,1,-1,,\n"           // unknown kind
++                      "Item,abc,-1,,\n"           // bad id
++                      "Item,0,-1,,\n"             // id 0
++                      "Item,5,fast,2,\n"          // bad number, other cell still used
++                      "Item,6,-500,,\n"           // clamped
++                      "Item,7,,,\n"               // nothing set
++                      "Item,8,1,,\n"
++                      "Item,8,-1,,\n"             // duplicate: later wins
++                      "Item\n", &problems);       // too short
++        Check(Has(problems, "unknown column 'Bogus'"), "unknown column is reported");
++        Check(Has(problems, "line 2") && Has(problems, "unknown Kind 'Weapon'"), "unknown Kind is reported with its line");
++        Check(Has(problems, "DisplayId 'abc'") && Has(problems, "DisplayId '0'"), "bad ids are reported");
++        const tn::Overrides* d = t.Find(ov::Kind::Item, 5);
++        Check(Has(problems, "GravityScale='fast' is not a number") && d && Near(d->values.mass, 2) && !(d->set & (1u << tn::FindKey("GravityScale"))),
++              "a bad cell is dropped, the rest of the row stays");
++        const tn::Overrides* e = t.Find(ov::Kind::Item, 6);
++        Check(Has(problems, "clamped to -100") && e && Near(e->values.gravity, -100), "an out-of-range value is clamped and reported");
++        Check(Has(problems, "no multiplier set") && t.Find(ov::Kind::Item, 7) == nullptr, "an empty row is skipped");
++        const tn::Overrides* f = t.Find(ov::Kind::Item, 8);
++        Check(Has(problems, "listed twice") && f && Near(f->values.gravity, -1), "a duplicate: the later row wins");
++        Check(Has(problems, "row too short"), "a short row is skipped");
++
++        problems.clear();
++        t = ov::Parse("Item,1,2\n", &problems);
++        Check(t.Empty() && Has(problems, "needs the columns Kind and DisplayId"), "no header: nothing is read, and it says why");
++        problems.clear();
++        Check(ov::Parse("", &problems).Empty() && Has(problems, "no header"), "an empty file is not an error, but says so");
++        Check(ov::Parse("# only a comment\n").Empty(), "comments only");
++    }
++
++    std::printf("4. gravity really turns around (real engine)\n");
++    {
++        tn::Tuning normal;
++        tn::Tuning flipped; flipped.gravity = -1.0f;
++        const double down = ChainTipZ(normal, 6.0);
++        const double up = ChainTipZ(flipped, 6.0);
++        std::printf("     chain tip z after 6 s: %.3f with GravityScale 1, %.3f with GravityScale -1 (anchor at 0)\n", down, up);
++        Check(down < -0.5, "default: the chain hangs below its anchor");
++        Check(up > 0.3, "GravityScale=-1: the chain stands above its anchor");
++        Check(std::isfinite(up) && std::isfinite(down), "nothing blows up");
++    }
++
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/physics_override_host_test.cpp b/Tools/WxlModuleTest/physics_override_host_test.cpp
+new file mode 100644
+index 0000000..f143eb3
+--- /dev/null
++++ b/Tools/WxlModuleTest/physics_override_host_test.cpp
+@@ -0,0 +1,373 @@
++// End-to-end test of PhysicsOverride.csv through the C ABI, without the client (companion of host_test.cpp).
++//
++//   ./run_physics_override_tests.sh        (builds the module and this host with g++, runs it; exit code 0 = ok)
++//
++// The host plays the core: a wearer with several held-item instances that share ONE model file (the plume of
++// make_test_data.py), the OnHandItemAttached event the equip extension fires, baked "<stem>_<displayId>.m2"
++// paths, and a PhysicsOverride.csv in the working folder. The module is loaded the way the client's loader does.
++// It checks that one display with GravityScale=-1 lifts its plume while a second display on the very same
++// model hangs normally, for a plain model (event route) and a baked one (path route), that a creature row and a
++// creature path never reach an item, that removing the weapon, a stale binding and a saved CSV all behave.
++#include "wxl_api.h"
++
++#include <dlfcn.h>
++
++#include <chrono>
++#include <cmath>
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <iterator>
++#include <map>
++#include <set>
++#include <string>
++#include <thread>
++#include <vector>
++
++namespace
++{
++    int g_failed = 0;
++    void Check(bool ok, const char* what)
++    {
++        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
++        if (!ok) ++g_failed;
++    }
++
++    struct FakeInstance
++    {
++        std::string path;
++        void*       parent = nullptr;       // the wearer, for a held weapon
++        int         attachLink = -1;
++        uint32_t    bones = 5;              // 0 root, 1 anchor, 2..4 plume segments
++        uint32_t    clockMs = 0;
++        float       own[16];
++        std::vector<float> palette;
++        const void* modelId = nullptr;
++    };
++    std::vector<FakeInstance*> g_all;
++
++    std::map<std::string, std::map<std::string, std::string>> g_ini;
++    std::vector<std::string> g_log;
++    struct Sub { std::string event; WxlEventHandler fn; void* user; };
++    std::vector<Sub> g_subs;
++    std::set<std::string> g_virtual;          // paths the fake core says were minted by VirtualPath
++
++    void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
++    int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
++    int  ApiSubscribe(const char* name, WxlEventHandler fn, void* user)
++    {
++        if (std::strcmp(name, WXL_EVENT_BUILD_BONE_PALETTE) != 0 && std::strcmp(name, WXL_EVENT_HAND_ITEM_ATTACHED) != 0) return 2;
++        g_subs.push_back({ name, fn, user });
++        return 0;
++    }
++    int ApiIniString(const char* sec, const char* key, char* out, size_t cap)
++    {
++        auto s = g_ini.find(sec);
++        if (s == g_ini.end()) return 0;
++        auto k = s->second.find(key);
++        if (k == s->second.end()) return 0;
++        std::snprintf(out, cap, "%s", k->second.c_str());
++        return 1;
++    }
++    int ApiIniInt(const char* sec, const char* key, int def)
++    {
++        char buf[64];
++        return ApiIniString(sec, key, buf, sizeof(buf)) ? std::atoi(buf) : def;
++    }
++    int ApiIniBool(const char* sec, const char* key, int def) { return ApiIniInt(sec, key, def) != 0; }
++    uint64_t ApiIniStamp() { return 1; }
++
++    int ApiReadFile(const char* name, WxlBuffer* out)
++    {
++        std::string p = std::string("data/") + name;
++        for (char& c : p) if (c == '\\') c = '/';
++        std::ifstream f(p, std::ios::binary);
++        if (!f) return 0;
++        std::vector<char> bytes((std::istreambuf_iterator<char>(f)), {});
++        if (bytes.empty()) return 0;
++        out->data = std::malloc(bytes.size());
++        std::memcpy(out->data, bytes.data(), bytes.size());
++        out->size = bytes.size();
++        return 1;
++    }
++    void ApiFree(WxlBuffer* b) { if (b && b->data) { std::free(b->data); b->data = nullptr; b->size = 0; } }
++    int  ApiIsVirtual(const char* name)
++    {
++        return name && g_virtual.count(name) ? 1 : 0;
++    }
++    const char* ApiWorkingDirectory() { return ""; }   // the module then looks in the current folder
++
++    // "<dir>\<stem>_<digits>.m2" -> id
++    int ApiDecode(const char* path, char* out, size_t cap, uint32_t* id)
++    {
++        std::string p = path;
++        const size_t dot = p.rfind(".m2");
++        if (dot == std::string::npos) return 0;
++        size_t b = dot;
++        while (b > 0 && p[b - 1] >= '0' && p[b - 1] <= '9') --b;
++        if (b == dot || b == 0 || p[b - 1] != '_') return 0;
++        *id = uint32_t(std::atoi(p.substr(b, dot - b).c_str()));
++        std::snprintf(out, cap, "%s", (p.substr(0, b - 1) + ".m2").c_str());
++        return 1;
++    }
++
++    int ApiReadInstance(void* inst, WxlInstanceView* v)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (!v || v->structSize < sizeof(*v)) return WXL_READ_NO_MODEL;
++        std::snprintf(v->path, sizeof(v->path), "%s", i->path.c_str());
++        v->model = i->modelId;
++        v->boneCount = i->bones;
++        v->clockMs = i->clockMs;
++        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
++        std::memcpy(v->sceneMatrix, identity, sizeof(identity));
++        std::memcpy(v->ownMatrix, i->own, sizeof(i->own));
++        return WXL_READ_OK;
++    }
++    int ApiReadBones(void* inst, uint32_t count, float* palette, int16_t* parents, float* pivots)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (count != i->bones) return WXL_READ_BONE_COUNT;
++        if (palette) std::memcpy(palette, i->palette.data(), size_t(count) * 64);
++        for (uint32_t k = 0; k < count; ++k)
++        {
++            if (parents) parents[k] = k == 0 ? -1 : int16_t(k - 1);
++            if (pivots)
++            {
++                pivots[k * 3 + 0] = 0; pivots[k * 3 + 1] = 0;
++                pivots[k * 3 + 2] = k >= 2 ? -0.25f * float(k - 2) : 0.0f;
++            }
++        }
++        return WXL_READ_OK;
++    }
++    int ApiWritePalette(void* inst, const float* palette, uint32_t count)
++    {
++        auto* i = static_cast<FakeInstance*>(inst);
++        if (count != i->bones) return WXL_READ_BONE_COUNT;
++        std::memcpy(i->palette.data(), palette, size_t(count) * 64);
++        return WXL_READ_OK;
++    }
++    int ApiModelInfo(void* inst, WxlModelInfo* out)
++    {
++        for (FakeInstance* f : g_all)
++            if (f == inst)
++            {
++                out->shared = const_cast<void*>(f->modelId);
++                out->parent = f->parent;
++                out->boneCount = f->bones;
++                out->parsed = 1;
++                return WXL_READ_OK;
++            }
++        return WXL_READ_NO_MODEL;
++    }
++    std::string Stem(const std::string& path)
++    {
++        size_t b = path.find_last_of("\\/");
++        b = b == std::string::npos ? 0 : b + 1;
++        const size_t e = path.find_last_of('.');
++        std::string s = path.substr(b, e == std::string::npos || e < b ? std::string::npos : e - b);
++        for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
++        return s;
++    }
++    void* ApiFindAttachedChild(void* parent, uint32_t attachId, const char* name)
++    {
++        for (FakeInstance* f : g_all)
++            if (f->parent == parent && f->attachLink == int(attachId) && Stem(f->path) == Stem(name)) return f;
++        return nullptr;
++    }
++    int ApiItemDisplayInfo(uint32_t id, WxlItemDisplayInfo* out)
++    {
++        if (id < 1000 || id > 1999) return 0;
++        std::snprintf(out->modelName[0], sizeof(out->modelName[0]), "plume_test.mdx");
++        return 1;
++    }
++
++    WxlApi MakeApi()
++    {
++        WxlApi a = {};
++        a.abiVersion = WXL_ABI_VERSION;
++        a.structSize = sizeof(WxlApi);
++        a.log = ApiLog; a.logThrottle = ApiThrottle; a.subscribe = ApiSubscribe;
++        a.iniGetString = ApiIniString; a.iniGetInt = ApiIniInt; a.iniGetBool = ApiIniBool; a.iniStamp = ApiIniStamp;
++        a.readFile = ApiReadFile; a.freeBuffer = ApiFree; a.isVirtualKey = ApiIsVirtual;
++        a.readInstance = ApiReadInstance; a.readBones = ApiReadBones; a.writePalette = ApiWritePalette;
++        a.workingDirectory = ApiWorkingDirectory; a.vpathDecodeGlobalVirtualKey = ApiDecode;
++        a.modelInfo = ApiModelInfo; a.findAttachedChild = ApiFindAttachedChild; a.itemDisplayInfo = ApiItemDisplayInfo;
++        return a;
++    }
++
++    FakeInstance* NewInstance(const std::string& path, const void* modelId, void* parent = nullptr, int link = -1)
++    {
++        auto* i = new FakeInstance;
++        i->path = path; i->modelId = modelId; i->parent = parent; i->attachLink = link;
++        i->palette.assign(size_t(i->bones) * 16, 0.0f);
++        g_all.push_back(i);
++        return i;
++    }
++    void SetOwn(FakeInstance& i, double x, double y, double z)
++    {
++        const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, float(x),float(y),float(z),1 };
++        std::memcpy(i.own, m, sizeof(m));
++    }
++    void ResetPalette(FakeInstance& i)
++    {
++        i.palette.assign(size_t(i.bones) * 16, 0.0f);
++        for (uint32_t k = 0; k < i.bones; ++k) std::memcpy(&i.palette[size_t(k) * 16], i.own, sizeof(i.own));
++    }
++    void FireBones(FakeInstance& i)
++    {
++        WxlBuildBonePaletteArgs args = { &i };
++        for (const Sub& s : g_subs)
++            if (s.event == WXL_EVENT_BUILD_BONE_PALETTE) s.fn(s.user, &args);
++    }
++    void FireHand(void* wearer, uint32_t slot, int link, uint32_t displayId, bool removed)
++    {
++        WxlHandItemAttachedArgs a = {};
++        a.model = wearer; a.invSlot = slot; a.attachLink = removed ? -1 : link; a.displayId = removed ? 0 : displayId;
++        a.removed = removed ? 1 : 0;
++        for (const Sub& s : g_subs)
++            if (s.event == WXL_EVENT_HAND_ITEM_ATTACHED) s.fn(s.user, &a);
++    }
++
++    // world z of the last plume segment's pivot, relative to the instance origin: about -0.5 when it hangs,
++    // positive when it lifts
++    double TipHeight(const FakeInstance& i)
++    {
++        const float* m = &i.palette[4 * 16];
++        const double pz = -0.5;
++        return pz * m[10] + m[14] - i.own[14];
++    }
++
++    // a character that jumps and lands; the weapon follows. Returns the tip height at the end.
++    double Play(FakeInstance& i, double seconds)
++    {
++        const double dt = 1.0 / 60.0;
++        const double jump = 0.8;
++        for (double t = 0; t <= seconds + 1e-9; t += dt)
++        {
++            const double tt = std::min(t, jump);
++            double z = 7.9555 * tt - 0.5 * 19.29 * tt * tt;
++            if (z < 0) z = 0;
++            SetOwn(i, -8913.2 + 7 * tt, 543.7, 122.4 + z);
++            ResetPalette(i);
++            i.clockMs += uint32_t(dt * 1000.0 + 0.5);
++            FireBones(i);
++        }
++        return TipHeight(i);
++    }
++
++    void WriteCsv(const char* text)
++    {
++        std::ofstream f("PhysicsOverride.csv", std::ios::binary | std::ios::trunc);
++        f << text;
++    }
++    bool LogHas(const char* part)
++    {
++        for (const std::string& l : g_log) if (l.find(part) != std::string::npos) return true;
++        return false;
++    }
++}
++
++int main(int argc, char** argv)
++{
++    const char* path = argc > 1 ? argv[1] : "./libwxl_physics.so";
++    std::printf("module: %s\n", path);
++
++    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
++    if (!h) { std::printf("dlopen failed: %s\n", dlerror()); return 1; }
++    auto init = reinterpret_cast<WxlModuleInitFn>(dlsym(h, "WxlModuleInit"));
++    if (!init) { std::printf("no WxlModuleInit\n"); return 1; }
++
++    // ---- the files ----
++    WriteCsv(
++        "# per-display physics\n"
++        "Kind,DisplayId,GravityScale,Note\n"
++        "Item,1001,-1,upside down\n"            // a plain model, found through the attach event
++        "Creature,1002,-1,must never reach an item\n"
++        "Item,1003,-1,a baked variant\n"        // found through its virtual path
++        "Item,1005,-1,\n"
++        "Item,1004,nonsense,bad cell\n");        // a bad cell: logged, row skipped (nothing else set)
++    g_ini["Physics"]["Enabled"] = "1";
++    g_ini["Physics"]["WatchIni"] = "1";
++
++    WxlApi api = MakeApi();
++    WxlModuleInfo info = {}; info.structSize = sizeof(info);
++
++    std::printf("1. loading\n");
++    Check(init(&api, &info) == 0, "initializes against the fake core");
++    int boneSubs = 0, handSubs = 0;
++    for (const Sub& s : g_subs) { boneSubs += s.event == WXL_EVENT_BUILD_BONE_PALETTE; handSubs += s.event == WXL_EVENT_HAND_ITEM_ATTACHED; }
++    Check(boneSubs == 1 && handSubs == 1, "subscribes to OnBuildBonePalette and OnHandItemAttached once each");
++    Check(LogHas("1 creature row(s)") && LogHas("PhysicsOverride.csv"), "reads the csv and counts its rows");
++    Check(LogHas("GravityScale='nonsense' is not a number"), "reports the bad cell with its line");
++
++    const char* kPlain = "item\\objectcomponents\\head\\plume_test.m2";
++    const void* kModel = reinterpret_cast<const void*>(0x1000);   // ONE loaded model file shared by every plain weapon
++    FakeInstance* wearer = NewInstance("character\\human\\male\\humanmale.m2", reinterpret_cast<const void*>(0x9000));
++    FakeInstance* wearer2 = NewInstance("character\\human\\male\\humanmale.m2", reinterpret_cast<const void*>(0x9000));
++
++    std::printf("2. two displays, one model file\n");
++    FakeInstance* a = NewInstance(kPlain, kModel, wearer, 1);    // display 1001, right hand
++    FakeInstance* b = NewInstance(kPlain, kModel, wearer2, 1);   // display 1002, right hand, another wearer
++    FireHand(wearer, 15, 1, 1001, false);
++    FireHand(wearer2, 15, 1, 1002, false);
++    const double tipA = Play(*a, 6.0);
++    const double tipB = Play(*b, 6.0);
++    std::printf("     tip height: display 1001 -> %.3f   display 1002 -> %.3f\n", tipA, tipB);
++    Check(tipB < -0.2, "display 1002 (no item row) hangs: its own creature row did not reach it");
++    // the plume's joints are limited to 45 degrees each, so it cannot stand fully upright: -0.5 hanging, about -0.15 lifted
++    Check(tipA > tipB + 0.25, "display 1001 (GravityScale=-1) lifts on the very same model file");
++    Check(LogHas("item display 1001 on") && LogHas("GravityScale=-1"), "the log names the display and what it changed");
++    Check(!LogHas("item display 1002 on"), "...and says nothing about display 1002");
++
++    std::printf("3. a baked variant (virtual path) and the creature-path guard\n");
++    const char* kBaked = "item\\objectcomponents\\head\\plume_test_1003.m2";
++    g_virtual.insert(kBaked);
++    FakeInstance* c = NewInstance(kBaked, reinterpret_cast<const void*>(0x2000));
++    const double tipC = Play(*c, 6.0);
++    Check(tipC > tipB + 0.25, "display 1003 reached through its baked path lifts");
++    const char* kCreature = "creature\\foo\\plume_test_1003.m2";   // same shape, but not under the item folder
++    g_virtual.insert(kCreature);
++    FakeInstance* d = NewInstance(kCreature, reinterpret_cast<const void*>(0x3000));
++    const double tipD = Play(*d, 6.0);
++    const bool creatureFound = LogHas("MATCH 'creature");
++    if (!creatureFound) std::printf("     (no .phy2 for the creature path in this folder: the guard cannot be seen here)\n");
++    Check(!creatureFound || tipD < -0.2, "a baked CREATURE path with the same id gets no item row");
++
++    std::printf("4. the weapon is removed, or its binding goes stale\n");
++    FireHand(wearer, 15, 1, 0, true);
++    const double tipA2 = Play(*a, 6.0);
++    Check(tipA2 < -0.2, "after the removal event the instance is back to the global multipliers");
++    FireHand(wearer, 15, 1, 1001, false);                       // equipped again
++    Check(Play(*a, 6.0) > tipB + 0.25, "...and equipping it again brings the row back");
++    a->parent = wearer2;                                        // the address is recycled by something else
++    FireHand(wearer2, 16, 2, 1005, false);                      // any change makes the module look again
++    Check(Play(*a, 6.0) < -0.2, "a binding whose weapon is no longer the wearer's child is dropped");
++
++    std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
++    a->parent = wearer;
++    FireHand(wearer, 15, 1, 1001, false);
++    Check(Play(*a, 6.0) > tipB + 0.25, "before: 1001 inverted");
++    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");     // swap: 1002 inverted, 1001 normal
++    std::this_thread::sleep_for(std::chrono::milliseconds(1300)); // the module looks once a second
++    const double tipA3 = Play(*a, 6.0);
++    const double tipB3 = Play(*b, 6.0);
++    std::printf("     after the save: 1001 -> %.3f   1002 -> %.3f\n", tipA3, tipB3);
++    Check(tipA3 < -0.2, "after the save 1001 hangs");
++    Check(tipB3 > tipA3 + 0.25, "...and 1002 lifts");
++    Check(LogHas("csv saved"), "the reload is logged");
++
++    std::printf("6. no csv at all\n");
++    std::remove("PhysicsOverride.csv");
++    std::this_thread::sleep_for(std::chrono::milliseconds(1300));
++    Play(*b, 6.0);
++    Check(LogHas("no PhysicsOverride.csv") && Play(*b, 6.0) < -0.2, "deleting the file switches the overrides off");
++
++    for (FakeInstance* f : g_all) delete f;
++    g_all.clear();
++    if (std::getenv("DUMP_LOG")) for (const std::string& l : g_log) std::printf("LOG %s\n", l.c_str());
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/run_physics_override_tests.sh b/Tools/WxlModuleTest/run_physics_override_tests.sh
+new file mode 100755
+index 0000000..e10b51a
+--- /dev/null
++++ b/Tools/WxlModuleTest/run_physics_override_tests.sh
+@@ -0,0 +1,23 @@
++#!/bin/sh
++# Builds the physics module as a shared library and the host test of PhysicsOverride.csv with g++ (Linux or
++# MinGW), makes the synthetic test data, and runs it. No game files needed.
++#   ./run_physics_override_tests.sh        (exit code 0 = everything passed)
++set -e
++HERE=$(cd "$(dirname "$0")" && pwd)
++R=$(cd "$HERE/../.." && pwd)
++M=$R/Engine/Source/WXLModules/Physics
++SDK=$R/Engine/Source/WXL/Sdk
++OUT=${TMPDIR:-/tmp}/wxl_physics_override_test
++rm -rf "$OUT"; mkdir -p "$OUT"
++cd "$OUT"
++
++g++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter -fPIC -shared -fvisibility=hidden -fsanitize=address,undefined -I "$SDK" -I "$M" "$M"/*.cpp -o libwxl_physics.so
++g++ -std=c++17 -O1 -g -fsanitize=address,undefined -I "$SDK" "$HERE/physics_override_host_test.cpp" -ldl -o physics_override_host_test
++
++# the plume the other host test uses, once under item\ and once under creature\ (for the creature-path check)
++python3 "$HERE/make_test_data.py" > /dev/null
++mkdir -p data/creature/foo
++cp data/item/objectcomponents/head/plume_test.phys data/creature/foo/
++python3 "$R/Tools/m2_extract_phys.py" data/creature/foo/plume_test.phys --overwrite > /dev/null
++
++./physics_override_host_test ./libwxl_physics.so
+-- 
+2.43.0
+

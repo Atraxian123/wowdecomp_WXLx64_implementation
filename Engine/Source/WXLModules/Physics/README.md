@@ -135,7 +135,7 @@ and a value that is not a number is ignored; both are logged (category `PHYS`).
 [Physics]
 Enabled=1
 
-GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them
+GravityScale=1.0          ; pull down. 0 = the parts float where the model puts them. Negative (to -100): they rise
 LinearDampingScale=1.0    ; drag on movement. Up: settles sooner, gooier. Down: swings longer
 AngularDampingScale=1.0   ; drag on turning/twisting
 InertiaScale=1.0          ; resistance to being rotated (0.01 .. 100). Up: lazier turns
@@ -152,7 +152,7 @@ FollowScale=1.0           ; how much of a fast move the anchors take at once (ca
 WatchIni=0                ; 1 = re-read these keys whenever the ini is saved, no restart (parts snap back for a moment)
 ```
 
-Ranges are 0 .. 100 unless noted. What each key does to what is in the file:
+Ranges are 0 .. 100 unless noted (`GravityScale`: -100 .. 100). What each key does to what is in the file:
 
 | Key | Changes | On |
 | --- | --- | --- |
@@ -177,5 +177,61 @@ Notes:
   real staff with no non-finite or exploded state. Very low or very high values still look odd, naturally.
 * The multipliers are applied once per model when it is first used, after the guard's own preparation
   (`PhysicsGuard::PrepareModel`). `WatchIni=1` or `PhysicsLive::ReloadFiles()` applies them again.
+* **A leading `-` is now read as a sign** in every key (it used to be refused as "not a number"): a negative value is
+  clamped to the key's lower limit and logged, which for everything but `GravityScale` is 0 (or the key's minimum).
+* **Gravity can be negative.** `GravityScale=-1` turns it around: loose parts rise and stand above their anchor
+  instead of hanging. A part that rests exactly in line with its anchor needs a nudge to tip over (a walking
+  character gives it one). Test with a negative value before relying on it: the stuck-item guard may re-seed an
+  inverted weapon that fights its joint limits, and then it falls back to its animated pose for a while.
 * Log lines: `physics: multipliers: GravityScale=0.5 ...` at start-up and on every re-read; `physics: ini: <key> ...`
   for a bad value. `Stats::modelsTuned` counts the models a multiplier changed.
+
+# Different physics for single items: PhysicsOverride.csv
+
+The multipliers above apply to every model. `PhysicsOverride.csv` sets some of them again for **one item display**
+(`ItemDisplayInfo` id), so two displays that share a model file can move differently: one with dangling bits as
+the `.phy2` has them, the other with gravity turned around. It is optional: without the file nothing changes.
+
+```csv
+# Kind,DisplayId, then any of the [Physics] multiplier names (any order, any subset)
+Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note
+Item,12345,-1,,,upside-down variant of the staff
+Item,12346,,1.5,0.5,floppier and lighter
+Creature,6789,0.5,,,read and checked, not applied yet
+```
+
+* **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
+  through the client's reader, `DBFilesClient\PhysicsOverride.csv` or `PhysicsOverride.csv` in `Data\` or an
+  archive (so a patch can ship one). The first one found is used.
+* **Header:** the first line that is not empty and not a comment. It needs `Kind` and `DisplayId`; the rest are
+  multiplier names exactly as in the ini (`GravityScale`, `SwingLimitScale`, ...). Names are not case sensitive.
+  A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
+  unknown column is ignored with one log line.
+* **Kind:** `Item` or `Creature`. Item rows apply to held items: main hand, off hand, ranged, shield. Creature rows
+  are parsed and checked but not applied yet. An item id and a creature id never meet, even if the numbers are equal.
+* **Values:** an empty cell keeps the global value. A filled cell **replaces** the global value for that display
+  (`GravityScale` `-1` is -1, not -1 times the ini value). The ranges of the ini keys apply (a value outside is
+  clamped and logged); `GravityScale` may be negative.
+* **Separators:** a comma. If the header line has semicolons and no commas, the file uses `;` (a spreadsheet in an
+  Italian locale writes that) and a decimal comma (`1,25`) works too. A cell can be put in double quotes.
+  Lines starting with `#` or `//` are comments. A UTF-8 byte order mark at the start of the file (a spreadsheet adds one) is ignored.
+* **Mistakes** skip or trim that row and are logged (category `PHYS`, with the line number); the rest still works.
+  A display listed twice: the later row wins.
+* **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
+  moment); `PhysicsLive::ReloadFiles()` does too.
+* **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;
+  `physics: item display 12345 on '<model>' uses its PhysicsOverride.csv row: GravityScale=-1` the first time a row
+  changes a model. `Stats::overrideRows` and `Stats::modelsOverridden` count them.
+
+## How the module knows an item's display
+
+* **A held weapon the equip extension attached.** `OnHandItemAttached` says which display went into which slot;
+  `model` in that event is the wearer, so the weapon's own instance is found as the wearer's child at the attach
+  link whose file stem is the display's model (`findAttachedChild`). This is what makes two displays that share
+  one model file and carry **no** texture or geoset change tell apart. It is checked on every use: the instance
+  must still be that wearer's child, so a recycled instance address cannot inherit a stale display.
+* **A baked variant.** When the equip extension builds a variant (a texture or geoset change), its model path is
+  `<stem>_<displayId>.m2`, which the core decodes (`vpathDecodeGlobalVirtualKey`). Only paths under `item\` are
+  accepted, because a baked creature variant has the same shape.
+* Not covered yet: items that are not held (helm, shoulders, cape...) unless they happen to be baked variants, and
+  creatures.

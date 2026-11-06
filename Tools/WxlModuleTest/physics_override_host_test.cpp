@@ -1,0 +1,373 @@
+// End-to-end test of PhysicsOverride.csv through the C ABI, without the client (companion of host_test.cpp).
+//
+//   ./run_physics_override_tests.sh        (builds the module and this host with g++, runs it; exit code 0 = ok)
+//
+// The host plays the core: a wearer with several held-item instances that share ONE model file (the plume of
+// make_test_data.py), the OnHandItemAttached event the equip extension fires, baked "<stem>_<displayId>.m2"
+// paths, and a PhysicsOverride.csv in the working folder. The module is loaded the way the client's loader does.
+// It checks that one display with GravityScale=-1 lifts its plume while a second display on the very same
+// model hangs normally, for a plain model (event route) and a baked one (path route), that a creature row and a
+// creature path never reach an item, that removing the weapon, a stale binding and a saved CSV all behave.
+#include "wxl_api.h"
+
+#include <dlfcn.h>
+
+#include <chrono>
+#include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace
+{
+    int g_failed = 0;
+    void Check(bool ok, const char* what)
+    {
+        std::printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
+        if (!ok) ++g_failed;
+    }
+
+    struct FakeInstance
+    {
+        std::string path;
+        void*       parent = nullptr;       // the wearer, for a held weapon
+        int         attachLink = -1;
+        uint32_t    bones = 5;              // 0 root, 1 anchor, 2..4 plume segments
+        uint32_t    clockMs = 0;
+        float       own[16];
+        std::vector<float> palette;
+        const void* modelId = nullptr;
+    };
+    std::vector<FakeInstance*> g_all;
+
+    std::map<std::string, std::map<std::string, std::string>> g_ini;
+    std::vector<std::string> g_log;
+    struct Sub { std::string event; WxlEventHandler fn; void* user; };
+    std::vector<Sub> g_subs;
+    std::set<std::string> g_virtual;          // paths the fake core says were minted by VirtualPath
+
+    void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
+    int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
+    int  ApiSubscribe(const char* name, WxlEventHandler fn, void* user)
+    {
+        if (std::strcmp(name, WXL_EVENT_BUILD_BONE_PALETTE) != 0 && std::strcmp(name, WXL_EVENT_HAND_ITEM_ATTACHED) != 0) return 2;
+        g_subs.push_back({ name, fn, user });
+        return 0;
+    }
+    int ApiIniString(const char* sec, const char* key, char* out, size_t cap)
+    {
+        auto s = g_ini.find(sec);
+        if (s == g_ini.end()) return 0;
+        auto k = s->second.find(key);
+        if (k == s->second.end()) return 0;
+        std::snprintf(out, cap, "%s", k->second.c_str());
+        return 1;
+    }
+    int ApiIniInt(const char* sec, const char* key, int def)
+    {
+        char buf[64];
+        return ApiIniString(sec, key, buf, sizeof(buf)) ? std::atoi(buf) : def;
+    }
+    int ApiIniBool(const char* sec, const char* key, int def) { return ApiIniInt(sec, key, def) != 0; }
+    uint64_t ApiIniStamp() { return 1; }
+
+    int ApiReadFile(const char* name, WxlBuffer* out)
+    {
+        std::string p = std::string("data/") + name;
+        for (char& c : p) if (c == '\\') c = '/';
+        std::ifstream f(p, std::ios::binary);
+        if (!f) return 0;
+        std::vector<char> bytes((std::istreambuf_iterator<char>(f)), {});
+        if (bytes.empty()) return 0;
+        out->data = std::malloc(bytes.size());
+        std::memcpy(out->data, bytes.data(), bytes.size());
+        out->size = bytes.size();
+        return 1;
+    }
+    void ApiFree(WxlBuffer* b) { if (b && b->data) { std::free(b->data); b->data = nullptr; b->size = 0; } }
+    int  ApiIsVirtual(const char* name)
+    {
+        return name && g_virtual.count(name) ? 1 : 0;
+    }
+    const char* ApiWorkingDirectory() { return ""; }   // the module then looks in the current folder
+
+    // "<dir>\<stem>_<digits>.m2" -> id
+    int ApiDecode(const char* path, char* out, size_t cap, uint32_t* id)
+    {
+        std::string p = path;
+        const size_t dot = p.rfind(".m2");
+        if (dot == std::string::npos) return 0;
+        size_t b = dot;
+        while (b > 0 && p[b - 1] >= '0' && p[b - 1] <= '9') --b;
+        if (b == dot || b == 0 || p[b - 1] != '_') return 0;
+        *id = uint32_t(std::atoi(p.substr(b, dot - b).c_str()));
+        std::snprintf(out, cap, "%s", (p.substr(0, b - 1) + ".m2").c_str());
+        return 1;
+    }
+
+    int ApiReadInstance(void* inst, WxlInstanceView* v)
+    {
+        auto* i = static_cast<FakeInstance*>(inst);
+        if (!v || v->structSize < sizeof(*v)) return WXL_READ_NO_MODEL;
+        std::snprintf(v->path, sizeof(v->path), "%s", i->path.c_str());
+        v->model = i->modelId;
+        v->boneCount = i->bones;
+        v->clockMs = i->clockMs;
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        std::memcpy(v->sceneMatrix, identity, sizeof(identity));
+        std::memcpy(v->ownMatrix, i->own, sizeof(i->own));
+        return WXL_READ_OK;
+    }
+    int ApiReadBones(void* inst, uint32_t count, float* palette, int16_t* parents, float* pivots)
+    {
+        auto* i = static_cast<FakeInstance*>(inst);
+        if (count != i->bones) return WXL_READ_BONE_COUNT;
+        if (palette) std::memcpy(palette, i->palette.data(), size_t(count) * 64);
+        for (uint32_t k = 0; k < count; ++k)
+        {
+            if (parents) parents[k] = k == 0 ? -1 : int16_t(k - 1);
+            if (pivots)
+            {
+                pivots[k * 3 + 0] = 0; pivots[k * 3 + 1] = 0;
+                pivots[k * 3 + 2] = k >= 2 ? -0.25f * float(k - 2) : 0.0f;
+            }
+        }
+        return WXL_READ_OK;
+    }
+    int ApiWritePalette(void* inst, const float* palette, uint32_t count)
+    {
+        auto* i = static_cast<FakeInstance*>(inst);
+        if (count != i->bones) return WXL_READ_BONE_COUNT;
+        std::memcpy(i->palette.data(), palette, size_t(count) * 64);
+        return WXL_READ_OK;
+    }
+    int ApiModelInfo(void* inst, WxlModelInfo* out)
+    {
+        for (FakeInstance* f : g_all)
+            if (f == inst)
+            {
+                out->shared = const_cast<void*>(f->modelId);
+                out->parent = f->parent;
+                out->boneCount = f->bones;
+                out->parsed = 1;
+                return WXL_READ_OK;
+            }
+        return WXL_READ_NO_MODEL;
+    }
+    std::string Stem(const std::string& path)
+    {
+        size_t b = path.find_last_of("\\/");
+        b = b == std::string::npos ? 0 : b + 1;
+        const size_t e = path.find_last_of('.');
+        std::string s = path.substr(b, e == std::string::npos || e < b ? std::string::npos : e - b);
+        for (char& c : s) c = char(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    }
+    void* ApiFindAttachedChild(void* parent, uint32_t attachId, const char* name)
+    {
+        for (FakeInstance* f : g_all)
+            if (f->parent == parent && f->attachLink == int(attachId) && Stem(f->path) == Stem(name)) return f;
+        return nullptr;
+    }
+    int ApiItemDisplayInfo(uint32_t id, WxlItemDisplayInfo* out)
+    {
+        if (id < 1000 || id > 1999) return 0;
+        std::snprintf(out->modelName[0], sizeof(out->modelName[0]), "plume_test.mdx");
+        return 1;
+    }
+
+    WxlApi MakeApi()
+    {
+        WxlApi a = {};
+        a.abiVersion = WXL_ABI_VERSION;
+        a.structSize = sizeof(WxlApi);
+        a.log = ApiLog; a.logThrottle = ApiThrottle; a.subscribe = ApiSubscribe;
+        a.iniGetString = ApiIniString; a.iniGetInt = ApiIniInt; a.iniGetBool = ApiIniBool; a.iniStamp = ApiIniStamp;
+        a.readFile = ApiReadFile; a.freeBuffer = ApiFree; a.isVirtualKey = ApiIsVirtual;
+        a.readInstance = ApiReadInstance; a.readBones = ApiReadBones; a.writePalette = ApiWritePalette;
+        a.workingDirectory = ApiWorkingDirectory; a.vpathDecodeGlobalVirtualKey = ApiDecode;
+        a.modelInfo = ApiModelInfo; a.findAttachedChild = ApiFindAttachedChild; a.itemDisplayInfo = ApiItemDisplayInfo;
+        return a;
+    }
+
+    FakeInstance* NewInstance(const std::string& path, const void* modelId, void* parent = nullptr, int link = -1)
+    {
+        auto* i = new FakeInstance;
+        i->path = path; i->modelId = modelId; i->parent = parent; i->attachLink = link;
+        i->palette.assign(size_t(i->bones) * 16, 0.0f);
+        g_all.push_back(i);
+        return i;
+    }
+    void SetOwn(FakeInstance& i, double x, double y, double z)
+    {
+        const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, float(x),float(y),float(z),1 };
+        std::memcpy(i.own, m, sizeof(m));
+    }
+    void ResetPalette(FakeInstance& i)
+    {
+        i.palette.assign(size_t(i.bones) * 16, 0.0f);
+        for (uint32_t k = 0; k < i.bones; ++k) std::memcpy(&i.palette[size_t(k) * 16], i.own, sizeof(i.own));
+    }
+    void FireBones(FakeInstance& i)
+    {
+        WxlBuildBonePaletteArgs args = { &i };
+        for (const Sub& s : g_subs)
+            if (s.event == WXL_EVENT_BUILD_BONE_PALETTE) s.fn(s.user, &args);
+    }
+    void FireHand(void* wearer, uint32_t slot, int link, uint32_t displayId, bool removed)
+    {
+        WxlHandItemAttachedArgs a = {};
+        a.model = wearer; a.invSlot = slot; a.attachLink = removed ? -1 : link; a.displayId = removed ? 0 : displayId;
+        a.removed = removed ? 1 : 0;
+        for (const Sub& s : g_subs)
+            if (s.event == WXL_EVENT_HAND_ITEM_ATTACHED) s.fn(s.user, &a);
+    }
+
+    // world z of the last plume segment's pivot, relative to the instance origin: about -0.5 when it hangs,
+    // positive when it lifts
+    double TipHeight(const FakeInstance& i)
+    {
+        const float* m = &i.palette[4 * 16];
+        const double pz = -0.5;
+        return pz * m[10] + m[14] - i.own[14];
+    }
+
+    // a character that jumps and lands; the weapon follows. Returns the tip height at the end.
+    double Play(FakeInstance& i, double seconds)
+    {
+        const double dt = 1.0 / 60.0;
+        const double jump = 0.8;
+        for (double t = 0; t <= seconds + 1e-9; t += dt)
+        {
+            const double tt = std::min(t, jump);
+            double z = 7.9555 * tt - 0.5 * 19.29 * tt * tt;
+            if (z < 0) z = 0;
+            SetOwn(i, -8913.2 + 7 * tt, 543.7, 122.4 + z);
+            ResetPalette(i);
+            i.clockMs += uint32_t(dt * 1000.0 + 0.5);
+            FireBones(i);
+        }
+        return TipHeight(i);
+    }
+
+    void WriteCsv(const char* text)
+    {
+        std::ofstream f("PhysicsOverride.csv", std::ios::binary | std::ios::trunc);
+        f << text;
+    }
+    bool LogHas(const char* part)
+    {
+        for (const std::string& l : g_log) if (l.find(part) != std::string::npos) return true;
+        return false;
+    }
+}
+
+int main(int argc, char** argv)
+{
+    const char* path = argc > 1 ? argv[1] : "./libwxl_physics.so";
+    std::printf("module: %s\n", path);
+
+    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!h) { std::printf("dlopen failed: %s\n", dlerror()); return 1; }
+    auto init = reinterpret_cast<WxlModuleInitFn>(dlsym(h, "WxlModuleInit"));
+    if (!init) { std::printf("no WxlModuleInit\n"); return 1; }
+
+    // ---- the files ----
+    WriteCsv(
+        "# per-display physics\n"
+        "Kind,DisplayId,GravityScale,Note\n"
+        "Item,1001,-1,upside down\n"            // a plain model, found through the attach event
+        "Creature,1002,-1,must never reach an item\n"
+        "Item,1003,-1,a baked variant\n"        // found through its virtual path
+        "Item,1005,-1,\n"
+        "Item,1004,nonsense,bad cell\n");        // a bad cell: logged, row skipped (nothing else set)
+    g_ini["Physics"]["Enabled"] = "1";
+    g_ini["Physics"]["WatchIni"] = "1";
+
+    WxlApi api = MakeApi();
+    WxlModuleInfo info = {}; info.structSize = sizeof(info);
+
+    std::printf("1. loading\n");
+    Check(init(&api, &info) == 0, "initializes against the fake core");
+    int boneSubs = 0, handSubs = 0;
+    for (const Sub& s : g_subs) { boneSubs += s.event == WXL_EVENT_BUILD_BONE_PALETTE; handSubs += s.event == WXL_EVENT_HAND_ITEM_ATTACHED; }
+    Check(boneSubs == 1 && handSubs == 1, "subscribes to OnBuildBonePalette and OnHandItemAttached once each");
+    Check(LogHas("1 creature row(s)") && LogHas("PhysicsOverride.csv"), "reads the csv and counts its rows");
+    Check(LogHas("GravityScale='nonsense' is not a number"), "reports the bad cell with its line");
+
+    const char* kPlain = "item\\objectcomponents\\head\\plume_test.m2";
+    const void* kModel = reinterpret_cast<const void*>(0x1000);   // ONE loaded model file shared by every plain weapon
+    FakeInstance* wearer = NewInstance("character\\human\\male\\humanmale.m2", reinterpret_cast<const void*>(0x9000));
+    FakeInstance* wearer2 = NewInstance("character\\human\\male\\humanmale.m2", reinterpret_cast<const void*>(0x9000));
+
+    std::printf("2. two displays, one model file\n");
+    FakeInstance* a = NewInstance(kPlain, kModel, wearer, 1);    // display 1001, right hand
+    FakeInstance* b = NewInstance(kPlain, kModel, wearer2, 1);   // display 1002, right hand, another wearer
+    FireHand(wearer, 15, 1, 1001, false);
+    FireHand(wearer2, 15, 1, 1002, false);
+    const double tipA = Play(*a, 6.0);
+    const double tipB = Play(*b, 6.0);
+    std::printf("     tip height: display 1001 -> %.3f   display 1002 -> %.3f\n", tipA, tipB);
+    Check(tipB < -0.2, "display 1002 (no item row) hangs: its own creature row did not reach it");
+    // the plume's joints are limited to 45 degrees each, so it cannot stand fully upright: -0.5 hanging, about -0.15 lifted
+    Check(tipA > tipB + 0.25, "display 1001 (GravityScale=-1) lifts on the very same model file");
+    Check(LogHas("item display 1001 on") && LogHas("GravityScale=-1"), "the log names the display and what it changed");
+    Check(!LogHas("item display 1002 on"), "...and says nothing about display 1002");
+
+    std::printf("3. a baked variant (virtual path) and the creature-path guard\n");
+    const char* kBaked = "item\\objectcomponents\\head\\plume_test_1003.m2";
+    g_virtual.insert(kBaked);
+    FakeInstance* c = NewInstance(kBaked, reinterpret_cast<const void*>(0x2000));
+    const double tipC = Play(*c, 6.0);
+    Check(tipC > tipB + 0.25, "display 1003 reached through its baked path lifts");
+    const char* kCreature = "creature\\foo\\plume_test_1003.m2";   // same shape, but not under the item folder
+    g_virtual.insert(kCreature);
+    FakeInstance* d = NewInstance(kCreature, reinterpret_cast<const void*>(0x3000));
+    const double tipD = Play(*d, 6.0);
+    const bool creatureFound = LogHas("MATCH 'creature");
+    if (!creatureFound) std::printf("     (no .phy2 for the creature path in this folder: the guard cannot be seen here)\n");
+    Check(!creatureFound || tipD < -0.2, "a baked CREATURE path with the same id gets no item row");
+
+    std::printf("4. the weapon is removed, or its binding goes stale\n");
+    FireHand(wearer, 15, 1, 0, true);
+    const double tipA2 = Play(*a, 6.0);
+    Check(tipA2 < -0.2, "after the removal event the instance is back to the global multipliers");
+    FireHand(wearer, 15, 1, 1001, false);                       // equipped again
+    Check(Play(*a, 6.0) > tipB + 0.25, "...and equipping it again brings the row back");
+    a->parent = wearer2;                                        // the address is recycled by something else
+    FireHand(wearer2, 16, 2, 1005, false);                      // any change makes the module look again
+    Check(Play(*a, 6.0) < -0.2, "a binding whose weapon is no longer the wearer's child is dropped");
+
+    std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
+    a->parent = wearer;
+    FireHand(wearer, 15, 1, 1001, false);
+    Check(Play(*a, 6.0) > tipB + 0.25, "before: 1001 inverted");
+    WriteCsv("Kind,DisplayId,GravityScale\nItem,1002,-1\n");     // swap: 1002 inverted, 1001 normal
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300)); // the module looks once a second
+    const double tipA3 = Play(*a, 6.0);
+    const double tipB3 = Play(*b, 6.0);
+    std::printf("     after the save: 1001 -> %.3f   1002 -> %.3f\n", tipA3, tipB3);
+    Check(tipA3 < -0.2, "after the save 1001 hangs");
+    Check(tipB3 > tipA3 + 0.25, "...and 1002 lifts");
+    Check(LogHas("csv saved"), "the reload is logged");
+
+    std::printf("6. no csv at all\n");
+    std::remove("PhysicsOverride.csv");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1300));
+    Play(*b, 6.0);
+    Check(LogHas("no PhysicsOverride.csv") && Play(*b, 6.0) < -0.2, "deleting the file switches the overrides off");
+
+    for (FakeInstance* f : g_all) delete f;
+    g_all.clear();
+    if (std::getenv("DUMP_LOG")) for (const std::string& l : g_log) std::printf("LOG %s\n", l.c_str());
+    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
+    return g_failed ? 1 : 0;
+}

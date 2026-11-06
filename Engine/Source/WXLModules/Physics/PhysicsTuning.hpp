@@ -11,7 +11,8 @@
 //     Enabled=1
 //
 //     ; ---- how the bones fall and settle (dynamic bodies) ----
-//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are.
+//     GravityScale=1.0          ; how hard they are pulled down. 0 = they float where they are. Negative (down to
+//                               ; -100) turns it around: the loose parts rise instead of hanging.
 //     LinearDampingScale=1.0    ; air drag on movement. Up: slower, gooier. Down: swings longer.
 //     AngularDampingScale=1.0   ; air drag on spinning/twisting. Up: stops turning sooner.
 //     InertiaScale=1.0          ; resistance to being rotated. Up: lazier turns. (0.01 .. 100)
@@ -38,13 +39,18 @@
 //     ; their pose for a moment). Default 0.
 //     WatchIni=0
 //
-// Every multiplier is read as a decimal number, "1.25" or "1,25"; a value outside its range is clamped to it
-// (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100 unless listed above.
+// Every multiplier is read as a decimal number, "1.25" or "1,25" (a leading "-" is allowed); a value outside its
+// range is clamped to it (and logged), a value that is not a number is ignored (and logged). Ranges are 0 .. 100
+// unless listed above (GravityScale: -100 .. 100).
+//
+// The same keys can be set for single items in PhysicsOverride.csv (PhysicsOverrides.hpp): Merge() lays such a
+// row over the global values.
 #pragma once
 
 #include "physics_domino.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -64,11 +70,33 @@ namespace wxl::equip::physics::tuning
         bool Identity() const;
     };
 
+    /// A partial set of multipliers: only the keys whose bit is set in `set` mean anything (bit i = key i, in
+    /// the order of KeyName). Used for one row of PhysicsOverride.csv.
+    struct Overrides
+    {
+        Tuning   values;
+        uint32_t set = 0;
+        bool Any() const { return set != 0; }
+    };
+
+    constexpr int kKeyCount = 13;
+    /// The ini name of key i ("GravityScale"...), nullptr when i is out of range.
+    const char* KeyName(int i);
+    /// The index of a key by its ini name, ignoring case; -1 when it is none of them.
+    int FindKey(const char* name);
+    /// Parses `text` as the value of key i (see ParseMultiplier) and brings it into the key's range. False when
+    /// it is not a number (*out untouched). *clamped (when given) says the range changed the value.
+    bool ParseKeyValue(int i, const char* text, float* out, bool* clamped = nullptr);
+    /// Sets key i of `o` to v (v is brought into the key's range) and marks it as set.
+    void SetOverride(Overrides& o, int i, float v);
+    /// `base`, with every key that `o` sets replaced by o's value. A replaced value, not a product.
+    Tuning Merge(const Tuning& base, const Overrides& o);
+
     /// Reads one key of [Physics]: copies its text into out and returns true when the key exists.
     using ReadFn = bool (*)(const char* key, char* out, size_t cap);
 
-    /// Parses "1.25" / "1,25" (surrounding spaces ignored). False for anything that is not a finite,
-    /// non-negative number; *out is untouched then.
+    /// Parses "1.25" / "1,25" / "-1" (surrounding spaces ignored, one leading "-" or "+"). False for anything
+    /// that is not a finite number; *out is untouched then. The key's range is applied by the callers.
     bool ParseMultiplier(const char* text, float* out);
 
     /// Reads every multiplier through `read`. Problems (a value that is not a number, or out of range) are

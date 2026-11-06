@@ -22,6 +22,7 @@
 #include "ModuleHost.hpp"
 #include "Phy2Library.hpp"
 #include "PhysicsGuard.hpp"
+#include "PhysicsOverrides.hpp"
 #include "PhysicsTuning.hpp"
 #include "physics_domino.h"
 
@@ -30,7 +31,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -39,6 +42,9 @@
 
 namespace wxl::equip::physics
 {
+    // A member the core's table has AND filled in: WXL_API_HAS only says the table is long enough.
+    #define PHYS_HAS(api, member) (WXL_API_HAS(api, member) && (api)->member)
+
     namespace phys = wow::ec::physics;
     namespace host = wxl::modules::host;
 
@@ -67,6 +73,8 @@ namespace wxl::equip::physics
             std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
             guard::Limits limits;                 // how far each dynamic bone may stray
             guard::State  judge;
+            uint32_t display = 0;                 // the item display this instance shows (0: none known)
+            uint32_t bindGen = 0;                 // g_bindGen when `display` was worked out
         };
 
         // Instances that had to be re-seeded: too many times in a short while switches them off for a bit.
@@ -81,13 +89,26 @@ namespace wxl::equip::physics
         struct ModelEntry
         {
             std::string                  stem;    // the path it was looked up under (a slot can be reused)
-            std::shared_ptr<phys::Model> model;   // null: no physics for this model
+            std::shared_ptr<phys::Model> base;    // null: no physics for this model. Carry groups added, no multipliers yet
+            // base with the multipliers laid on: key 0 = the global ones, (1 << 32 | display) = the global ones
+            // with that item display's PhysicsOverride.csv row on top
+            std::unordered_map<uint64_t, std::shared_ptr<phys::Model>> variants;
+        };
+
+        // A held item's instance, as the OnHandItemAttached event told us (see OnHandItemAttached below)
+        struct Binding
+        {
+            void*    wearer = nullptr;   // the character's model instance the weapon is attached to
+            uint32_t slot = 0;           // inventory slot: 15 main hand, 16 off hand, 17 ranged
+            uint32_t displayId = 0;      // ItemDisplayInfo id
         };
 
         std::mutex g_lock;                                                // guards the three below and g_stats
         std::unordered_map<const void*, ModelEntry> g_models;             // loaded model -> its physics
         std::unordered_map<void*, InstState> g_inst;                      // instance -> simulation
         std::unordered_map<void*, Penalty> g_penalty;                     // instance -> re-seed history
+        std::unordered_map<void*, Binding> g_bind;                        // held-item instance -> its display
+        uint32_t g_bindGen = 1;                                           // bumped whenever g_bind changes
         guard::Config g_guardCfg;
         bool g_carryAnchors = true;
         constexpr uint32_t kPenaltyWindowMs = 5000, kPenaltyMax = 4, kPenaltyOffMs = 10000;
@@ -140,6 +161,230 @@ namespace wxl::equip::physics
         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
         uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
 
+        // ---- PhysicsOverride.csv (PhysicsOverrides.hpp) ----
+        // Written by Init, ReloadFiles and the WatchIni poll (the last two under g_lock); read under g_lock.
+        overrides::Table g_ovr;
+        std::string g_ovrWhere;        // where it was read from ("" = there is no file)
+        uint64_t g_ovrStamp = 0;       // its last-write time when it was read (0 = not on disk)
+
+        constexpr const char* kOverrideName = "PhysicsOverride.csv";
+
+        // The places it is looked for, in order: beside the client, then DBFilesClient\ beside the client; the
+        // same two names are then tried through the client's reader (loose files under Data\ and the archives)
+        // so a patch archive can ship one.
+        std::vector<std::string> OverrideDiskCandidates()
+        {
+            std::vector<std::string> v;
+            const WxlApi* api = host::Api();
+            std::string base;
+            if (api && PHYS_HAS(api, workingDirectory) && api->workingDirectory())
+            {
+                base = api->workingDirectory();
+                if (!base.empty() && base.back() != '\\' && base.back() != '/') base += '/';
+            }
+            v.push_back(base + kOverrideName);
+            v.push_back(base + "DBFilesClient/" + kOverrideName);
+            return v;
+        }
+
+        // last-write time of the file on disk (0 when there is none); it changes when the file is saved
+        uint64_t OverrideStamp()
+        {
+            for (const std::string& path : OverrideDiskCandidates())
+            {
+                std::error_code ec;
+                const auto t = std::filesystem::last_write_time(path, ec);
+                if (ec) continue;
+                const uintmax_t size = std::filesystem::file_size(path, ec);
+                return (uint64_t(t.time_since_epoch().count()) ^ (uint64_t(ec ? 0 : size) << 1)) | 1u;   // never 0 for a file
+            }
+            return 0;
+        }
+
+        bool ReadOverrideText(std::string& text, std::string& where)
+        {
+            for (const std::string& path : OverrideDiskCandidates())
+            {
+                if (FILE* f = std::fopen(path.c_str(), "rb"))
+                {
+                    char buf[4096];
+                    size_t n;
+                    text.clear();
+                    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
+                    {
+                        text.append(buf, n);
+                        if (text.size() > (4u << 20)) break;   // not a plausible size: stop reading
+                    }
+                    std::fclose(f);
+                    where = path;
+                    return true;
+                }
+            }
+            const char* names[] = { "DBFilesClient\\PhysicsOverride.csv", "PhysicsOverride.csv" };
+            for (const char* name : names)
+            {
+                std::vector<uint8_t> raw;
+                if (host::ReadFile(name, raw) && !raw.empty() && raw.size() <= (4u << 20))
+                {
+                    text.assign(reinterpret_cast<const char*>(raw.data()), raw.size());
+                    where = std::string(name) + " (client data)";
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        void LoadOverrides()
+        {
+            g_ovr = overrides::Table{};
+            g_ovrWhere.clear();
+            g_ovrStamp = OverrideStamp();
+            std::string text;
+            if (!ReadOverrideText(text, g_ovrWhere))
+            {
+                wxl::LogCat("PHYS", "physics: no %s (optional): no per-display multipliers", kOverrideName);
+                return;
+            }
+            std::string problems;
+            g_ovr = overrides::Parse(text, &problems);
+            for (size_t b = 0; b < problems.size();)
+            {
+                const size_t e = problems.find('\n', b);
+                wxl::LogCat("PHYS", "physics: %s", problems.substr(b, e == std::string::npos ? e : e - b).c_str());
+                if (e == std::string::npos) break;
+                b = e + 1;
+            }
+            wxl::LogCat("PHYS", "physics: %s: %zu item row(s), %zu creature row(s)%s", g_ovrWhere.c_str(), g_ovr.items.size(),
+                        g_ovr.creatures.size(), g_ovr.creatures.empty() ? "" : " (creature rows are read but not applied yet)");
+            g_stats.overrideRows = uint32_t(g_ovr.Rows());
+        }
+
+        // The multipliers a model gets for one item display: the global ones, with that display's row of
+        // PhysicsOverride.csv on top. Built once per (model, display) and kept. Caller holds g_lock.
+        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, uint32_t display, const char* stem)
+        {
+            const tuning::Overrides* row = display ? g_ovr.Find(overrides::Kind::Item, display) : nullptr;
+            const uint64_t key = row ? ((uint64_t(1) << 32) | display) : 0;
+            const auto it = e.variants.find(key);
+            if (it != e.variants.end()) return it->second;
+
+            const tuning::Tuning effective = row ? tuning::Merge(g_tuning, *row) : g_tuning;
+            int tuned = 0;
+            std::shared_ptr<phys::Model> model = tuning::Apply(e.base, effective, &tuned);   // a copy only when something changes
+            if (tuned) ++g_stats.modelsTuned;
+            if (row)
+            {
+                ++g_stats.modelsOverridden;
+                wxl::LogCat("PHYS", "physics: item display %u on '%s' uses its PhysicsOverride.csv row: %s", display, stem,
+                            tuning::Describe(effective).c_str());
+            }
+            e.variants[key] = model;
+            return model;
+        }
+
+        // Which ItemDisplayInfo a model instance shows; 0 when it is not a held item or nobody said. No lock held.
+        //  1. A held weapon the equip extension attached: OnHandItemAttached named its display (g_bind). Works for
+        //     two displays that share one model file and carry no texture or geoset change.
+        //  2. A baked variant: its virtual path is "<original stem>_<displayId>.m2" and the core can decode it.
+        //     Only paths under item\ count: a baked CREATURE variant has the same shape, and an item row must
+        //     never reach a creature.
+        uint32_t ResolveItemDisplay(const WxlApi* api, void* instance, const char* stem)
+        {
+            Binding b;
+            bool have = false;
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                const auto it = g_bind.find(instance);
+                if (it != g_bind.end()) { b = it->second; have = true; }
+            }
+            if (have)
+            {
+                // a recycled instance address must not inherit an old binding: the weapon is still the wearer's child
+                WxlModelInfo mi = {};
+                mi.structSize = sizeof(mi);
+                if (PHYS_HAS(api, modelInfo) && api->modelInfo(instance, &mi) == WXL_READ_OK && mi.parent == b.wearer)
+                    return b.displayId;
+                std::lock_guard<std::mutex> g(g_lock);
+                const auto it = g_bind.find(instance);
+                if (it != g_bind.end() && it->second.wearer == b.wearer) { g_bind.erase(it); ++g_bindGen; }
+            }
+            if (PHYS_HAS(api, vpathDecodeGlobalVirtualKey) && host::IsVirtualKey(stem))
+            {
+                const std::string norm = phy2::NormalizeModelPath(stem);
+                if (norm.compare(0, 5, "item\\") == 0)
+                {
+                    char original[WXL_PATH_MAX];
+                    uint32_t id = 0;
+                    if (api->vpathDecodeGlobalVirtualKey(stem, original, sizeof(original), &id) && id) return id;
+                }
+            }
+            return 0;
+        }
+
+        // Drops the bindings whose weapon is gone (the wearer was freed without a "removed" event).
+        void PruneBindings(const WxlApi* api)
+        {
+            std::vector<std::pair<void*, void*>> all;   // instance, wearer
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                for (const auto& kv : g_bind) all.emplace_back(kv.first, kv.second.wearer);
+            }
+            std::vector<void*> dead;
+            for (const auto& iw : all)
+            {
+                WxlModelInfo mi = {};
+                mi.structSize = sizeof(mi);
+                if (!(PHYS_HAS(api, modelInfo) && api->modelInfo(iw.first, &mi) == WXL_READ_OK && mi.parent == iw.second))
+                    dead.push_back(iw.first);
+            }
+            if (dead.empty()) return;
+            std::lock_guard<std::mutex> g(g_lock);
+            for (void* d : dead) g_bind.erase(d);
+            ++g_bindGen;
+        }
+
+        // OnHandItemAttached (fired by CCharacterComponent::AddHandItem after it attached the weapon, and by
+        // RemoveHandItem with removed=1): `model` is the WEARER, so the weapon's own instance is found as its
+        // child at the attach link whose file stem is the display's model. A baked variant has another stem and
+        // is not found here; ResolveItemDisplay decodes its path instead.
+        void OnHandItemAttached(void* /*user*/, const void* args)
+        {
+            if (!args) return;
+            const WxlHandItemAttachedArgs a = *static_cast<const WxlHandItemAttachedArgs*>(args);
+            const WxlApi* api = host::Api();
+            if (!api || !a.model) return;
+
+            if (a.removed)
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                for (auto it = g_bind.begin(); it != g_bind.end();)
+                    if (it->second.wearer == a.model && it->second.slot == a.invSlot) it = g_bind.erase(it);
+                    else ++it;
+                ++g_bindGen;
+                return;
+            }
+            if (!a.displayId || a.attachLink < 0) return;
+            if (!PHYS_HAS(api, findAttachedChild) || !PHYS_HAS(api, itemDisplayInfo)) return;
+
+            WxlItemDisplayInfo info = {};
+            info.structSize = sizeof(info);
+            if (!api->itemDisplayInfo(a.displayId, &info) || !info.modelName[0][0]) return;
+            void* child = api->findAttachedChild(a.model, static_cast<uint32_t>(a.attachLink), info.modelName[0]);
+
+            bool prune;
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                for (auto it = g_bind.begin(); it != g_bind.end();)   // the slot's earlier weapon
+                    if (it->second.wearer == a.model && it->second.slot == a.invSlot) it = g_bind.erase(it);
+                    else ++it;
+                if (child) g_bind[child] = Binding{ a.model, a.invSlot, a.displayId };
+                ++g_bindGen;
+                prune = g_bind.size() > 256;
+            }
+            if (prune) PruneBindings(api);
+        }
+
+
         bool ReadPhysicsKey(const char* key, char* out, size_t cap)
         {
             return host::IniGetString("Physics", key, out, cap);
@@ -180,7 +425,12 @@ namespace wxl::equip::physics
                     g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
         g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
         LoadTuning();
-        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers are re-read whenever the ini is saved");
+        LoadOverrides();
+        if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers and %s are re-read whenever they are saved", kOverrideName);
+
+        // Which display a held weapon shows: the equip extension says so when it attaches one (see the handler).
+        if (api->subscribe(WXL_EVENT_HAND_ITEM_ATTACHED, &OnHandItemAttached, nullptr) != 0)
+            wxl::LogCat("PHYS", "physics: cannot follow held items; PhysicsOverride.csv then only reaches baked variants");
 
         // After the built-in extensions' handlers (subscribers run in subscription order; modules load last).
         return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnBuildBonePalette, nullptr) == 0;
@@ -205,7 +455,8 @@ namespace wxl::equip::physics
         g_penalty.clear();
         g_stats = Stats{};
         LoadTuning();
-        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files and the multipliers will be read again");
+        LoadOverrides();
+        wxl::LogCat("PHYS", "physics: file cache cleared, .phy2 files, the multipliers and %s will be read again", kOverrideName);
     }
 
     Stats GetStats()
@@ -252,19 +503,41 @@ namespace wxl::equip::physics
         {
             g_lastIniPoll = now;
             const uint64_t stamp = host::IniStamp();
-            if (stamp && stamp != g_iniStamp)
+            const bool iniSaved = stamp && stamp != g_iniStamp;
+            const bool csvSaved = OverrideStamp() != g_ovrStamp;
+            if (iniSaved || csvSaved)
             {
-                LoadTuning();
+                if (iniSaved) LoadTuning();
+                if (csvSaved) LoadOverrides();
                 g_models.clear();
                 g_inst.clear();
                 g_stats.live = 0;
-                wxl::LogCat("PHYS", "physics: ini saved, multipliers applied to every model again");
+                wxl::LogCat("PHYS", "physics: %s saved, multipliers applied to every model again",
+                            iniSaved && csvSaved ? "ini and csv" : iniSaved ? "ini" : "csv");
             }
         }
         {
             // an instance that was re-seeded too often stays animated for a while
             auto pen = g_penalty.find(instance);
             if (pen != g_penalty.end() && pen->second.disabledUntil && int32_t(now - pen->second.disabledUntil) < 0) return;
+        }
+
+        uint32_t pendingGen = g_bindGen;   // the binding generation `display` below belongs to
+        // The item display this instance shows, for PhysicsOverride.csv. Worked out when the instance is new or
+        // when the held items changed (g_bindGen); calls into the core, so with the lock released.
+        uint32_t display = 0;
+        {
+            const auto cur = g_inst.find(instance);
+            if (cur != g_inst.end() && cur->second.shared == s.model && cur->second.bindGen == g_bindGen)
+                display = cur->second.display;
+            else
+            {
+                const uint32_t gen = g_bindGen;
+                lk.unlock();
+                display = ResolveItemDisplay(api, instance, stem);
+                lk.lock();
+                pendingGen = gen;
+            }
         }
 
         // This model's physics, looked up once (and again if the slot was reused by another file).
@@ -289,19 +562,18 @@ namespace wxl::equip::physics
             lk.lock();
             // extra anchors carry their followers (PhysicsGuard.hpp); a model that needs nothing is used as is
             int carried = 0;
-            model = guard::PrepareModel(res.model, g_carryAnchors, &carried);
-            int tuned = 0;
-            model = tuning::Apply(model, g_tuning, &tuned);   // a copy only when a multiplier changes something
-            if (tuned) ++g_stats.modelsTuned;
+            ModelEntry entry;
+            entry.stem = stem;
+            entry.base = guard::PrepareModel(res.model, g_carryAnchors, &carried);
             if (carried)
             {
                 ++g_stats.modelsCarried;
                 wxl::LogCat("PHYS", "physics: '%s' has several anchors and no root body: %d anchor(s) now carry their followers",
                             stem, carried);
             }
-            g_models[s.model] = ModelEntry{ stem, model };
+            mi = g_models.insert_or_assign(s.model, std::move(entry)).first;
         }
-        else model = mi->second.model;
+        if (mi->second.base) model = VariantLocked(mi->second, display, stem);
         if (!model) return;
 
         std::vector<float> before(size_t(boneCount) * 16);
@@ -321,7 +593,7 @@ namespace wxl::equip::physics
             }
 
         InstState& st = g_inst[instance];
-        if (st.shared != s.model || !st.sim)
+        if (st.shared != s.model || !st.sim || st.model != model)
         {
             st = InstState{};
             st.shared = s.model;
@@ -330,6 +602,8 @@ namespace wxl::equip::physics
             if (g_guardCfg.enabled) st.limits = guard::Build(*model, pivots.data(), boneCount, g_guardCfg);
         }
         st.lastSeen = now;
+        st.display = display;
+        st.bindGen = pendingGen;
 
         // the frame's time: the scene clock; a second build in one frame takes 0 s; a clock standing
         // still for 0.1 s (paused scenes, UI models) falls back to the high-resolution clock

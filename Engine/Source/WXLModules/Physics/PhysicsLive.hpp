@@ -26,7 +26,8 @@
 //                          placement jumps (teleport), is dropped and re-seeded from the animated pose
 //     UnstickReach=300     how far a bone may stray, in percent of its distance to the nearest anchor
 //     TeleportYards=6      a placement move farther than this in one frame is a teleport
-// and the multipliers of PhysicsTuning.hpp.
+// and the multipliers of PhysicsTuning.hpp, which PhysicsOverride.csv (PhysicsOverrides.hpp) can set again for
+// single item displays.
 //
 // The hook: an OnBuildBonePalette subscriber (the engine fires it at the end of CM2Model::AnimateMT).
 // Modules load after the built-in extensions, so this subscriber runs after the equip extension's own and
@@ -62,6 +63,8 @@ namespace wxl::equip::physics
         uint32_t disabled = 0;        // instances switched off for a while after re-seeding too often
         uint32_t modelsCarried = 0;   // models whose extra anchors were given a carry group
         uint32_t modelsTuned = 0;     // models that [Physics] *Scale multipliers changed (PhysicsTuning.hpp)
+        uint32_t overrideRows = 0;    // rows read from PhysicsOverride.csv (PhysicsOverrides.hpp)
+        uint32_t modelsOverridden = 0;// (model, item display) pairs that a row of it changed
         double   lastFrameMs = 0;     // time spent in physics for the last simulated frame
         double   worstFrameMs = 0;
     };
