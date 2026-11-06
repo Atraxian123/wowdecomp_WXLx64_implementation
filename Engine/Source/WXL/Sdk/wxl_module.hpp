@@ -92,7 +92,7 @@ namespace wxl::events
     {
         OnModelLoadPre, OnModelLoad, OnBuildBonePalette, OnUpdate, OnWorldEnter, OnWorldLeave,
         OnItemSlotChange, OnItemSlotClear, OnHandItemAttached, OnM2SkinFinalize, OnM2PerFrameUpdate,
-        OnEndScene, OnM2BatchDraw, OnDeviceLost, OnDeviceReset
+        OnEndScene, OnM2BatchDraw, OnDeviceLost, OnDeviceReset, OnCreatureModelBuilt
     };
 
     inline const char* EventName(Event e)
@@ -114,6 +114,7 @@ namespace wxl::events
             case Event::OnM2BatchDraw:     return WXL_EVENT_M2_BATCH_DRAW;
             case Event::OnDeviceLost:      return WXL_EVENT_DEVICE_LOST;
             case Event::OnDeviceReset:     return WXL_EVENT_DEVICE_RESET;
+            case Event::OnCreatureModelBuilt: return WXL_EVENT_CREATURE_MODEL_BUILT;
         }
         return "";
     }
@@ -126,6 +127,7 @@ namespace wxl::events
     struct ItemSlotChangeArgs    { void* charModelObj; uint32_t modelSlot; void* itemDataPtr; };
     struct ItemSlotClearArgs     { void* charModelObj; uint32_t equipSlotWow; };
     struct HandItemAttachedArgs  { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; bool sheathed; bool removed; };
+    struct CreatureModelBuiltArgs{ void* model; uint32_t displayId; bool mount; const char* fileName; };
     struct M2SkinFinalizeArgs    { void* model; };
     struct M2PerFrameUpdateArgs  { void* renderCtx; };
     struct EndSceneArgs          { void* device; };
@@ -135,7 +137,8 @@ namespace wxl::events
                   sizeof(UpdateArgs) == sizeof(WxlUpdateArgs) && sizeof(WorldArgs) == sizeof(WxlWorldArgs), "args mirror the C structs");
     static_assert(sizeof(ItemSlotChangeArgs) == sizeof(WxlItemSlotChangeArgs) && sizeof(ItemSlotClearArgs) == sizeof(WxlItemSlotClearArgs) &&
                   sizeof(HandItemAttachedArgs) == sizeof(WxlHandItemAttachedArgs) && sizeof(M2SkinFinalizeArgs) == sizeof(WxlM2SkinFinalizeArgs) &&
-                  sizeof(M2PerFrameUpdateArgs) == sizeof(WxlM2PerFrameUpdateArgs), "the character-model args mirror the C structs");
+                  sizeof(M2PerFrameUpdateArgs) == sizeof(WxlM2PerFrameUpdateArgs) &&
+                  sizeof(CreatureModelBuiltArgs) == sizeof(WxlCreatureModelBuiltArgs), "the character-model args mirror the C structs");
     static_assert(sizeof(EndSceneArgs) == sizeof(WxlEndSceneArgs) && sizeof(M2BatchDrawArgs) == sizeof(WxlM2BatchDrawArgs) &&
                   sizeof(DeviceResetArgs) == sizeof(WxlDeviceResetArgs), "the render args mirror the C structs");
 

@@ -76,6 +76,7 @@ typedef void (*WxlEventHandler)(void* user, const void* args);
 #define WXL_EVENT_ITEM_SLOT_CHANGE   "OnItemSlotChange"
 #define WXL_EVENT_ITEM_SLOT_CLEAR    "OnItemSlotClear"
 #define WXL_EVENT_HAND_ITEM_ATTACHED "OnHandItemAttached"
+#define WXL_EVENT_CREATURE_MODEL_BUILT "OnCreatureModelBuilt"
 #define WXL_EVENT_M2_SKIN_FINALIZE   "OnM2SkinFinalize"
 #define WXL_EVENT_M2_PER_FRAME       "OnM2PerFrameUpdate"
 #define WXL_EVENT_END_SCENE          "OnEndScene"
@@ -104,6 +105,11 @@ typedef struct WxlItemSlotClearArgs { void* charModelObj; uint32_t equipSlotWow;
 /* OnHandItemAttached: a held item was attached or removed. model is the character's own instance; invSlot 15 main
  * hand, 16 off hand, 17 ranged; attachLink 0 shield, 1 right hand, 2 left hand, 26+ sheath points, -1 none. */
 typedef struct WxlHandItemAttachedArgs { void* model; uint32_t invSlot; int32_t attachLink; uint32_t displayId; uint8_t sheathed; uint8_t removed; } WxlHandItemAttachedArgs;
+/* OnCreatureModelBuilt: a unit's creature model (mount = 0) or its mount's model (mount = 1) was created for a
+ * CreatureDisplayInfo row. model is the new instance (the handle OnBuildBonePalette reports for it); displayId is the
+ * CreatureDisplayInfo id that was drawn; fileName is the model file it was created from (a virtual path for a baked
+ * variant), valid only during the call. */
+typedef struct WxlCreatureModelBuiltArgs { void* model; uint32_t displayId; uint8_t mount; const char* fileName; } WxlCreatureModelBuiltArgs;
 /* OnM2SkinFinalize: a loaded model's skin profile is about to be finalized (the window to filter geosets). */
 typedef struct WxlM2SkinFinalizeArgs { void* model; } WxlM2SkinFinalizeArgs;
 /* OnM2PerFrameUpdate: the per-frame scene-graph tick of one model instance. */

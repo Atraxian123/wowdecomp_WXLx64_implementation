@@ -58,7 +58,8 @@ namespace
     int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
     int  ApiSubscribe(const char* name, WxlEventHandler fn, void* user)
     {
-        if (std::strcmp(name, WXL_EVENT_BUILD_BONE_PALETTE) != 0 && std::strcmp(name, WXL_EVENT_HAND_ITEM_ATTACHED) != 0) return 2;
+        if (std::strcmp(name, WXL_EVENT_BUILD_BONE_PALETTE) != 0 && std::strcmp(name, WXL_EVENT_HAND_ITEM_ATTACHED) != 0 &&
+            std::strcmp(name, WXL_EVENT_CREATURE_MODEL_BUILT) != 0) return 2;
         g_subs.push_back({ name, fn, user });
         return 0;
     }
@@ -231,6 +232,14 @@ namespace
             if (s.event == WXL_EVENT_HAND_ITEM_ATTACHED) s.fn(s.user, &a);
     }
 
+    void FireCreature(void* model, uint32_t displayId, bool mount, const char* fileName)
+    {
+        WxlCreatureModelBuiltArgs a = {};
+        a.model = model; a.displayId = displayId; a.mount = mount ? 1 : 0; a.fileName = fileName;
+        for (const Sub& s : g_subs)
+            if (s.event == WXL_EVENT_CREATURE_MODEL_BUILT) s.fn(s.user, &a);
+    }
+
     // world z of the last plume segment's pivot, relative to the instance origin: about -0.5 when it hangs,
     // positive when it lifts
     double TipHeight(const FakeInstance& i)
@@ -288,6 +297,8 @@ int main(int argc, char** argv)
         "Creature,1002,-1,must never reach an item\n"
         "Item,1003,-1,a baked variant\n"        // found through its virtual path
         "Item,1005,-1,\n"
+        "Creature,2001,-1,a plain creature model, found through the creature event\n"
+        "Creature,2002,-1,a baked creature variant\n"
         "Item,1004,nonsense,bad cell\n");        // a bad cell: logged, row skipped (nothing else set)
     g_ini["Physics"]["Enabled"] = "1";
     g_ini["Physics"]["WatchIni"] = "1";
@@ -297,10 +308,15 @@ int main(int argc, char** argv)
 
     std::printf("1. loading\n");
     Check(init(&api, &info) == 0, "initializes against the fake core");
-    int boneSubs = 0, handSubs = 0;
-    for (const Sub& s : g_subs) { boneSubs += s.event == WXL_EVENT_BUILD_BONE_PALETTE; handSubs += s.event == WXL_EVENT_HAND_ITEM_ATTACHED; }
-    Check(boneSubs == 1 && handSubs == 1, "subscribes to OnBuildBonePalette and OnHandItemAttached once each");
-    Check(LogHas("1 creature row(s)") && LogHas("PhysicsOverride.csv"), "reads the csv and counts its rows");
+    int boneSubs = 0, handSubs = 0, creatureSubs = 0;
+    for (const Sub& s : g_subs)
+    {
+        boneSubs += s.event == WXL_EVENT_BUILD_BONE_PALETTE;
+        handSubs += s.event == WXL_EVENT_HAND_ITEM_ATTACHED;
+        creatureSubs += s.event == WXL_EVENT_CREATURE_MODEL_BUILT;
+    }
+    Check(boneSubs == 1 && handSubs == 1 && creatureSubs == 1, "subscribes to OnBuildBonePalette, OnHandItemAttached and OnCreatureModelBuilt once each");
+    Check(LogHas("3 creature row(s)") && LogHas("PhysicsOverride.csv"), "reads the csv and counts its rows");
     Check(LogHas("GravityScale='nonsense' is not a number"), "reports the bad cell with its line");
 
     const char* kPlain = "item\\objectcomponents\\head\\plume_test.m2";
@@ -345,6 +361,41 @@ int main(int argc, char** argv)
     a->parent = wearer2;                                        // the address is recycled by something else
     FireHand(wearer2, 16, 2, 1005, false);                      // any change makes the module look again
     Check(Play(*a, 6.0) < -0.2, "a binding whose weapon is no longer the wearer's child is dropped");
+
+    std::printf("4b. creatures: two displays on one model file, a baked variant, a mount\n");
+    const char* kCreaturePlain = "creature\\foo\\plume_test.m2";
+    const void* kCreatureModel = reinterpret_cast<const void*>(0x4000);          // ONE creature model file, shared
+    FakeInstance* e1 = NewInstance(kCreaturePlain, kCreatureModel);
+    FakeInstance* e2 = NewInstance(kCreaturePlain, kCreatureModel);
+    FireCreature(e1, 2001, false, kCreaturePlain);
+    FireCreature(e2, 2003, false, kCreaturePlain);
+    const double tipE1 = Play(*e1, 6.0);
+    const double tipE2 = Play(*e2, 6.0);
+    std::printf("     tip height: creature display 2001 -> %.3f   2003 -> %.3f\n", tipE1, tipE2);
+    Check(tipE2 < -0.2, "creature display 2003 (no row) hangs");
+    Check(tipE1 > tipE2 + 0.25, "creature display 2001 (row) lifts on the very same model file");
+    Check(LogHas("creature display 2001 on"), "the log says creature display 2001");
+
+    const char* kBakedCreature = "creature\\foo\\plume_test_2002.m2";
+    g_virtual.insert(kBakedCreature);
+    FakeInstance* e3 = NewInstance(kBakedCreature, reinterpret_cast<const void*>(0x5000));
+    Check(Play(*e3, 6.0) > tipE2 + 0.25, "a baked creature variant (display 2002) is found through its path");
+
+    FakeInstance* e4 = NewInstance(kCreaturePlain, kCreatureModel);
+    FireCreature(e4, 1001, false, kCreaturePlain);                              // 1001 has an ITEM row only
+    Check(Play(*e4, 6.0) < -0.2, "an item row never reaches a creature display with the same id");
+    FakeInstance* e5 = NewInstance(kCreaturePlain, kCreatureModel);
+    FireCreature(e5, 1002, false, kCreaturePlain);                              // 1002 has a CREATURE row (and no item row)
+    Check(Play(*e5, 6.0) > tipE2 + 0.25, "creature display 1002 takes its creature row, while item display 1002 (section 2) did not");
+
+    FakeInstance* mount = NewInstance(kCreaturePlain, kCreatureModel);
+    FireCreature(mount, 2001, true, kCreaturePlain);
+    Check(Play(*mount, 6.0) > tipE2 + 0.25, "a mount's model (mount = 1) takes the row of its creature display");
+
+    // the model address is reused by something else: another file, another loaded model
+    e1->path = kPlain;
+    e1->modelId = reinterpret_cast<const void*>(0x6000);
+    Check(Play(*e1, 6.0) < -0.2, "a creature binding is dropped when the instance now shows another file");
 
     std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
     a->parent = wearer;

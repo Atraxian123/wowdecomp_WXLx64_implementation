@@ -61,6 +61,15 @@ namespace wxl::equip::physics
             return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
         }
 
+        // What an instance shows, for PhysicsOverride.csv: a kind (the id spaces of ItemDisplayInfo and
+        // CreatureDisplayInfo overlap) and an id. id 0 = nothing known, the global multipliers apply.
+        struct Display
+        {
+            overrides::Kind kind = overrides::Kind::Item;
+            uint32_t        id = 0;
+            bool operator==(const Display& o) const { return kind == o.kind && id == o.id; }
+        };
+
         struct InstState
         {
             const void*                      shared = nullptr;
@@ -73,7 +82,7 @@ namespace wxl::equip::physics
             std::shared_ptr<phys::Model> model;   // keeps the model alive while the instance runs
             guard::Limits limits;                 // how far each dynamic bone may stray
             guard::State  judge;
-            uint32_t display = 0;                 // the item display this instance shows (0: none known)
+            Display  display;                     // the item or creature display this instance shows (id 0: none known)
             uint32_t bindGen = 0;                 // g_bindGen when `display` was worked out
         };
 
@@ -90,24 +99,27 @@ namespace wxl::equip::physics
         {
             std::string                  stem;    // the path it was looked up under (a slot can be reused)
             std::shared_ptr<phys::Model> base;    // null: no physics for this model. Carry groups added, no multipliers yet
-            // base with the multipliers laid on: key 0 = the global ones, (1 << 32 | display) = the global ones
-            // with that item display's PhysicsOverride.csv row on top
+            // base with the multipliers laid on: key 0 = the global ones, (1 << 32 | id) = the global ones with that
+            // item display's PhysicsOverride.csv row on top, (2 << 32 | id) the same for a creature display
             std::unordered_map<uint64_t, std::shared_ptr<phys::Model>> variants;
         };
 
         // A held item's instance, as the OnHandItemAttached event told us (see OnHandItemAttached below)
         struct Binding
         {
-            void*    wearer = nullptr;   // the character's model instance the weapon is attached to
-            uint32_t slot = 0;           // inventory slot: 15 main hand, 16 off hand, 17 ranged
-            uint32_t displayId = 0;      // ItemDisplayInfo id
+            void*    wearer = nullptr;   // item: the character's model instance the weapon is attached to
+            uint32_t slot = 0;           // item: inventory slot 15 main hand, 16 off hand, 17 ranged; creature: 1 = a mount
+            uint32_t displayId = 0;      // ItemDisplayInfo id (item) or CreatureDisplayInfo id (creature)
+            overrides::Kind kind = overrides::Kind::Item;
+            std::string path;            // creature: the normalized model file the instance was built from
         };
 
         std::mutex g_lock;                                                // guards the three below and g_stats
         std::unordered_map<const void*, ModelEntry> g_models;             // loaded model -> its physics
         std::unordered_map<void*, InstState> g_inst;                      // instance -> simulation
         std::unordered_map<void*, Penalty> g_penalty;                     // instance -> re-seed history
-        std::unordered_map<void*, Binding> g_bind;                        // held-item instance -> its display
+        std::unordered_map<void*, Binding> g_bind;                        // held-item / creature instance -> its display
+        size_t   g_pruneAt = 256;                                         // g_bind size at which dead entries are looked for
         uint32_t g_bindGen = 1;                                           // bumped whenever g_bind changes
         guard::Config g_guardCfg;
         bool g_carryAnchors = true;
@@ -255,16 +267,16 @@ namespace wxl::equip::physics
                 b = e + 1;
             }
             wxl::LogCat("PHYS", "physics: %s: %zu item row(s), %zu creature row(s)%s", g_ovrWhere.c_str(), g_ovr.items.size(),
-                        g_ovr.creatures.size(), g_ovr.creatures.empty() ? "" : " (creature rows are read but not applied yet)");
+                        g_ovr.creatures.size(), "");
             g_stats.overrideRows = uint32_t(g_ovr.Rows());
         }
 
-        // The multipliers a model gets for one item display: the global ones, with that display's row of
+        // The multipliers a model gets for one display (item or creature): the global ones, with that display's row of
         // PhysicsOverride.csv on top. Built once per (model, display) and kept. Caller holds g_lock.
-        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, uint32_t display, const char* stem)
+        std::shared_ptr<phys::Model> VariantLocked(ModelEntry& e, const Display& display, const char* stem)
         {
-            const tuning::Overrides* row = display ? g_ovr.Find(overrides::Kind::Item, display) : nullptr;
-            const uint64_t key = row ? ((uint64_t(1) << 32) | display) : 0;
+            const tuning::Overrides* row = display.id ? g_ovr.Find(display.kind, display.id) : nullptr;
+            const uint64_t key = row ? ((uint64_t(display.kind == overrides::Kind::Creature ? 2 : 1) << 32) | display.id) : 0;
             const auto it = e.variants.find(key);
             if (it != e.variants.end()) return it->second;
 
@@ -275,20 +287,23 @@ namespace wxl::equip::physics
             if (row)
             {
                 ++g_stats.modelsOverridden;
-                wxl::LogCat("PHYS", "physics: item display %u on '%s' uses its PhysicsOverride.csv row: %s", display, stem,
+                wxl::LogCat("PHYS", "physics: %s display %u on '%s' uses its PhysicsOverride.csv row: %s",
+                            display.kind == overrides::Kind::Creature ? "creature" : "item", display.id, stem,
                             tuning::Describe(effective).c_str());
             }
             e.variants[key] = model;
             return model;
         }
 
-        // Which ItemDisplayInfo a model instance shows; 0 when it is not a held item or nobody said. No lock held.
-        //  1. A held weapon the equip extension attached: OnHandItemAttached named its display (g_bind). Works for
-        //     two displays that share one model file and carry no texture or geoset change.
+        // Which display a model instance shows; id 0 when nobody said. No lock held.
+        //  1. A binding an event made (g_bind): a held weapon (OnHandItemAttached) or a creature's or a mount's
+        //     model (OnCreatureModelBuilt). Works for two displays that share one model file and carry no
+        //     texture or geoset change. A binding is trusted only while it still describes the instance: a
+        //     weapon must still be its wearer's child, a creature must still show the file it was built from.
         //  2. A baked variant: its virtual path is "<original stem>_<displayId>.m2" and the core can decode it.
-        //     Only paths under item\ count: a baked CREATURE variant has the same shape, and an item row must
-        //     never reach a creature.
-        uint32_t ResolveItemDisplay(const WxlApi* api, void* instance, const char* stem)
+        //     The id spaces of items and creatures overlap and the shape is the same, so the folder decides:
+        //     item\ is an item display, creature\ a creature display, anything else is nobody's.
+        Display ResolveDisplay(const WxlApi* api, void* instance, const char* stem)
         {
             Binding b;
             bool have = false;
@@ -297,56 +312,78 @@ namespace wxl::equip::physics
                 const auto it = g_bind.find(instance);
                 if (it != g_bind.end()) { b = it->second; have = true; }
             }
+            const std::string norm = phy2::NormalizeModelPath(stem);
             if (have)
             {
-                // a recycled instance address must not inherit an old binding: the weapon is still the wearer's child
-                WxlModelInfo mi = {};
-                mi.structSize = sizeof(mi);
-                if (PHYS_HAS(api, modelInfo) && api->modelInfo(instance, &mi) == WXL_READ_OK && mi.parent == b.wearer)
-                    return b.displayId;
+                bool valid;
+                if (b.kind == overrides::Kind::Item)
+                {
+                    // a recycled instance address must not inherit an old binding: the weapon is still the wearer's child
+                    WxlModelInfo mi = {};
+                    mi.structSize = sizeof(mi);
+                    valid = PHYS_HAS(api, modelInfo) && api->modelInfo(instance, &mi) == WXL_READ_OK && mi.parent == b.wearer;
+                }
+                else
+                    valid = norm == b.path;   // the address now belongs to another model: its file is another one
+                if (valid) return Display{ b.kind, b.displayId };
                 std::lock_guard<std::mutex> g(g_lock);
                 const auto it = g_bind.find(instance);
-                if (it != g_bind.end() && it->second.wearer == b.wearer) { g_bind.erase(it); ++g_bindGen; }
+                if (it != g_bind.end() && it->second.kind == b.kind && it->second.displayId == b.displayId)
+                {
+                    g_bind.erase(it);
+                    ++g_bindGen;
+                }
             }
             if (PHYS_HAS(api, vpathDecodeGlobalVirtualKey) && host::IsVirtualKey(stem))
             {
-                const std::string norm = phy2::NormalizeModelPath(stem);
-                if (norm.compare(0, 5, "item\\") == 0)
+                const bool item = norm.compare(0, 5, "item\\") == 0;
+                const bool creature = norm.compare(0, 9, "creature\\") == 0;
+                if (item || creature)
                 {
                     char original[WXL_PATH_MAX];
                     uint32_t id = 0;
-                    if (api->vpathDecodeGlobalVirtualKey(stem, original, sizeof(original), &id) && id) return id;
+                    if (api->vpathDecodeGlobalVirtualKey(stem, original, sizeof(original), &id) && id)
+                        return Display{ item ? overrides::Kind::Item : overrides::Kind::Creature, id };
                 }
             }
-            return 0;
+            return Display{};
         }
 
-        // Drops the bindings whose weapon is gone (the wearer was freed without a "removed" event).
+        // Drops the bindings whose model is gone (the wearer or the creature was freed without a "removed" event).
+        // Looks again only when the map has doubled since the last time, so a zone full of creatures costs
+        // nothing per spawn.
         void PruneBindings(const WxlApi* api)
         {
-            std::vector<std::pair<void*, void*>> all;   // instance, wearer
+            struct Entry { void* instance; Binding b; };
+            std::vector<Entry> all;
             {
                 std::lock_guard<std::mutex> g(g_lock);
-                for (const auto& kv : g_bind) all.emplace_back(kv.first, kv.second.wearer);
+                for (const auto& kv : g_bind)
+                {
+                    Binding copy = kv.second;
+                    copy.path.clear();   // not needed here
+                    all.push_back({ kv.first, std::move(copy) });
+                }
             }
             std::vector<void*> dead;
-            for (const auto& iw : all)
+            for (const Entry& e : all)
             {
                 WxlModelInfo mi = {};
                 mi.structSize = sizeof(mi);
-                if (!(PHYS_HAS(api, modelInfo) && api->modelInfo(iw.first, &mi) == WXL_READ_OK && mi.parent == iw.second))
-                    dead.push_back(iw.first);
+                const bool ok = PHYS_HAS(api, modelInfo) && api->modelInfo(e.instance, &mi) == WXL_READ_OK;
+                const bool alive = ok && (e.b.kind == overrides::Kind::Item ? mi.parent == e.b.wearer : mi.shared != nullptr);
+                if (!alive) dead.push_back(e.instance);
             }
-            if (dead.empty()) return;
             std::lock_guard<std::mutex> g(g_lock);
             for (void* d : dead) g_bind.erase(d);
-            ++g_bindGen;
+            if (!dead.empty()) ++g_bindGen;
+            g_pruneAt = std::max<size_t>(256, g_bind.size() * 2);
         }
 
         // OnHandItemAttached (fired by CCharacterComponent::AddHandItem after it attached the weapon, and by
         // RemoveHandItem with removed=1): `model` is the WEARER, so the weapon's own instance is found as its
         // child at the attach link whose file stem is the display's model. A baked variant has another stem and
-        // is not found here; ResolveItemDisplay decodes its path instead.
+        // is not found here; ResolveDisplay decodes its path instead.
         void OnHandItemAttached(void* /*user*/, const void* args)
         {
             if (!args) return;
@@ -377,9 +414,43 @@ namespace wxl::equip::physics
                 for (auto it = g_bind.begin(); it != g_bind.end();)   // the slot's earlier weapon
                     if (it->second.wearer == a.model && it->second.slot == a.invSlot) it = g_bind.erase(it);
                     else ++it;
-                if (child) g_bind[child] = Binding{ a.model, a.invSlot, a.displayId };
+                if (child)
+                {
+                    Binding b;
+                    b.wearer = a.model;
+                    b.slot = a.invSlot;
+                    b.displayId = a.displayId;
+                    g_bind[child] = std::move(b);
+                }
                 ++g_bindGen;
-                prune = g_bind.size() > 256;
+                prune = g_bind.size() > g_pruneAt;
+            }
+            if (prune) PruneBindings(api);
+        }
+
+        // OnCreatureModelBuilt (fired by CGUnit_C::UpdateDisplayInfo for a unit's model and by CreateUnitMount for
+        // its mount's): `model` is the new instance itself, so the binding is direct. A new instance cannot have a
+        // PhysicsLive entry yet, so unlike the held-item case the generation is bumped only when this address
+        // already has one (an old model's address reused), not for every spawn in a busy zone.
+        void OnCreatureModelBuilt(void* /*user*/, const void* args)
+        {
+            if (!args) return;
+            const WxlCreatureModelBuiltArgs a = *static_cast<const WxlCreatureModelBuiltArgs*>(args);
+            const WxlApi* api = host::Api();
+            if (!api || !a.model || !a.displayId || !a.fileName || !a.fileName[0]) return;
+
+            Binding b;
+            b.slot = a.mount ? 1u : 0u;
+            b.displayId = a.displayId;
+            b.kind = overrides::Kind::Creature;
+            b.path = phy2::NormalizeModelPath(a.fileName);
+
+            bool prune;
+            {
+                std::lock_guard<std::mutex> g(g_lock);
+                g_bind[a.model] = std::move(b);
+                if (g_inst.count(a.model)) ++g_bindGen;
+                prune = g_bind.size() > g_pruneAt;
             }
             if (prune) PruneBindings(api);
         }
@@ -430,7 +501,10 @@ namespace wxl::equip::physics
 
         // Which display a held weapon shows: the equip extension says so when it attaches one (see the handler).
         if (api->subscribe(WXL_EVENT_HAND_ITEM_ATTACHED, &OnHandItemAttached, nullptr) != 0)
-            wxl::LogCat("PHYS", "physics: cannot follow held items; PhysicsOverride.csv then only reaches baked variants");
+            wxl::LogCat("PHYS", "physics: cannot follow held items; PhysicsOverride.csv item rows then only reach baked variants");
+        // ...and which display a creature's (or a mount's) model was built for.
+        if (api->subscribe(WXL_EVENT_CREATURE_MODEL_BUILT, &OnCreatureModelBuilt, nullptr) != 0)
+            wxl::LogCat("PHYS", "physics: cannot follow creature models; PhysicsOverride.csv creature rows then only reach baked variants");
 
         // After the built-in extensions' handlers (subscribers run in subscription order; modules load last).
         return api->subscribe(WXL_EVENT_BUILD_BONE_PALETTE, &OnBuildBonePalette, nullptr) == 0;
@@ -523,9 +597,9 @@ namespace wxl::equip::physics
         }
 
         uint32_t pendingGen = g_bindGen;   // the binding generation `display` below belongs to
-        // The item display this instance shows, for PhysicsOverride.csv. Worked out when the instance is new or
+        // The display this instance shows, for PhysicsOverride.csv. Worked out when the instance is new or
         // when the held items changed (g_bindGen); calls into the core, so with the lock released.
-        uint32_t display = 0;
+        Display display;
         {
             const auto cur = g_inst.find(instance);
             if (cur != g_inst.end() && cur->second.shared == s.model && cur->second.bindGen == g_bindGen)
@@ -534,7 +608,7 @@ namespace wxl::equip::physics
             {
                 const uint32_t gen = g_bindGen;
                 lk.unlock();
-                display = ResolveItemDisplay(api, instance, stem);
+                display = ResolveDisplay(api, instance, stem);
                 lk.lock();
                 pendingGen = gen;
             }

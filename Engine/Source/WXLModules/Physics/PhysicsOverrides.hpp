@@ -2,8 +2,8 @@
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
 // The multipliers of PhysicsTuning.hpp apply to every model at once. PhysicsOverride.csv sets some of them for
-// ONE item display (or, later, one creature display), so two ItemDisplayInfo rows that share a model file can
-// move differently: one with dangling bits, the other with gravity turned around.
+// ONE item display or ONE creature display, so two ItemDisplayInfo (or CreatureDisplayInfo) rows that share a
+// model file can move differently: one with dangling bits, the other with gravity turned around.
 //
 // Nothing here touches the engine: Parse() turns the text of the file into a Table, which the module consults
 // with the display id of an instance. Unit-testable (Tools/PhysicsGuardTest/physics_override_test.cpp).
@@ -20,7 +20,8 @@
 //     any subset. Names and Kind are not case sensitive. A column called Note, Notes, Comment, Comments, Name or
 //     Description is ignored without a word; any other unknown column is ignored with one log line.
 //   * Kind is Item or Creature. Item rows are applied to held items (main hand, off hand, ranged, shield).
-//     Creature rows are read and checked but not applied yet.
+//     Creature rows are applied to the model of a unit (a creature, a pet, a shapeshifted player) and to the
+//     model of a mount. The two id spaces never meet: Item 1234 and Creature 1234 are different rows.
 //   * DisplayId is the id in ItemDisplayInfo (Item) or CreatureDisplayInfo (Creature).
 //   * An empty cell means "not set here": the global value ([Physics] in WXLExtendedEquipment.ini) stays. A filled
 //     cell REPLACES the global value for that display (it is not multiplied with it). Ranges are those of the

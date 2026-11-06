@@ -66,6 +66,8 @@ namespace wxl::events
                               // (CreatureDisplayChangeArgs)
         OnCreatureModelResolve, // a CreatureModelData row was resolved while rebuilding a creature's
                               // visible model (CreatureModelResolveArgs)
+        OnCreatureModelBuilt, // a unit's creature model (or its mount's) was created for a display id
+                              // (CreatureModelBuiltArgs)
         OnWorldEnter,    // the world/map finished loading, in-world   (WorldEnterArgs)
         OnWorldLeave,    // the world/map is being torn down           (WorldLeaveArgs)
         OnBeforeHostLaunch, // the DLL is about to launch the asset host (HostLaunchArgs)
@@ -274,6 +276,16 @@ namespace wxl::events
      *        for the rest of the process, since the "live" row is shared and persistent, not per-call.
      */
     struct CreatureModelResolveArgs { uint32_t displayId; uint32_t modelId; void* record; };
+    /**
+     * @brief Args for OnCreatureModelBuilt; fired by CGUnit_C::UpdateDisplayInfo after it created the unit's
+     *        model for a CreatureDisplayInfo row, and by CGUnit_C::CreateUnitMount after it created the mount's
+     *        (mount = true). model is the new CM2Model instance (the same handle OnBuildBonePalette later
+     *        reports for it); displayId is the CreatureDisplayInfo id that was drawn; fileName is the model
+     *        file the instance was created from (CreatureModelData ModelName, a virtual path for a baked
+     *        variant), valid only for the duration of the call. Unlike OnCreatureDisplayChange this names the
+     *        MODEL INSTANCE, so a module can tell two units that share one model file apart.
+     */
+    struct CreatureModelBuiltArgs { void* model; uint32_t displayId; bool mount; const char* fileName; };
     /** @brief Args for OnM2PerFrameUpdate; renderCtx is the per-instance render context that the
      *         scene graph is updating — fires once per visible M2 instance per frame. */
     struct M2PerFrameUpdateArgs { void* renderCtx; };

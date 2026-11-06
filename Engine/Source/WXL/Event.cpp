@@ -90,6 +90,7 @@ namespace wxl::events
             case Event::OnHandItemAttached:  return "OnHandItemAttached";
             case Event::OnDeviceLost:        return "OnDeviceLost";
             case Event::OnDeviceReset:       return "OnDeviceReset";
+            case Event::OnCreatureModelBuilt:return "OnCreatureModelBuilt";
             default:                         return "Event#?";
         }
     }

@@ -146,6 +146,8 @@
 #include "WoW/Source/WorldClient/FrameTime.h"
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WowSvcs/WowSvcsClient/ClientServices.h"
+#include "Engine/Source/WXL/Hooks.h"
+#include "Engine/Source/WXL/Event.h"
 
 // STATIC: 0x00ADAC04
 static INVENTORY_SLOTS s_virtualItemInvSlots[2] = { INVSLOT_MAINHAND, INVSLOT_OFFHAND };
@@ -1094,6 +1096,9 @@ void CGUnit_C::UpdateDisplayInfo(int32_t force) {
     model->SetEventCallback(reinterpret_cast<void*>(&CGUnit_C::AnimEventCallback), this->m_obj->m_guid.m_guid);
     this->SetCharacterModel(model);
     model->Release();
+    // WXL: tells modules which CreatureDisplayInfo this model instance was built for (per-display physics).
+    wxl::events::EmitIfAny(wxl::events::Event::OnCreatureModelBuilt,
+        wxl::events::CreatureModelBuiltArgs{ model, static_cast<uint32_t>(this->m_displayInfo->m_id), false, fileName });
     model->m_fFlags ^= (model->m_fFlags ^ (this->m_modelData->m_flags >> 7)) & 0x4;
     this->UpdateModelScale(oldModelData);
     this->Animate(0.0f);
@@ -21434,6 +21439,9 @@ void CGUnit_C::CreateUnitMount(int32_t a2, int32_t a3) {
         CCharacterComponent::ReplaceMonsterSkin(mount, displayInfo, modelData);
         this->SetMountModel(mount);
         mount->Release();
+        // WXL: the mount's model, with the CreatureDisplayInfo it was built for (see UpdateDisplayInfo).
+        wxl::events::EmitIfAny(wxl::events::Event::OnCreatureModelBuilt,
+            wxl::events::CreatureModelBuiltArgs{ mount, static_cast<uint32_t>(displayInfo->m_id), true, modelData->m_modelName });
         this->m_mountFootprintTextureId = modelData->m_footprintTextureID;
         this->m_mountFootprintLength = modelData->m_footprintTextureWidth * 0.027777778f;
         this->m_mountFootprintWidth = 0.027777778f * modelData->m_footprintTextureLength;

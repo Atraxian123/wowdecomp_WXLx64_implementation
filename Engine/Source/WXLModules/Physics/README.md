@@ -197,7 +197,7 @@ the `.phy2` has them, the other with gravity turned around. It is optional: with
 Kind,DisplayId,GravityScale,SwingLimitScale,MassScale,Note
 Item,12345,-1,,,upside-down variant of the staff
 Item,12346,,1.5,0.5,floppier and lighter
-Creature,6789,0.5,,,read and checked, not applied yet
+Creature,6789,0.5,,,a creature (or a mount) with half gravity
 ```
 
 * **Where:** `PhysicsOverride.csv` beside the client, or `DBFilesClient\PhysicsOverride.csv` beside the client; then,
@@ -208,7 +208,9 @@ Creature,6789,0.5,,,read and checked, not applied yet
   A column named `Note`, `Notes`, `Comment`, `Comments`, `Name` or `Description` is ignored silently; another
   unknown column is ignored with one log line.
 * **Kind:** `Item` or `Creature`. Item rows apply to held items: main hand, off hand, ranged, shield. Creature rows
-  are parsed and checked but not applied yet. An item id and a creature id never meet, even if the numbers are equal.
+  apply to the model of a unit (a creature, a pet, a shapeshifted player) and to the model of a mount, and need the
+  creature's model to have a `.phy2` like any other model. An item id and a creature id never meet, even if the
+  numbers are equal.
 * **Values:** an empty cell keeps the global value. A filled cell **replaces** the global value for that display
   (`GravityScale` `-1` is -1, not -1 times the ini value). The ranges of the ini keys apply (a value outside is
   clamped and logged); `GravityScale` may be negative.
@@ -220,18 +222,27 @@ Creature,6789,0.5,,,read and checked, not applied yet
 * **Reload:** `WatchIni=1` also re-reads this file when it is saved (checked once a second, parts snap back for a
   moment); `PhysicsLive::ReloadFiles()` does too.
 * **Log lines:** `physics: <file>: N item row(s), M creature row(s)` when the file is read;
-  `physics: item display 12345 on '<model>' uses its PhysicsOverride.csv row: GravityScale=-1` the first time a row
-  changes a model. `Stats::overrideRows` and `Stats::modelsOverridden` count them.
+  `physics: item display 12345 on '<model>' uses its PhysicsOverride.csv row: GravityScale=-1` (or `creature display`)
+  the first time a row changes a model. `Stats::overrideRows` and `Stats::modelsOverridden` count them.
 
-## How the module knows an item's display
+## How the module knows a display
 
 * **A held weapon the equip extension attached.** `OnHandItemAttached` says which display went into which slot;
   `model` in that event is the wearer, so the weapon's own instance is found as the wearer's child at the attach
   link whose file stem is the display's model (`findAttachedChild`). This is what makes two displays that share
   one model file and carry **no** texture or geoset change tell apart. It is checked on every use: the instance
   must still be that wearer's child, so a recycled instance address cannot inherit a stale display.
-* **A baked variant.** When the equip extension builds a variant (a texture or geoset change), its model path is
-  `<stem>_<displayId>.m2`, which the core decodes (`vpathDecodeGlobalVirtualKey`). Only paths under `item\` are
-  accepted, because a baked creature variant has the same shape.
-* Not covered yet: items that are not held (helm, shoulders, cape...) unless they happen to be baked variants, and
-  creatures.
+* **A creature's or a mount's model.** `OnCreatureModelBuilt`, fired by `CGUnit_C::UpdateDisplayInfo` (the unit's
+  own model) and `CGUnit_C::CreateUnitMount` (its mount's), names the model instance directly together with the
+  `CreatureDisplayInfo` id it was built for, so two displays that share one model file tell apart here too. A
+  creature binding is trusted while the instance still shows the file it was built from; a model that took over
+  the address of a freed one has another file and is ignored. Binding costs nothing per spawn: the module only
+  keeps a small map, looked through for dead entries each time it has doubled. A unit that changes display
+  (shapeshift, `.morph`) gets a new model and a new event, so the new display's row applies at once.
+* **A baked variant.** When a variant is baked (a texture or geoset change), its model path is
+  `<stem>_<displayId>.m2`, which the core decodes (`vpathDecodeGlobalVirtualKey`). Item and creature variants have
+  the same shape, so the folder decides: `item\` is an item display, `creature\` a creature display, anything
+  else has none. A binding from an event wins over a decoded path.
+* Not covered yet: items that are not held (helm, shoulders, cape...) unless they happen to be baked variants;
+  corpses (`CGCorpse_C` builds its own creature model); and units whose model is a character model (a humanoid with
+  `CreatureDisplayInfoExtra`): its `.phy2` lookup and bone mirroring follow the character path.
