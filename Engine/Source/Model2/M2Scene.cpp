@@ -1593,6 +1593,9 @@ void CM2Scene::SortAdditiveParticleElements(uint32_t pass) {
                 break;
             case 3:
                 blend = data->m_materials[data->m_ribbons[element->m_index].m_materialIndices[0]].m_blendMode;
+                if (element->m_model->m_ribbonEmitters[element->m_index]->AddsLayers()) {
+                    blend = 4;   // WXL: a ribbon whose layers add up is an additive element, whatever its first material says
+                }
                 break;
             case 4:
                 blend = (this->m_cache->m_flags & 0x100) ? 4 : ParticleBlendToM2Blend(element->m_emitter->m_params.m_materialBlend);
@@ -2047,7 +2050,7 @@ int32_t CM2Scene::Animate(const C3Vector& cameraPos) {
             element->m_pixelPermute = 0xFFFFFFFF;
             element->m_shadowValue = 0;
 
-            if (material->m_blendMode > 1 || alpha < 0.99998999f) {
+            if (material->m_blendMode > 1 || alpha < 0.99998999f || model->m_ribbonEmitters[i]->AddsLayers()) {   // WXL: additive layers are never opaque
                 if (above) {
                     this->m_passElements[1].New(elementIndex);
                 } else {

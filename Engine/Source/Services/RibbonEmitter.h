@@ -27,6 +27,13 @@ class CRibbonMat {
     CRibbonMat();
 };
 
+// WXL: values of CRibbonEmitter::m_foldLayers
+enum {
+    kRibbonLayersStock = 0,    // one pass per layer, each with its own material's blend mode (the stock draw)
+    kRibbonLayersMultiply = 1, // a ribbon of 2-4 layers is ONE pass: the layers multiply into one image
+    kRibbonLayersAdd = 2,      // a ribbon of 2+ layers: every layer is drawn additively (blend mode "add"), so the layers sum
+};
+
 class CRibbonEmitter {
     public:
     /* 0000 */ int32_t m_refCount;
@@ -70,7 +77,7 @@ class CRibbonEmitter {
     /* 0174 */ float m_above;
     /* 0178 */ float m_below;
     /* 017C */ float m_gravity;
-    /* WXL */ uint32_t m_foldLayers; // nonzero: draw a ribbon of 2-4 layers as ONE combined pass, not one pass per layer
+    /* WXL */ uint32_t m_foldLayers; // see kRibbonLayers*: how a ribbon of several texture layers is drawn (0 = stock, one pass per layer)
 
     CRibbonEmitter();
     ~CRibbonEmitter();
@@ -84,6 +91,7 @@ class CRibbonEmitter {
     void Initialize(float edgesPerSecond, float edgeLifetime, const CImVector& color, const TSGrowableArray<CTexture*>& textures, const TSGrowableArray<CRibbonMat>& materials, const TSGrowableArray<uint32_t>& textureTypes, const CAaRect& texCoords, uint32_t rows, uint32_t cols);
     void InterpEdge(float age, float t, uint32_t advance);
     int32_t IsDead();
+    int32_t AddsLayers(); // WXL: true when this ribbon has 2+ texture layers and they blend additively
     int32_t Render(const C44Matrix* frameOfReference);
     void RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers); // WXL
     int32_t ReplaceTexture(uint32_t type, CTexture* texture);

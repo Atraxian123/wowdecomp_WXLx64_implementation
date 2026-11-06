@@ -7261,8 +7261,9 @@ int32_t CM2Model::InitializeLoaded() {
 
             this->m_ribbonEmitters[i]->Initialize(ribbonData->m_edgesPerSecond, ribbonData->m_edgeLifetime, color, s_ribbonTextures, s_ribbonMaterials, s_ribbonTextureTypes, texCoords, ribbonData->m_textureRows, ribbonData->m_textureCols);
             this->m_ribbonEmitters[i]->SetGravity(ribbonData->m_gravity);
-            // WXL: every model's multi-layer ribbons (stock and modern alike) draw as one multiplied image.
-            this->m_ribbonEmitters[i]->m_foldLayers = 1;
+            // WXL: a modern model's multi-layer ribbons draw as one multiplied image; a native Wrath model's
+            // (m_wxl is null) add their layers together, as a material with blend mode "add" does.
+            this->m_ribbonEmitters[i]->m_foldLayers = this->m_shared->m_wxl ? kRibbonLayersMultiply : kRibbonLayersAdd;
             this->m_ribbonEmitters[i]->SetDataEnabled(0);
             this->m_ribbons[i].m_visibilityTrack.m_currentValue = 1;
             this->m_ribbons[i].m_alphaTrack.m_currentValue = 1.0f;

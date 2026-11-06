@@ -1,0 +1,127 @@
+--- a/Engine/Source/Services/RibbonEmitter.h	2026-10-28 10:47:43.000000000 +0000
++++ Engine/Source/Services/RibbonEmitter.h	2026-11-06 13:11:42.892575463 +0000
+@@ -27,6 +27,13 @@
+     CRibbonMat();
+ };
+ 
++// WXL: values of CRibbonEmitter::m_foldLayers
++enum {
++    kRibbonLayersStock = 0,    // one pass per layer, each with its own material's blend mode (the stock draw)
++    kRibbonLayersMultiply = 1, // a ribbon of 2-4 layers is ONE pass: the layers multiply into one image
++    kRibbonLayersAdd = 2,      // a ribbon of 2+ layers: every layer is drawn additively (blend mode "add"), so the layers sum
++};
++
+ class CRibbonEmitter {
+     public:
+     /* 0000 */ int32_t m_refCount;
+@@ -70,7 +77,7 @@
+     /* 0174 */ float m_above;
+     /* 0178 */ float m_below;
+     /* 017C */ float m_gravity;
+-    /* WXL */ uint32_t m_foldLayers; // nonzero: draw a ribbon of 2-4 layers as ONE combined pass, not one pass per layer
++    /* WXL */ uint32_t m_foldLayers; // see kRibbonLayers*: how a ribbon of several texture layers is drawn (0 = stock, one pass per layer)
+ 
+     CRibbonEmitter();
+     ~CRibbonEmitter();
+@@ -84,6 +91,7 @@
+     void Initialize(float edgesPerSecond, float edgeLifetime, const CImVector& color, const TSGrowableArray<CTexture*>& textures, const TSGrowableArray<CRibbonMat>& materials, const TSGrowableArray<uint32_t>& textureTypes, const CAaRect& texCoords, uint32_t rows, uint32_t cols);
+     void InterpEdge(float age, float t, uint32_t advance);
+     int32_t IsDead();
++    int32_t AddsLayers(); // WXL: true when this ribbon has 2+ texture layers and they blend additively
+     int32_t Render(const C44Matrix* frameOfReference);
+     void RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers); // WXL
+     int32_t ReplaceTexture(uint32_t type, CTexture* texture);
+--- a/Engine/Source/Services/RibbonEmitter.cpp	2026-10-28 10:47:43.000000000 +0000
++++ Engine/Source/Services/RibbonEmitter.cpp	2026-11-06 13:11:42.893268848 +0000
+@@ -16,7 +16,7 @@
+ 
+ // WXL: multi-texture ribbons. A ribbon can name up to four texture layers meant to be multiplied into one
+ // image. The stock draw below runs one pass per layer, each blended into the frame on its own, which sums the
+-// layers instead. A flagged emitter (CRibbonEmitter::m_foldLayers, set for every model) with
++// layers instead. A flagged emitter (CRibbonEmitter::m_foldLayers == kRibbonLayersMultiply, set for modern models) with
+ // kRibbonFoldMinLayers..kRibbonFoldMaxLayers layers is drawn in one fixed-function pass instead: stage k samples layer k, every stage modulates the one
+ // before it (stage 0 modulates the vertex colour), and the last two stages double, so the result is
+ // layer0 * layer1 [* layer2 [* layer3]] * vertex colour * 4, in colour and alpha. Blend state, depth, culling and
+@@ -24,6 +24,20 @@
+ static const uint32_t kRibbonFoldMinLayers = 2;
+ static const uint32_t kRibbonFoldMaxLayers = 4;
+ 
++// WXL: additive multi-texture ribbons (m_foldLayers == kRibbonLayersAdd, set for native Wrath models). When a
++// ribbon names two or more texture layers they are added together instead: every layer is drawn in its own pass
++// with the "add" blend mode (GxBlend_Add, the same as a material with blend mode Add), whatever blend mode its
++// material says, so the frame gets  dst + layer0 * colour + layer1 * colour + ...  Each layer keeps the rest of
++// its own material (lit, fog, depth, culling). A single-layer ribbon is untouched.
++int32_t CRibbonEmitter::AddsLayers() {
++    if (this->m_foldLayers != kRibbonLayersAdd) {
++        return 0;
++    }
++
++    uint32_t layers = this->m_materials.Count() < this->m_textures.Count() ? this->m_materials.Count() : this->m_textures.Count();
++    return layers >= 2;
++}
++
+ // INLINED
+ CRibbonMat::CRibbonMat() {
+     this->m_lit = 1;
+@@ -587,7 +601,7 @@
+     // still loading holds the whole ribbon back, so it never shows as a different look while it streams in.
+     bool folded = false;
+ 
+-    if (this->m_foldLayers) {
++    if (this->m_foldLayers == kRibbonLayersMultiply) {
+         uint32_t layers = this->m_materials.Count() < this->m_textures.Count() ? this->m_materials.Count() : this->m_textures.Count();
+ 
+         if (layers >= kRibbonFoldMinLayers && layers <= kRibbonFoldMaxLayers && layers <= static_cast<uint32_t>(g_theGxDevicePtr->Caps().m_numTmus)) {
+@@ -611,6 +625,8 @@
+         }
+     }
+ 
++    const bool addLayers = this->AddsLayers() != 0;   // WXL: every layer blends additively
++
+     for (uint32_t i = 0; !folded && i < this->m_materials.Count(); i++) {
+         g_theGxDevicePtr->RsPush();
+ 
+@@ -635,7 +651,7 @@
+         g_theGxDevicePtr->RsSet(GxRs_DepthTest, static_cast<int32_t>(material.m_depthTest));
+         g_theGxDevicePtr->RsSet(GxRs_DepthWrite, static_cast<int32_t>(material.m_depthWrite));
+         g_theGxDevicePtr->RsSet(GxRs_Culling, static_cast<int32_t>(material.m_cull));
+-        g_theGxDevicePtr->RsSet(GxRs_BlendingMode, static_cast<int32_t>(material.m_blendMode));
++        g_theGxDevicePtr->RsSet(GxRs_BlendingMode, addLayers ? static_cast<int32_t>(GxBlend_Add) : static_cast<int32_t>(material.m_blendMode));
+         CShaderEffect::SetAlphaRefDefault();
+ 
+         CGxTex* gxTex = TextureGetGxTex(this->m_textures.m_data[i], 0, nullptr);
+--- a/Engine/Source/Model2/M2Model.cpp	2026-11-06 11:50:14.000000000 +0000
++++ Engine/Source/Model2/M2Model.cpp	2026-11-06 13:11:27.292917836 +0000
+@@ -7261,8 +7261,9 @@
+ 
+             this->m_ribbonEmitters[i]->Initialize(ribbonData->m_edgesPerSecond, ribbonData->m_edgeLifetime, color, s_ribbonTextures, s_ribbonMaterials, s_ribbonTextureTypes, texCoords, ribbonData->m_textureRows, ribbonData->m_textureCols);
+             this->m_ribbonEmitters[i]->SetGravity(ribbonData->m_gravity);
+-            // WXL: every model's multi-layer ribbons (stock and modern alike) draw as one multiplied image.
+-            this->m_ribbonEmitters[i]->m_foldLayers = 1;
++            // WXL: a modern model's multi-layer ribbons draw as one multiplied image; a native Wrath model's
++            // (m_wxl is null) add their layers together, as a material with blend mode "add" does.
++            this->m_ribbonEmitters[i]->m_foldLayers = this->m_shared->m_wxl ? kRibbonLayersMultiply : kRibbonLayersAdd;
+             this->m_ribbonEmitters[i]->SetDataEnabled(0);
+             this->m_ribbons[i].m_visibilityTrack.m_currentValue = 1;
+             this->m_ribbons[i].m_alphaTrack.m_currentValue = 1.0f;
+--- a/Engine/Source/Model2/M2Scene.cpp	2026-10-28 07:59:21.000000000 +0000
++++ Engine/Source/Model2/M2Scene.cpp	2026-11-06 13:11:27.294022314 +0000
+@@ -1593,6 +1593,9 @@
+                 break;
+             case 3:
+                 blend = data->m_materials[data->m_ribbons[element->m_index].m_materialIndices[0]].m_blendMode;
++                if (element->m_model->m_ribbonEmitters[element->m_index]->AddsLayers()) {
++                    blend = 4;   // WXL: a ribbon whose layers add up is an additive element, whatever its first material says
++                }
+                 break;
+             case 4:
+                 blend = (this->m_cache->m_flags & 0x100) ? 4 : ParticleBlendToM2Blend(element->m_emitter->m_params.m_materialBlend);
+@@ -2047,7 +2050,7 @@
+             element->m_pixelPermute = 0xFFFFFFFF;
+             element->m_shadowValue = 0;
+ 
+-            if (material->m_blendMode > 1 || alpha < 0.99998999f) {
++            if (material->m_blendMode > 1 || alpha < 0.99998999f || model->m_ribbonEmitters[i]->AddsLayers()) {   // WXL: additive layers are never opaque
+                 if (above) {
+                     this->m_passElements[1].New(elementIndex);
+                 } else {
