@@ -1,0 +1,717 @@
+diff --git a/Engine/Source/WXL/Blp.h b/Engine/Source/WXL/Blp.h
+--- a/Engine/Source/WXL/Blp.h
++++ b/Engine/Source/WXL/Blp.h
+@@ -2,7 +2,9 @@
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
++#include <string>
+ #include <vector>
+ 
+ namespace wxl::blp
+@@ -22,4 +24,19 @@
+      *         out alive for as long as it uses the parsed image. false means data is used unchanged.
+      */
+     bool TransformForLoad(const char* name, const void* data, std::vector<uint8_t>& out);
++
++    /**
++     * @brief Converts a PNG file into an in-memory BLP2 the client's texture loader can read.
++     *
++     * Used when a texture asks for a .blp that does not exist and a .png of the same name does. The result is an
++     * uncompressed ARGB8888 BLP2 (colorEncoding 3, preferredFormat ARGB8888), with a full mip chain when both
++     * sides are powers of two (box-filtered, color weighted by alpha) and a single level otherwise. Every PNG
++     * color type and bit depth is read, interlaced files too; 16-bit samples are reduced to 8 bits. Images
++     * larger than 16 million pixels are refused.
++     *
++     * @param png    the whole .png file.
++     * @param blp    receives the BLP2 file on success.
++     * @param error  receives the reason on failure.
++     */
++    bool PngToBlp(const uint8_t* png, size_t size, std::vector<uint8_t>& blp, std::string& error);
+ }
+diff --git a/Engine/Source/WXL/CMakeLists.txt b/Engine/Source/WXL/CMakeLists.txt
+--- a/Engine/Source/WXL/CMakeLists.txt
++++ b/Engine/Source/WXL/CMakeLists.txt
+@@ -30,3 +30,6 @@
+ if (NOT WOWDECOMP_ARCH_64)
+     target_compile_definitions(WXLCore PUBLIC WXL_ALLOW_32BIT_HEADER=1)
+ endif()
++
++# PngToBlp.cpp inflates PNG data with the tree's own zlib.
++target_link_libraries(WXLCore PUBLIC zlib)
+diff --git a/Engine/Source/Services/Texture.cpp b/Engine/Source/Services/Texture.cpp
+--- a/Engine/Source/Services/Texture.cpp
++++ b/Engine/Source/Services/Texture.cpp
+@@ -18,6 +18,7 @@
+ #include "Engine/Source/Services/TextureInt.h"
+ #include "Engine/Source/Storm/H/storm.h"
+ #include "Engine/Source/Tempest/C2Vector.h"
++#include <string>
+ #include <vector>
+ #include "Engine/Source/WXL/Blp.h"
+ #include "Engine/Source/WXL/Log.h"
+@@ -2270,6 +2271,71 @@
+     return texture;
+ }
+ 
++// WXL: a texture asked for "X.blp" and there is none. Look for "X.png" under the same virtual path (a loose file in
++// Data or one inside an archive, found like any other file) and, if it decodes, build the texture from it exactly as
++// CreateBlpSync builds one from a BLP: the PNG is converted to an in-memory BLP2 (uncompressed ARGB8888, mips when
++// both sides are powers of two) and pumped through the same loader. The decode runs right here, once per texture,
++// on whichever thread asked; the async read queue is not involved.
++static CTexture* WxlCreatePngTexture(const char* blpName, uint32_t flags, CGxTexFlags texFlags) {
++    char stem[260];
++    SStrCopy(stem, blpName, sizeof(stem));
++    char* extension = OsPathFindExtensionWithDot(stem);
++
++    if (!extension || SStrCmpI(extension, ".blp", STORM_MAX_STR)) {
++        return nullptr;
++    }
++
++    *extension = '\0';
++
++    char pngName[260];
++    SStrCopy(pngName, stem, sizeof(pngName));
++    SStrPack(pngName, ".png", sizeof(pngName));
++
++    SFileImpl* file = nullptr;
++    SErrSetLastError(0);
++
++    if (!SFile::OpenEx(nullptr, pngName, (flags >> 1) & 1, &file) || !file) {
++        return nullptr;
++    }
++
++    std::vector<uint8_t> png(SFileGetFileSize(file, nullptr));
++    uint32_t bytesRead = 0;
++    const int32_t readOk = png.empty() || SFileReadFile(file, png.data(), static_cast<uint32_t>(png.size()), &bytesRead, nullptr, 0);
++    SFileCloseFile(file);
++
++    std::vector<uint8_t> blp;
++    std::string why;
++
++    if (!readOk || png.empty() || !wxl::blp::PngToBlp(png.data(), png.size(), blp, why)) {
++        wxl::LogCat("BLP", "PNG fallback: '%s' found but not usable (%s)", pngName, readOk ? why.c_str() : "read failed");
++        return nullptr;
++    }
++
++    CTexture* texture = new ("HTEXTURE", SLOG_OBJECT) CTexture;
++    texture->m_gxTexFlags = texFlags;
++
++    if (flags & 2) {
++        texture->m_flags |= 2;
++    }
++
++    if ((flags & 4) && s_atlasEnable) {
++        texture->m_flags |= 4;
++    }
++
++    SStrCopy(texture->m_filename, stem, STORM_MAX_STR);
++
++    if (wxl::LogThrottle("blp.pngfallback", 200, 0)) {
++        wxl::LogCat("BLP", "PNG fallback: no '%s', using '%s' (%ux%u)", blpName, pngName,
++                    static_cast<uint32_t>(blp[12] | (blp[13] << 8) | (blp[14] << 16)), static_cast<uint32_t>(blp[16] | (blp[17] << 8) | (blp[18] << 16)));
++    }
++
++    if (!PumpBlpTextureAsync(texture, blp.data())) {
++        FillInSolidTexture(*reinterpret_cast<const CImVector*>(&s_defaultColor), texture);
++    }
++
++    return texture;
++}
++
+ // VERIFY: 77916a1a auto
+ // OFFSET: 0x004B8BE0
+ CTexture* CreateBlpTexture(const char* fileName, char* extension, uint32_t flags, CGxTexFlags texFlags) {
+@@ -2289,6 +2355,11 @@
+     CTexture* texture = s_createBlpAsync ? CreateBlpAsync(extension, name, flags, texFlags) : CreateBlpSync(name, extension, flags, texFlags);
+ 
+     if (!texture) {
++        // WXL: no .blp: a .png of the same name stands in for it (see WxlCreatePngTexture)
++        texture = WxlCreatePngTexture(name, flags, texFlags);
++    }
++
++    if (!texture) {
+         return nullptr;
+     }
+ 
+diff --git a/Engine/Source/WXL/Blp/PngToBlp.cpp b/Engine/Source/WXL/Blp/PngToBlp.cpp
+new file mode 100644
+--- /dev/null
++++ b/Engine/Source/WXL/Blp/PngToBlp.cpp
+@@ -0,0 +1,328 @@
++// PNG -> BLP2 conversion, so a texture that has a .png but no .blp can still be loaded by the client.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// The client's own texture loader reads the BLP this produces: uncompressed ARGB8888 (colorEncoding 3) with
++// preferredFormat ARGB8888, so no format conversion or compression is involved. Decoding is plain PNG:
++// chunk walk, zlib inflate (the tree's own zlib), scanline unfiltering, optional Adam7 de-interlacing.
++
++#include "Engine/Source/WXL/Blp.h"
++#include "ThirdParty/zlib/zlib.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++namespace
++{
++    constexpr uint32_t kMaxPixels = 16u * 1024u * 1024u;
++    constexpr size_t   kBlpHeaderSize = 0x94 + 1024;   // header + (unused) palette: where the first mip starts
++
++    uint32_t Be32(const uint8_t* p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
++
++    void Put32(std::vector<uint8_t>& v, size_t at, uint32_t x)
++    {
++        v[at] = uint8_t(x); v[at + 1] = uint8_t(x >> 8); v[at + 2] = uint8_t(x >> 16); v[at + 3] = uint8_t(x >> 24);
++    }
++
++    bool IsPow2(uint32_t v) { return v && !(v & (v - 1)); }
++
++    struct Header
++    {
++        uint32_t width = 0, height = 0;
++        uint8_t  depth = 0, colorType = 0, interlace = 0;
++        uint32_t channels = 0, bitsPerPixel = 0;
++    };
++
++    struct Pass { uint32_t x0, y0, dx, dy, w, h; size_t rowBytes; size_t offset; };
++
++    size_t RowBytes(const Header& h, uint32_t w) { return (size_t(w) * h.bitsPerPixel + 7) / 8; }
++
++    int Paeth(int a, int b, int c)
++    {
++        const int p = a + b - c;
++        const int pa = std::abs(p - a), pb = std::abs(p - b), pc = std::abs(p - c);
++        if (pa <= pb && pa <= pc) return a;
++        return pb <= pc ? b : c;
++    }
++
++    // `rows` scanlines of (1 filter byte + rowBytes) at `data`, unfiltered in place. false on a bad filter type.
++    bool Unfilter(uint8_t* data, size_t rowBytes, size_t bpp, uint32_t rows)
++    {
++        const size_t stride = rowBytes + 1;
++        for (uint32_t y = 0; y < rows; ++y)
++        {
++            uint8_t* row = data + y * stride;
++            const uint8_t type = row[0];
++            uint8_t* cur = row + 1;
++            const uint8_t* prev = y ? data + (y - 1) * stride + 1 : nullptr;
++            switch (type)
++            {
++            case 0: break;
++            case 1: for (size_t i = bpp; i < rowBytes; ++i) cur[i] = uint8_t(cur[i] + cur[i - bpp]); break;
++            case 2: if (prev) for (size_t i = 0; i < rowBytes; ++i) cur[i] = uint8_t(cur[i] + prev[i]); break;
++            case 3:
++                for (size_t i = 0; i < rowBytes; ++i)
++                {
++                    const int left = i >= bpp ? cur[i - bpp] : 0, up = prev ? prev[i] : 0;
++                    cur[i] = uint8_t(cur[i] + ((left + up) >> 1));
++                }
++                break;
++            case 4:
++                for (size_t i = 0; i < rowBytes; ++i)
++                {
++                    const int left = i >= bpp ? cur[i - bpp] : 0, up = prev ? prev[i] : 0, ul = (prev && i >= bpp) ? prev[i - bpp] : 0;
++                    cur[i] = uint8_t(cur[i] + Paeth(left, up, ul));
++                }
++                break;
++            default: return false;
++            }
++        }
++        return true;
++    }
++
++    // Sample `index` (0-based, in samples) of a scanline, at the file's bit depth; 16-bit samples as 16 bits.
++    uint32_t Sample(const uint8_t* row, uint32_t index, uint8_t depth)
++    {
++        switch (depth)
++        {
++        case 8:  return row[index];
++        case 16: return (uint32_t(row[index * 2]) << 8) | row[index * 2 + 1];
++        default:
++        {
++            const uint32_t bit = index * depth;
++            const uint32_t shift = 8 - depth - (bit & 7);
++            return (row[bit >> 3] >> shift) & ((1u << depth) - 1);
++        }
++        }
++    }
++}
++
++namespace wxl::blp
++{
++    bool PngToBlp(const uint8_t* png, size_t size, std::vector<uint8_t>& blp, std::string& error)
++    {
++        static const uint8_t kSignature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
++        if (!png || size < 8 + 25 || std::memcmp(png, kSignature, 8) != 0) { error = "not a PNG file"; return false; }
++
++        // ---- chunks ----
++        Header hd;
++        bool haveHeader = false, sawEnd = false;
++        uint8_t palette[256][3] = {};
++        uint8_t paletteAlpha[256];
++        std::memset(paletteAlpha, 255, sizeof(paletteAlpha));
++        uint32_t paletteCount = 0;
++        bool haveTrns = false;
++        uint32_t trnsKey[3] = {};          // gray: [0]; rgb: r, g, b (as stored, 16-bit)
++        std::vector<uint8_t> idat;
++
++        size_t pos = 8;
++        while (pos + 12 <= size && !sawEnd)
++        {
++            const uint32_t len = Be32(png + pos);
++            const char* type = reinterpret_cast<const char*>(png + pos + 4);
++            if (len > size - pos - 12) { error = "truncated PNG chunk"; return false; }
++            const uint8_t* body = png + pos + 8;
++
++            if (!std::memcmp(type, "IHDR", 4))
++            {
++                if (len != 13) { error = "bad IHDR"; return false; }
++                hd.width = Be32(body); hd.height = Be32(body + 4);
++                hd.depth = body[8]; hd.colorType = body[9]; hd.interlace = body[12];
++                if (body[10] != 0 || body[11] != 0 || hd.interlace > 1) { error = "unsupported PNG compression/filter/interlace method"; return false; }
++                if (!hd.width || !hd.height || uint64_t(hd.width) * hd.height > kMaxPixels) { error = "image size is zero or above 16 million pixels"; return false; }
++                switch (hd.colorType)
++                {
++                case 0: hd.channels = 1; break;
++                case 2: hd.channels = 3; break;
++                case 3: hd.channels = 1; break;
++                case 4: hd.channels = 2; break;
++                case 6: hd.channels = 4; break;
++                default: error = "bad PNG color type"; return false;
++                }
++                const bool depthOk = hd.colorType == 0 ? (hd.depth == 1 || hd.depth == 2 || hd.depth == 4 || hd.depth == 8 || hd.depth == 16)
++                                   : hd.colorType == 3 ? (hd.depth == 1 || hd.depth == 2 || hd.depth == 4 || hd.depth == 8)
++                                   : (hd.depth == 8 || hd.depth == 16);
++                if (!depthOk) { error = "bad PNG bit depth for its color type"; return false; }
++                hd.bitsPerPixel = hd.channels * hd.depth;
++                haveHeader = true;
++            }
++            else if (!std::memcmp(type, "PLTE", 4))
++            {
++                if (len % 3 || len > 768 || len == 0) { error = "bad PLTE"; return false; }
++                paletteCount = len / 3;
++                for (uint32_t i = 0; i < paletteCount; ++i) { palette[i][0] = body[i * 3]; palette[i][1] = body[i * 3 + 1]; palette[i][2] = body[i * 3 + 2]; }
++            }
++            else if (!std::memcmp(type, "tRNS", 4) && haveHeader)
++            {
++                if (hd.colorType == 3) { for (uint32_t i = 0; i < len && i < 256; ++i) paletteAlpha[i] = body[i]; haveTrns = true; }
++                else if (hd.colorType == 0 && len >= 2) { trnsKey[0] = (uint32_t(body[0]) << 8) | body[1]; haveTrns = true; }
++                else if (hd.colorType == 2 && len >= 6) { for (int i = 0; i < 3; ++i) trnsKey[i] = (uint32_t(body[i * 2]) << 8) | body[i * 2 + 1]; haveTrns = true; }
++            }
++            else if (!std::memcmp(type, "IDAT", 4))
++            {
++                idat.insert(idat.end(), body, body + len);
++            }
++            else if (!std::memcmp(type, "IEND", 4))
++            {
++                sawEnd = true;
++            }
++            pos += 12 + size_t(len);
++        }
++        if (!haveHeader) { error = "PNG has no IHDR"; return false; }
++        if (idat.empty()) { error = "PNG has no image data"; return false; }
++        if (hd.colorType == 3 && !paletteCount) { error = "palette PNG without a PLTE"; return false; }
++
++        // ---- pass layout (one pass, or Adam7's seven) ----
++        std::vector<Pass> passes;
++        size_t rawSize = 0;
++        if (!hd.interlace)
++        {
++            Pass p{ 0, 0, 1, 1, hd.width, hd.height, RowBytes(hd, hd.width), 0 };
++            passes.push_back(p);
++            rawSize = size_t(hd.height) * (p.rowBytes + 1);
++        }
++        else
++        {
++            static const uint32_t X0[7] = { 0, 4, 0, 2, 0, 1, 0 }, Y0[7] = { 0, 0, 4, 0, 2, 0, 1 };
++            static const uint32_t DX[7] = { 8, 8, 4, 4, 2, 2, 1 }, DY[7] = { 8, 8, 8, 4, 4, 2, 2 };
++            for (int i = 0; i < 7; ++i)
++            {
++                if (hd.width <= X0[i] || hd.height <= Y0[i]) continue;
++                Pass p{ X0[i], Y0[i], DX[i], DY[i], (hd.width - X0[i] + DX[i] - 1) / DX[i], (hd.height - Y0[i] + DY[i] - 1) / DY[i], 0, rawSize };
++                p.rowBytes = RowBytes(hd, p.w);
++                rawSize += size_t(p.h) * (p.rowBytes + 1);
++                passes.push_back(p);
++            }
++        }
++
++        // ---- inflate ----
++        std::vector<uint8_t> raw(rawSize);
++        uLongf rawLen = static_cast<uLongf>(rawSize);
++        const int zr = uncompress(raw.data(), &rawLen, idat.data(), static_cast<uLong>(idat.size()));
++        if (zr != Z_OK || rawLen != rawSize) { error = "PNG image data is damaged or truncated"; return false; }
++
++        // ---- unfilter + convert to BGRA ----
++        const uint32_t W = hd.width, H = hd.height;
++        std::vector<uint8_t> level0(size_t(W) * H * 4);
++        const size_t bpp = std::max<size_t>(1, hd.bitsPerPixel / 8);
++        bool anyAlpha = false;
++        const bool wide = hd.depth == 16;
++        const uint32_t maxVal = hd.depth < 8 ? (1u << hd.depth) - 1 : 255;
++
++        for (const Pass& p : passes)
++        {
++            uint8_t* base = raw.data() + p.offset;
++            if (!Unfilter(base, p.rowBytes, bpp, p.h)) { error = "bad PNG scanline filter"; return false; }
++            for (uint32_t py = 0; py < p.h; ++py)
++            {
++                const uint8_t* row = base + size_t(py) * (p.rowBytes + 1) + 1;
++                const uint32_t y = p.y0 + py * p.dy;
++                for (uint32_t px = 0; px < p.w; ++px)
++                {
++                    const uint32_t x = p.x0 + px * p.dx;
++                    uint32_t r, g, b, a = 255;
++                    switch (hd.colorType)
++                    {
++                    case 0:
++                    {
++                        const uint32_t v = Sample(row, px, hd.depth);
++                        if (haveTrns && v == trnsKey[0]) a = 0;
++                        r = g = b = wide ? v >> 8 : (hd.depth < 8 ? v * 255 / maxVal : v);
++                        break;
++                    }
++                    case 2:
++                    {
++                        const uint32_t sr = Sample(row, px * 3, hd.depth), sg = Sample(row, px * 3 + 1, hd.depth), sb = Sample(row, px * 3 + 2, hd.depth);
++                        if (haveTrns && sr == trnsKey[0] && sg == trnsKey[1] && sb == trnsKey[2]) a = 0;
++                        r = wide ? sr >> 8 : sr; g = wide ? sg >> 8 : sg; b = wide ? sb >> 8 : sb;
++                        break;
++                    }
++                    case 3:
++                    {
++                        const uint32_t idx = Sample(row, px, hd.depth);
++                        if (idx >= paletteCount) { error = "palette index outside the PLTE"; return false; }
++                        r = palette[idx][0]; g = palette[idx][1]; b = palette[idx][2];
++                        a = paletteAlpha[idx];
++                        break;
++                    }
++                    case 4:
++                    {
++                        const uint32_t v = Sample(row, px * 2, hd.depth), sa = Sample(row, px * 2 + 1, hd.depth);
++                        r = g = b = wide ? v >> 8 : v;
++                        a = wide ? sa >> 8 : sa;
++                        break;
++                    }
++                    default: // 6
++                    {
++                        const uint32_t sr = Sample(row, px * 4, hd.depth), sg = Sample(row, px * 4 + 1, hd.depth),
++                                       sb = Sample(row, px * 4 + 2, hd.depth), sa = Sample(row, px * 4 + 3, hd.depth);
++                        r = wide ? sr >> 8 : sr; g = wide ? sg >> 8 : sg; b = wide ? sb >> 8 : sb; a = wide ? sa >> 8 : sa;
++                        break;
++                    }
++                    }
++                    uint8_t* out = &level0[(size_t(y) * W + x) * 4];
++                    out[0] = uint8_t(b); out[1] = uint8_t(g); out[2] = uint8_t(r); out[3] = uint8_t(a);
++                    if (a != 255) anyAlpha = true;
++                }
++            }
++        }
++
++        // ---- mip chain (only for power-of-two sizes, the only ones the client mips) ----
++        std::vector<std::vector<uint8_t>> levels;
++        std::vector<std::pair<uint32_t, uint32_t>> dims;
++        levels.push_back(std::move(level0));
++        dims.push_back({ W, H });
++        const bool mips = IsPow2(W) && IsPow2(H);
++        while (mips && (dims.back().first > 1 || dims.back().second > 1) && levels.size() < 16)
++        {
++            const uint32_t sw = dims.back().first, sh = dims.back().second;
++            const uint32_t dw = std::max(1u, sw >> 1), dh = std::max(1u, sh >> 1);
++            const std::vector<uint8_t>& src = levels.back();
++            std::vector<uint8_t> dst(size_t(dw) * dh * 4);
++            for (uint32_t y = 0; y < dh; ++y)
++            {
++                const uint32_t y0 = std::min(y * 2, sh - 1), y1 = std::min(y * 2 + 1, sh - 1);
++                for (uint32_t x = 0; x < dw; ++x)
++                {
++                    const uint32_t x0 = std::min(x * 2, sw - 1), x1 = std::min(x * 2 + 1, sw - 1);
++                    const uint8_t* px[4] = { &src[(size_t(y0) * sw + x0) * 4], &src[(size_t(y0) * sw + x1) * 4],
++                                             &src[(size_t(y1) * sw + x0) * 4], &src[(size_t(y1) * sw + x1) * 4] };
++                    uint32_t sumA = 0, c[3] = { 0, 0, 0 }, plain[3] = { 0, 0, 0 };
++                    for (const uint8_t* p : px)
++                    {
++                        sumA += p[3];
++                        for (int k = 0; k < 3; ++k) { c[k] += uint32_t(p[k]) * p[3]; plain[k] += p[k]; }
++                    }
++                    uint8_t* o = &dst[(size_t(y) * dw + x) * 4];
++                    for (int k = 0; k < 3; ++k) o[k] = uint8_t(sumA ? (c[k] + sumA / 2) / sumA : (plain[k] + 2) / 4);   // color weighted by alpha
++                    o[3] = uint8_t((sumA + 2) / 4);
++                }
++            }
++            levels.push_back(std::move(dst));
++            dims.push_back({ dw, dh });
++        }
++
++        // ---- the BLP2 ----
++        size_t total = kBlpHeaderSize;
++        for (const auto& l : levels) total += l.size();
++        blp.assign(total, 0);
++        blp[0] = 'B'; blp[1] = 'L'; blp[2] = 'P'; blp[3] = '2';
++        Put32(blp, 4, 1);                       // version
++        blp[8]  = 3;                            // colorEncoding: uncompressed ARGB8888
++        blp[9]  = anyAlpha ? 8 : 0;             // alpha bits
++        blp[10] = 2;                            // preferredFormat: PIXEL_ARGB8888
++        blp[11] = mips ? 1 : 0;                 // hasMips
++        Put32(blp, 12, W);
++        Put32(blp, 16, H);
++        size_t at = kBlpHeaderSize;
++        for (size_t i = 0; i < levels.size(); ++i)
++        {
++            Put32(blp, 0x14 + i * 4, uint32_t(at));
++            Put32(blp, 0x54 + i * 4, uint32_t(levels[i].size()));
++            std::memcpy(blp.data() + at, levels[i].data(), levels[i].size());
++            at += levels[i].size();
++        }
++        return true;
++    }
++}
+diff --git a/Tools/WxlModuleTest/make_png_cases.py b/Tools/WxlModuleTest/make_png_cases.py
+new file mode 100644
+--- /dev/null
++++ b/Tools/WxlModuleTest/make_png_cases.py
+@@ -0,0 +1,121 @@
++#!/usr/bin/env python3
++"""Writes PNG test cases (and the RGBA pixels each must decode to) for png_to_blp_test.cpp.
++Own encoder so every color type / bit depth / filter / Adam7 interlace is covered, not only what Pillow writes."""
++import os, random, struct, sys, zlib
++
++out = sys.argv[1]
++os.makedirs(out, exist_ok=True)
++rnd = random.Random(1234)
++
++def chunk(t, d):
++    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
++
++def paeth(a, b, c):
++    p = a + b - c
++    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
++    return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
++
++def filter_rows(rows, bpp):
++    res, prev = bytearray(), bytes(len(rows[0])) if rows else b""
++    for y, row in enumerate(rows):
++        ft = (y + len(rows)) % 5                       # every filter type shows up
++        res.append(ft)
++        for i, x in enumerate(row):
++            a = row[i - bpp] if i >= bpp else 0
++            b = prev[i]
++            c = prev[i - bpp] if i >= bpp else 0
++            pred = (0, a, b, (a + b) >> 1, paeth(a, b, c))[ft]
++            res.append((x - pred) & 255)
++        prev = row
++    return bytes(res)
++
++def pack_row(samples, depth):
++    if depth == 8:
++        return bytes(samples)
++    if depth == 16:
++        return b"".join(struct.pack(">H", s) for s in samples)
++    bits = "".join(format(s, "0%db" % depth) for s in samples)
++    bits += "0" * (-len(bits) % 8)
++    return bytes(int(bits[i:i + 8], 2) for i in range(0, len(bits), 8))
++
++CH = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
++
++def expected_pixel(ct, depth, s, plte, trns):
++    mx = (1 << depth) - 1
++    def to8(v): return v >> 8 if depth == 16 else (v * 255 // mx if depth < 8 else v)
++    if ct == 0:
++        a = 0 if trns is not None and s[0] == trns[0] else 255
++        return (to8(s[0]),) * 3 + (a,)
++    if ct == 2:
++        a = 0 if trns is not None and tuple(s) == tuple(trns) else 255
++        return (to8(s[0]), to8(s[1]), to8(s[2]), a)
++    if ct == 3:
++        r, g, b = plte[s[0]]
++        return (r, g, b, trns[s[0]] if trns is not None and s[0] < len(trns) else 255)
++    if ct == 4:
++        return (to8(s[0]),) * 3 + (to8(s[1]),)
++    return tuple(to8(v) for v in s)
++
++def make(name, w, h, ct, depth, interlace=0, trns=None, plte=None):
++    ch = CH[ct]
++    mx = (1 << depth) - 1
++    if ct == 3:
++        plte = plte or [(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(min(256, mx + 1))]
++    img = [[[rnd.randrange(mx + 1) if ct != 3 else rnd.randrange(len(plte)) for _ in range(ch)] for _ in range(w)] for _ in range(h)]
++    if trns is not None and ct in (0, 2):                  # make sure the key color actually occurs
++        img[0][0] = list(trns)
++    bpp = max(1, ch * depth // 8)
++    if not interlace:
++        rows = [pack_row([v for px in r for v in px], depth) for r in img]
++        raw = filter_rows(rows, bpp) if rows else b""
++    else:
++        raw = b""
++        X0, Y0, DX, DY = (0, 4, 0, 2, 0, 1, 0), (0, 0, 4, 0, 2, 0, 1), (8, 8, 4, 4, 2, 2, 1), (8, 8, 8, 4, 4, 2, 2)
++        for i in range(7):
++            ys, xs = range(Y0[i], h, DY[i]), range(X0[i], w, DX[i])
++            if not len(ys) or not len(xs):
++                continue
++            rows = [pack_row([v for x in xs for v in img[y][x]], depth) for y in ys]
++            raw += filter_rows(rows, bpp)
++    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, depth, ct, 0, 0, interlace))
++    if ct == 3:
++        png += chunk(b"PLTE", b"".join(bytes(c) for c in plte))
++    if trns is not None:
++        if ct == 3: png += chunk(b"tRNS", bytes(trns))
++        elif ct == 0: png += chunk(b"tRNS", struct.pack(">H", trns[0]))
++        elif ct == 2: png += chunk(b"tRNS", struct.pack(">HHH", *trns))
++    half = len(raw) // 2 or 1                              # two IDATs: chunk joining is exercised too
++    z = zlib.compress(raw, 6)
++    png += chunk(b"IDAT", z[:half]) + chunk(b"IDAT", z[half:]) + chunk(b"IEND", b"")
++    open(os.path.join(out, name + ".png"), "wb").write(png)
++    exp = bytearray()
++    for r in img:
++        for px in r:
++            exp += bytes(expected_pixel(ct, depth, px, plte, trns))
++    open(os.path.join(out, name + ".rgba"), "wb").write(bytes(exp))
++    open(os.path.join(out, name + ".txt"), "w").write("%d %d\n" % (w, h))
++
++for il in (0, 1):
++    t = "_i" if il else ""
++    for d in (1, 2, 4, 8, 16): make("gray%d%s" % (d, t), 13, 11, 0, d, il)
++    for d in (8, 16): make("rgb%d%s" % (d, t), 16, 8, 2, d, il)
++    for d in (1, 2, 4, 8): make("pal%d%s" % (d, t), 9, 17, 3, d, il)
++    for d in (8, 16): make("graya%d%s" % (d, t), 7, 5, 4, d, il)
++    for d in (8, 16): make("rgba%d%s" % (d, t), 32, 16, 6, d, il)
++    make("palTrns%s" % t, 8, 8, 3, 8, il, trns=[0, 128, 255, 7])
++    make("grayTrns%s" % t, 10, 6, 0, 8, il, trns=[3])
++    make("rgbTrns%s" % t, 10, 6, 2, 8, il, trns=[1, 2, 3])
++make("tiny1x1", 1, 1, 6, 8)
++make("pot64", 64, 64, 6, 8)
++make("npot", 30, 20, 2, 8)
++# a file Pillow writes, for a reading the encoder above cannot have shaped
++try:
++    from PIL import Image
++    im = Image.new("RGBA", (16, 16))
++    im.putdata([(x * 16, y * 16, (x + y) * 8, 255 if (x + y) % 3 else 0) for y in range(16) for x in range(16)])
++    im.save(os.path.join(out, "pillow_rgba.png"), optimize=True)
++    open(os.path.join(out, "pillow_rgba.rgba"), "wb").write(im.tobytes())
++    open(os.path.join(out, "pillow_rgba.txt"), "w").write("16 16\n")
++except ImportError:
++    pass
++print("cases written to", out)
+diff --git a/Tools/WxlModuleTest/png_to_blp_test.cpp b/Tools/WxlModuleTest/png_to_blp_test.cpp
+new file mode 100644
+--- /dev/null
++++ b/Tools/WxlModuleTest/png_to_blp_test.cpp
+@@ -0,0 +1,97 @@
++// PngToBlp: every case from make_png_cases.py must decode to the exact pixels, and the BLP2 around them must be
++// what the client's loader needs (header, mip chain, sizes/offsets). Build: see run_png_to_blp_tests.sh.
++#include "Engine/Source/WXL/Blp.h"
++
++#include <cstdio>
++#include <cstring>
++#include <fstream>
++#include <iterator>
++#include <string>
++#include <vector>
++
++static int g_failed = 0;
++static void Check(bool ok, const char* what) { if (!ok) { ++g_failed; std::printf("  FAIL: %s\n", what); } }
++
++static std::vector<uint8_t> Slurp(const std::string& p)
++{
++    std::ifstream f(p, std::ios::binary);
++    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++}
++static uint32_t Rd(const std::vector<uint8_t>& v, size_t at) { return v[at] | (v[at + 1] << 8) | (v[at + 2] << 16) | (uint32_t(v[at + 3]) << 24); }
++
++int main(int argc, char** argv)
++{
++    for (int a = 1; a < argc; ++a)
++    {
++        const std::string png = argv[a], stem = png.substr(0, png.size() - 4);
++        const auto bytes = Slurp(png), expect = Slurp(stem + ".rgba");
++        unsigned w = 0, h = 0;
++        { std::ifstream t(stem + ".txt"); t >> w >> h; }
++
++        std::vector<uint8_t> blp; std::string err;
++        const bool ok = wxl::blp::PngToBlp(bytes.data(), bytes.size(), blp, err);
++        std::printf("%-22s %ux%u %s\n", png.substr(png.find_last_of("/\\") + 1).c_str(), w, h, ok ? "" : err.c_str());
++        Check(ok, "converts");
++        if (!ok) continue;
++
++        Check(blp.size() >= 1172 && std::memcmp(blp.data(), "BLP2", 4) == 0 && Rd(blp, 4) == 1, "BLP2 magic, version 1, header room");
++        Check(blp[8] == 3 && blp[10] == 2, "colorEncoding 3 (ARGB8888), preferredFormat 2");
++        Check(Rd(blp, 12) == w && Rd(blp, 16) == h, "dimensions");
++        const bool pot = !(w & (w - 1)) && !(h & (h - 1));
++        Check((blp[11] == 1) == pot, "hasMips only for power-of-two sizes");
++
++        // levels: offsets contiguous from 1172, sizes w*h*4 halving, ending 1x1 when mipped
++        size_t at = 1172; unsigned lw = w, lh = h; int levels = 0;
++        for (int i = 0; i < 16 && Rd(blp, 0x54 + i * 4); ++i)
++        {
++            Check(Rd(blp, 0x14 + i * 4) == at && Rd(blp, 0x54 + i * 4) == lw * lh * 4, "mip offset/size");
++            at += size_t(lw) * lh * 4; ++levels;
++            lw = lw > 1 ? lw >> 1 : 1; lh = lh > 1 ? lh >> 1 : 1;
++        }
++        Check(at == blp.size(), "no bytes beyond the last mip");
++        if (pot) { unsigned ew = w, eh = h, n = 1; while (ew > 1 || eh > 1) { ew = ew > 1 ? ew >> 1 : 1; eh = eh > 1 ? eh >> 1 : 1; ++n; } Check(levels == int(n), "full mip chain down to 1x1"); }
++        else Check(levels == 1, "single level for a non-power-of-two size");
++
++        // level 0 against the expected pixels (BLP stores B,G,R,A)
++        bool same = expect.size() == size_t(w) * h * 4;
++        bool anyAlpha = false;
++        for (size_t i = 0; same && i < size_t(w) * h; ++i)
++        {
++            const uint8_t* p = &blp[1172 + i * 4];
++            const uint8_t* e = &expect[i * 4];
++            if (p[0] != e[2] || p[1] != e[1] || p[2] != e[0] || p[3] != e[3]) same = false;
++            if (e[3] != 255) anyAlpha = true;
++        }
++        Check(same, "level 0 pixels are exactly what the PNG holds");
++        Check((blp[9] == 8) == anyAlpha, "alpha bits set exactly when some pixel is not opaque");
++
++        // top of the chain: one pixel, alpha-weighted average of the whole image
++        if (pot && levels > 1)
++        {
++            const size_t lastOff = Rd(blp, 0x14 + (levels - 1) * 4);
++            double sumA = 0, c[3] = { 0, 0, 0 };
++            for (size_t i = 0; i < size_t(w) * h; ++i) { const double al = expect[i * 4 + 3]; sumA += al; for (int k = 0; k < 3; ++k) c[k] += expect[i * 4 + k] * al; }
++            const double meanA = sumA / (double(w) * h);
++            Check(std::abs(int(blp[lastOff + 3]) - int(meanA + 0.5)) <= 6, "1x1 mip alpha is the image's mean alpha (box filtered)");
++            if (sumA > 0)
++                for (int k = 0; k < 3; ++k)
++                    Check(std::abs(int(blp[lastOff + 2 - k]) - int(c[k] / sumA + 0.5)) <= 6, "1x1 mip color is the alpha-weighted mean");
++        }
++    }
++
++    // refusals
++    std::vector<uint8_t> out; std::string err;
++    const uint8_t junk[40] = { 1, 2, 3 };
++    Check(!wxl::blp::PngToBlp(junk, sizeof(junk), out, err) && !err.empty(), "junk is refused with a reason");
++    const auto good = Slurp(argc > 1 ? argv[1] : "");
++    if (good.size() > 40)
++    {
++        std::vector<uint8_t> cut(good.begin(), good.begin() + good.size() / 2);
++        Check(!wxl::blp::PngToBlp(cut.data(), cut.size(), out, err), "a truncated PNG is refused");
++        std::vector<uint8_t> bad = good; bad[good.size() / 2] ^= 0xFF; bad[good.size() / 2 + 1] ^= 0xFF; bad[good.size() / 2 + 2] ^= 0xFF;
++        (void)wxl::blp::PngToBlp(bad.data(), bad.size(), out, err);   // damaged data: must not crash, either answer is fine
++    }
++
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/run_png_to_blp_tests.sh b/Tools/WxlModuleTest/run_png_to_blp_tests.sh
+new file mode 100644
+--- /dev/null
++++ b/Tools/WxlModuleTest/run_png_to_blp_tests.sh
+@@ -0,0 +1,13 @@
++#!/bin/sh
++# Builds and runs the PNG -> BLP2 converter test from the repository root.
++set -e
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++OUT="${TMPDIR:-/tmp}/png_to_blp_test"
++mkdir -p "$OUT/zlib"
++python3 "$ROOT/Tools/WxlModuleTest/make_png_cases.py" "$OUT/cases"
++for f in adler32 crc32 inflate inftrees inffast uncompr zutil; do
++    gcc -O1 -c -I "$ROOT/ThirdParty/zlib" "$ROOT/ThirdParty/zlib/$f.c" -o "$OUT/zlib/$f.o"
++done
++g++ -std=c++20 -O1 -g -fsanitize=address,undefined -Wall -I "$ROOT" \
++    "$ROOT/Tools/WxlModuleTest/png_to_blp_test.cpp" "$ROOT/Engine/Source/WXL/Blp/PngToBlp.cpp" "$OUT"/zlib/*.o -o "$OUT/png_to_blp_test"
++"$OUT/png_to_blp_test" "$OUT"/cases/*.png

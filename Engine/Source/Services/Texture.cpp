@@ -18,6 +18,7 @@
 #include "Engine/Source/Services/TextureInt.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/C2Vector.h"
+#include <string>
 #include <vector>
 #include "Engine/Source/WXL/Blp.h"
 #include "Engine/Source/WXL/Log.h"
@@ -2270,6 +2271,71 @@ CTexture* CreateBlpAsync(char* extension, const char* fileName, uint32_t flags, 
     return texture;
 }
 
+// WXL: a texture asked for "X.blp" and there is none. Look for "X.png" under the same virtual path (a loose file in
+// Data or one inside an archive, found like any other file) and, if it decodes, build the texture from it exactly as
+// CreateBlpSync builds one from a BLP: the PNG is converted to an in-memory BLP2 (uncompressed ARGB8888, mips when
+// both sides are powers of two) and pumped through the same loader. The decode runs right here, once per texture,
+// on whichever thread asked; the async read queue is not involved.
+static CTexture* WxlCreatePngTexture(const char* blpName, uint32_t flags, CGxTexFlags texFlags) {
+    char stem[260];
+    SStrCopy(stem, blpName, sizeof(stem));
+    char* extension = OsPathFindExtensionWithDot(stem);
+
+    if (!extension || SStrCmpI(extension, ".blp", STORM_MAX_STR)) {
+        return nullptr;
+    }
+
+    *extension = '\0';
+
+    char pngName[260];
+    SStrCopy(pngName, stem, sizeof(pngName));
+    SStrPack(pngName, ".png", sizeof(pngName));
+
+    SFileImpl* file = nullptr;
+    SErrSetLastError(0);
+
+    if (!SFile::OpenEx(nullptr, pngName, (flags >> 1) & 1, &file) || !file) {
+        return nullptr;
+    }
+
+    std::vector<uint8_t> png(SFileGetFileSize(file, nullptr));
+    uint32_t bytesRead = 0;
+    const int32_t readOk = png.empty() || SFileReadFile(file, png.data(), static_cast<uint32_t>(png.size()), &bytesRead, nullptr, 0);
+    SFileCloseFile(file);
+
+    std::vector<uint8_t> blp;
+    std::string why;
+
+    if (!readOk || png.empty() || !wxl::blp::PngToBlp(png.data(), png.size(), blp, why)) {
+        wxl::LogCat("BLP", "PNG fallback: '%s' found but not usable (%s)", pngName, readOk ? why.c_str() : "read failed");
+        return nullptr;
+    }
+
+    CTexture* texture = new ("HTEXTURE", SLOG_OBJECT) CTexture;
+    texture->m_gxTexFlags = texFlags;
+
+    if (flags & 2) {
+        texture->m_flags |= 2;
+    }
+
+    if ((flags & 4) && s_atlasEnable) {
+        texture->m_flags |= 4;
+    }
+
+    SStrCopy(texture->m_filename, stem, STORM_MAX_STR);
+
+    if (wxl::LogThrottle("blp.pngfallback", 200, 0)) {
+        wxl::LogCat("BLP", "PNG fallback: no '%s', using '%s' (%ux%u)", blpName, pngName,
+                    static_cast<uint32_t>(blp[12] | (blp[13] << 8) | (blp[14] << 16)), static_cast<uint32_t>(blp[16] | (blp[17] << 8) | (blp[18] << 16)));
+    }
+
+    if (!PumpBlpTextureAsync(texture, blp.data())) {
+        FillInSolidTexture(*reinterpret_cast<const CImVector*>(&s_defaultColor), texture);
+    }
+
+    return texture;
+}
+
 // VERIFY: 77916a1a auto
 // OFFSET: 0x004B8BE0
 CTexture* CreateBlpTexture(const char* fileName, char* extension, uint32_t flags, CGxTexFlags texFlags) {
@@ -2287,6 +2353,11 @@ CTexture* CreateBlpTexture(const char* fileName, char* extension, uint32_t flags
     }
 
     CTexture* texture = s_createBlpAsync ? CreateBlpAsync(extension, name, flags, texFlags) : CreateBlpSync(name, extension, flags, texFlags);
+
+    if (!texture) {
+        // WXL: no .blp: a .png of the same name stands in for it (see WxlCreatePngTexture)
+        texture = WxlCreatePngTexture(name, flags, texFlags);
+    }
 
     if (!texture) {
         return nullptr;

@@ -30,3 +30,6 @@ endif()
 if (NOT WOWDECOMP_ARCH_64)
     target_compile_definitions(WXLCore PUBLIC WXL_ALLOW_32BIT_HEADER=1)
 endif()
+
+# PngToBlp.cpp inflates PNG data with the tree's own zlib.
+target_link_libraries(WXLCore PUBLIC zlib)
