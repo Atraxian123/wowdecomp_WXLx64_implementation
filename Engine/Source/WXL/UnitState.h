@@ -15,11 +15,16 @@ namespace wxl::unitstate
 {
     /// Called by the unit every time its swimming status is evaluated. `unit` is only an identity (never
     /// dereferenced); the two model pointers are the unit's world model and mount model (either may be null).
-    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming);
+    /// `depthRatio` is (liquid surface - feet height) / collision height; it is only read for a swimming unit.
+    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming, float depthRatio = 0.0f);
 
     /// The unit is gone (destructor): forget it.
     void ForgetUnit(const void* unit);
 
     /// True when `model` is the world model or the mount model of a unit that is swimming. Thread-safe.
     bool IsSwimming(const void* model);
+
+    /// The depth ratio of the swimming unit whose world model or mount model is `model` (see NoteUnit), or -1
+    /// when there is none. Thread-safe.
+    float WaterDepthRatio(const void* model);
 }

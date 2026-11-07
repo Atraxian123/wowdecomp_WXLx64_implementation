@@ -238,6 +238,21 @@ Buoyancy=-0.2    ; underwater the parts drift up, whatever GravityScale is on la
 * **Gravity is a multiplier on each body's own file value**, so a body whose `.phy2` gravity is 0 stays at 0 whatever
   the scale: a negative `Buoyancy` lifts only the bodies that have gravity.
 * **Upgrading:** an old `[Physics.Underwater] GravityScale=-0.2` is no longer used. Put `Buoyancy=-0.2` in `[Physics]`.
+* **Swimming at the water level.** The client calls a unit "swimming" as soon as its feet are 0.75 body heights under
+  the surface, so a swimmer at the water level is swimming with its head out. The core reports how deep the unit is
+  (`WxlApi::instanceWaterDepth`: surface minus feet, divided by the unit's collision height) and the underwater effect
+  grows with it instead of switching on at once:
+
+  ```ini
+  [Physics.Underwater]
+  SurfaceDepth=0.75    ; depth (in bodies) of a swimmer at the water level: no underwater effect there, parts fall normally
+  FullDepth=1.0        ; from this depth the whole effect applies (about: the head is under)
+  ```
+
+  Between the two, gravity, damping and the other multipliers are blended in proportion (still eased over
+  `BlendSeconds`). `FullDepth` equal to `SurfaceDepth` makes it a step. Raise `SurfaceDepth` if parts still lift
+  while you float at the surface, lower it to have the effect start sooner. A client that does not report the depth
+  falls back to swimming = full effect.
 * **Needs the core's `instanceSwimming` call** (`WxlApi`, checked at start-up). With an older core the section is
   read and logged but not applied, and the log says so.
 * Log lines: `physics: underwater multipliers (on top of the above): ...` at start-up and on every re-read, and

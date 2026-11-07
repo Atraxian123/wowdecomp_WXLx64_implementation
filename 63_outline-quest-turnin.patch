@@ -1,0 +1,298 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -455,6 +455,13 @@
+        under at about 1.0, and a deep dive is above that. Returns -1 when the unit is not swimming or the
+        instance is not a unit's. Cheap, thread-safe, never touches the map. */
+     float (*instanceWaterDepth)(void* instance);
++    /* ---- added for the outline module's quest turn-ins: check WXL_API_HAS(api, outlineQuestTurnIns) once ---- */
++    /* The model instances of the visible creatures and objects that are waiting for the player to hand in a
++       completed quest: the ones the server has marked with the "?" (the client's own quest giver status of the
++       object, which the server sends for the quests of this player), up to `max`, returned as the count. Pointers
++       only, never dereferenced by the caller. Cheaper than outlineQuestTargets (no quest cache), but call it on a
++       timer all the same. */
++    uint32_t (*outlineQuestTurnIns)(const void** models, uint32_t max);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -238,6 +238,8 @@
+             // unit state for the physics module (ModelAccess.cpp, UnitState.h)
+             &wxl::api::model::InstanceSwimming,
+             &wxl::api::model::InstanceWaterDepth,
++            // quest turn-ins for the outline module (OutlineHost.cpp)
++            &wxl::api::outlinehost::QuestTurnIns,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/OutlineHost.h b/Engine/Source/WXLApi/OutlineHost.h
+--- a/Engine/Source/WXLApi/OutlineHost.h
++++ b/Engine/Source/WXLApi/OutlineHost.h
+@@ -12,5 +12,6 @@
+ {
+     uint32_t Units(WxlOutlineUnit* out, uint32_t max);
+     uint32_t QuestTargets(const void** models, uint32_t max);
++    uint32_t QuestTurnIns(const void** models, uint32_t max);
+     int      BatchState(float* alphaRef);
+ }
+diff --git a/Engine/Source/WXLApi/OutlineHost.cpp b/Engine/Source/WXLApi/OutlineHost.cpp
+--- a/Engine/Source/WXLApi/OutlineHost.cpp
++++ b/Engine/Source/WXLApi/OutlineHost.cpp
+@@ -100,6 +100,39 @@
+             uint32_t          count;
+         };
+ 
++        // The server's quest giver status of an object (CGObject_C::m_questStatus, the "!" and "?" over its head).
++        // The ones that mean "a quest of yours is complete, come and hand it in": 10 (the yellow "?"), 9 (the same
++        // for a quest that gives no experience any more) and 6 (the blue "?" of a repeatable quest).
++        bool IsTurnInStatus(uint32_t status)
++        {
++            return status == 6 || status == 9 || status == 10;
++        }
++
++        struct TurnInScan
++        {
++            const CM2Model* models[kMaxQuestModels];
++            uint32_t        limit;
++            uint32_t        count;
++        };
++
++        int32_t TurnInScanCallback(WOWGUID guid, void* param)
++        {
++            auto* scan = static_cast<TurnInScan*>(param);
++            if (scan->count >= scan->limit) return 0;
++
++            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
++            if (!obj || !obj->m_obj || !IsTurnInStatus(obj->m_questStatus)) return 1;
++
++            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
++            if (type & TYPEMASK_PLAYER) return 1;
++            if ((type & TYPEMASK_UNIT) && static_cast<CGUnit_C*>(obj)->IsDeadOrGhost()) return 1;
++            if (!(type & (TYPEMASK_UNIT | TYPEMASK_GAMEOBJECT))) return 1;
++
++            const CM2Model* model = obj->GetObjectModel();
++            if (model) scan->models[scan->count++] = model;
++            return 1;
++        }
++
+         // Visible objects, one at a time. Returns non-zero to keep going.
+         int32_t QuestScanCallback(WOWGUID guid, void* param)
+         {
+@@ -186,6 +219,24 @@
+         for (uint32_t i = 0; i < scan.count; ++i) models[i] = scan.models[i];
+         return scan.count;
+     }
++
++    // The creatures and objects that wait for a completed quest to be handed in: the visible ones whose quest giver
++    // status (sent by the server for this player) is a "?". The quest log is not needed for this, so it also covers
++    // quests whose turn-in is somebody else than their giver.
++    uint32_t QuestTurnIns(const void** models, uint32_t max)
++    {
++        if (!models || max == 0) return 0;
++
++        // Like QuestTargets: with no active player there is nothing to scan, and the object manager may not even
++        // exist yet (the login and character screens), so the walk must not start.
++        CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
++        if (!player || !player->m_player) return 0;
++
++        TurnInScan scan{ {}, max < kMaxQuestModels ? max : kMaxQuestModels, 0 };
++        ClntObjMgrEnumVisibleObjects(TurnInScanCallback, &scan);
++        for (uint32_t i = 0; i < scan.count; ++i) models[i] = scan.models[i];
++        return scan.count;
++    }
+ 
+     // What the engine is doing for the batch it just drew: the blend mode and the depth write say whether it is an
+     // opaque (or alpha-tested) batch, the alpha reference is the cutout the batch used.
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -220,19 +220,22 @@
+             bool  mouseTarget = true;       // [Outline] Enabled: the reaction-colored mouseover / target outline
+             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
+             bool  questThroughWalls = false;
++            bool  questTurnIn = false;      // [Outline] QuestTurnIn: also outline whoever waits for a completed quest
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+             float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
+             float friendlyColor[4] = { 0.0f, 1.0f,  0.0f, 1.0f };
+             float questColor[4]    = { 0.0f, 0.78f, 1.0f, 1.0f };
++            float turnInColor[4]   = { 1.0f, 0.82f, 0.0f, 1.0f };   // the gold of the "?" over a quest giver
+         };
+ 
+         explicit Outline(const Options& o)
+             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+-              questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
++              questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+         {
+             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
++            std::memcpy(turnInColor_, o.turnInColor, sizeof(turnInColor_));
+             std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
+             std::memcpy(neutralColor_, o.neutralColor, sizeof(neutralColor_));
+             std::memcpy(friendlyColor_, o.friendlyColor, sizeof(friendlyColor_));
+@@ -243,7 +246,7 @@
+ 
+     private:
+         static constexpr int kMaxQuestTargets = 32;
+-        static constexpr int kMaxTargets = 2 + kMaxQuestTargets;
++        static constexpr int kMaxTargets = 2 + 2 * kMaxQuestTargets;   // mouseover + target, objectives, turn-ins
+         static constexpr unsigned long long kQuestRefreshMs = 250;
+         // depthTest: the scene hides the outline where it hides the unit. Otherwise the outline shows through.
+         struct Tgt { const void* model; float color[4]; bool depthTest; };
+@@ -281,16 +284,20 @@
+         bool                debug_;                // draw the raw mask in the top-left corner
+         bool                mouseTarget_;
+         bool                quest_;
++        bool                questTurnIn_;
+         bool                questThroughWalls_;
+         bool                hideBehind_;
+         bool                loggedNoDepth_ = false;
+         float               alphaRef_ = 0.5f;      // the engine's cutout reference for the batch being stamped
+         float               questColor_[4]{};
++        float               turnInColor_[4]{};
+         float               hostileColor_[4]{};
+         float               neutralColor_[4]{};
+         float               friendlyColor_[4]{};
+         Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
+         int                 questCount_ = 0;
++        Tgt                 turnInTargets_[kMaxQuestTargets]{}; // the same, for the NPCs that take a completed quest
++        int                 turnInCount_ = 0;
+         unsigned long long  lastQuestRefresh_ = 0;
+         IDirect3DPixelShader9* debugPS_ = nullptr;
+     };
+@@ -396,7 +403,7 @@
+                 ++count_;
+             }
+         }
+-        if (quest_) AppendQuestTargets();
++        if (quest_ || questTurnIn_) AppendQuestTargets();
+     }
+ 
+     // Rebuilds the quest target list from the client (the quest log, the quest cache and the visible objects). Run on
+@@ -404,17 +411,34 @@
+     void Outline::RefreshQuestTargets()
+     {
+         const void* models[kMaxQuestTargets] = {};
+-        const uint32_t n = wxl::module::Api()->outlineQuestTargets(models, kMaxQuestTargets);
+ 
+         // Pointers only: they are compared against the model being drawn, never dereferenced, so one that outlives
+         // its object by a refresh interval is harmless.
+         questCount_ = 0;
+-        for (uint32_t i = 0; i < n && questCount_ < kMaxQuestTargets; ++i)
++        if (quest_)
+         {
+-            Tgt& t = questTargets_[questCount_++];
+-            t.model = models[i];
+-            std::memcpy(t.color, questColor_, sizeof(t.color));
+-            t.depthTest = hideBehind_ || !questThroughWalls_;
++            const uint32_t n = wxl::module::Api()->outlineQuestTargets(models, kMaxQuestTargets);
++            for (uint32_t i = 0; i < n && questCount_ < kMaxQuestTargets; ++i)
++            {
++                Tgt& t = questTargets_[questCount_++];
++                t.model = models[i];
++                std::memcpy(t.color, questColor_, sizeof(t.color));
++                t.depthTest = hideBehind_ || !questThroughWalls_;
++            }
++        }
++
++        // Who waits for a completed quest (the "?" over an NPC or object), in its own color.
++        turnInCount_ = 0;
++        if (questTurnIn_)
++        {
++            const uint32_t n = wxl::module::Api()->outlineQuestTurnIns(models, kMaxQuestTargets);
++            for (uint32_t i = 0; i < n && turnInCount_ < kMaxQuestTargets; ++i)
++            {
++                Tgt& t = turnInTargets_[turnInCount_++];
++                t.model = models[i];
++                std::memcpy(t.color, turnInColor_, sizeof(t.color));
++                t.depthTest = hideBehind_ || !questThroughWalls_;
++            }
+         }
+     }
+ 
+@@ -434,6 +458,15 @@
+                 if (targets_[i].model == questTargets_[q].model) { dup = true; break; } // the mouseover / target color wins
+             if (!dup) targets_[count_++] = questTargets_[q];
+         }
++
++        // Turn-in NPCs last: the mouseover / target color and the objective color win over theirs.
++        for (int q = 0; q < turnInCount_ && count_ < kMaxTargets; ++q)
++        {
++            bool dup = false;
++            for (int i = 0; i < count_; ++i)
++                if (targets_[i].model == turnInTargets_[q].model) { dup = true; break; }
++            if (!dup) targets_[count_++] = turnInTargets_[q];
++        }
+     }
+ 
+     // Draw the model again into the mask render target.
+@@ -682,9 +715,15 @@
+         Outline::Options o;
+         o.mouseTarget = IniInt("Outline", "Enabled", 0) != 0;
+         o.quest       = IniInt("Outline", "Quest", 0) != 0;
+-        if (!o.mouseTarget && !o.quest)
++        o.questTurnIn = IniInt("Outline", "QuestTurnIn", 0) != 0;
++        if (o.questTurnIn && !WXL_API_HAS(wxl::module::Api(), outlineQuestTurnIns))
++        {
++            wxl::LogCat("OUTLINE", "[Outline] QuestTurnIn=1, but this client does not offer the turn-in list: ignored");
++            o.questTurnIn = false;
++        }
++        if (!o.mouseTarget && !o.quest && !o.questTurnIn)
+         {
+-            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled and Quest are 0 or absent)");
++            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest and QuestTurnIn are 0 or absent)");
+             return false;
+         }
+ 
+@@ -700,10 +739,11 @@
+         IniColor("NeutralColor",  o.neutralColor,  o.neutralColor);
+         IniColor("FriendlyColor", o.friendlyColor, o.friendlyColor);
+         IniColor("QuestColor",    o.questColor,    o.questColor);
++        IniColor("QuestTurnInColor", o.turnInColor, o.turnInColor);
+ 
+         static Outline s_outline(o);
+-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",
+-                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.spread, o.intensity);
++        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s (spread %.2f, intensity %.2f)",
++                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off", o.spread, o.intensity);
+         return true;
+     }
+ }
+diff --git a/Engine/Source/WXLModules/Outline/README.md b/Engine/Source/WXLModules/Outline/README.md
+--- a/Engine/Source/WXLModules/Outline/README.md
++++ b/Engine/Source/WXLModules/Outline/README.md
+@@ -2,7 +2,7 @@
+ 
+ Reaction-colored silhouette outline on the mouseover and target units, ported from the standalone
+ `wxl-unit-outline` extension. Now a module, `WXL\Modules\wxl_outline.dll`, loaded by the client like the others; it
+-unloads itself when `[Outline] Enabled` and `Quest` are both 0 or absent. Off by default.
++unloads itself when `[Outline] Enabled`, `Quest` and `QuestTurnIn` are all 0 or absent. Off by default.
+ 
+ ```ini
+ [Outline]
+@@ -12,6 +12,8 @@
+ NeutralColor=FFFF00
+ FriendlyColor=00FF00
+ QuestColor=00C8FF
++QuestTurnIn=1      ; also outline the NPCs / objects where a completed quest is handed in
++QuestTurnInColor=FFD200
+ QuestThroughWalls=0
+ HideBehindObjects=0  ; 1 = no outline shows through anything in front
+ Spread=1.5
+@@ -25,6 +27,14 @@
+ `Engine/Source/WXLApi/OutlineHost.cpp`) plus `modelInfo` to walk a model's parents; the quest matching rules are in
+ `Engine/Source/WXLOutline/QuestMatch.h` (engine-free, with a host test: `Tools/WxlModuleTest/run_questmatch_tests.sh`).
+ 
++Quest turn-ins: with `QuestTurnIn=1` every visible NPC or object that is waiting for you to hand in a completed quest
++gets an outline in `QuestTurnInColor` (gold by default, like the "?" over its head). It does not need `Quest=1`. The
++list is the server's own: the client keeps the quest giver status the server sends for your quests on each NPC (the
++yellow "?" of a completed quest, the same for a quest that no longer gives experience, and the blue "?" of a
++repeatable one), and the outline follows it, so it also covers a quest that is handed in to somebody other than its
++giver. Dead units and players are skipped. A unit that is a mouseover / target keeps the reaction color, and one that
++is also a quest objective keeps `QuestColor`. `QuestThroughWalls` and `HideBehindObjects` apply to it as well.
++
+ More keys:
+ 
+ ```ini

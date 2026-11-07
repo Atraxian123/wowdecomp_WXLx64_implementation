@@ -54,6 +54,7 @@ namespace
     std::vector<Sub> g_subs;
     std::set<std::string> g_virtual;          // paths the fake core says were minted by VirtualPath
     std::set<void*> g_swimming;               // instances the fake core says belong to a swimming unit
+    std::map<void*, float> g_depth;           // ... and, where set, how deep (bodies below the surface); else 100 when swimming
 
     void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
     int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
@@ -101,6 +102,12 @@ namespace
     }
     const char* ApiWorkingDirectory() { return ""; }   // the module then looks in the current folder
     int ApiInstanceSwimming(void* inst) { return g_swimming.count(inst) ? 1 : 0; }
+    float ApiInstanceWaterDepth(void* inst)
+    {
+        if (!g_swimming.count(inst)) return -1.0f;
+        auto it = g_depth.find(inst);
+        return it != g_depth.end() ? it->second : 100.0f;
+    }
 
     // "<dir>\<stem>_<digits>.m2" -> id
     int ApiDecode(const char* path, char* out, size_t cap, uint32_t* id)
@@ -199,6 +206,7 @@ namespace
         a.workingDirectory = ApiWorkingDirectory; a.vpathDecodeGlobalVirtualKey = ApiDecode;
         a.modelInfo = ApiModelInfo; a.findAttachedChild = ApiFindAttachedChild; a.itemDisplayInfo = ApiItemDisplayInfo;
         a.instanceSwimming = ApiInstanceSwimming;
+        a.instanceWaterDepth = ApiInstanceWaterDepth;
         return a;
     }
 
@@ -435,6 +443,18 @@ int main(int argc, char** argv)
     g_swimming.clear();
     Check(Play(*a, 6.0) > wet1001 + 0.25, "out of the water again: 1001 is back to its row");
     Check(Play(*b, 6.0) < -0.2, "...and 1002 hangs again");
+
+    std::printf("4d. swimming at the water level: the depth scales the effect\n");
+    g_swimming.insert(b);
+    g_depth[b] = 0.75f;                                        // a swimmer's feet: the water level
+    const double surf1002 = Play(*b, 6.0);
+    g_depth[b] = 1.4f;                                         // diving
+    const double dive1002 = Play(*b, 6.0);
+    std::printf("     1002 at the water level -> %.3f   diving -> %.3f\n", surf1002, dive1002);
+    Check(surf1002 < -0.2, "at the water level (0.75 bodies) nothing floats up: 1002 hangs");
+    Check(dive1002 > surf1002 + 0.25, "diving (1.4 bodies): 1002 lifts with its Buoyancy");
+    g_depth.clear();
+    g_swimming.clear();
 
     std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
     a->parent = wearer;

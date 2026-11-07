@@ -237,6 +237,11 @@ namespace wxl::api
             &wxl::api::outlinehost::BatchState,
             // unit state for the physics module (ModelAccess.cpp, UnitState.h)
             &wxl::api::model::InstanceSwimming,
+            &wxl::api::model::InstanceWaterDepth,
+            // quest turn-ins for the outline module (OutlineHost.cpp)
+            &wxl::api::outlinehost::QuestTurnIns,
+            // minimap tracking for the outline module (OutlineHost.cpp)
+            &wxl::api::outlinehost::TrackedTargets,
         };
     }
 

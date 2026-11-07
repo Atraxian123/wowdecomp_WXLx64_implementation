@@ -16,13 +16,14 @@ namespace wxl::unitstate
             const void* unit;
             const void* world;
             const void* mount;
+            float depthRatio;
         };
 
         std::mutex g_lock;
         std::vector<Entry> g_swimming;   // a few dozen at most: the units in water that the client is updating
     }
 
-    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming)
+    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming, float depthRatio)
     {
         if (!unit) return;
         std::lock_guard<std::mutex> g(g_lock);
@@ -32,8 +33,8 @@ namespace wxl::unitstate
             if (it != g_swimming.end()) g_swimming.erase(it);
             return;
         }
-        if (it != g_swimming.end()) { it->world = worldModel; it->mount = mountModel; }
-        else g_swimming.push_back(Entry{ unit, worldModel, mountModel });
+        if (it != g_swimming.end()) { it->world = worldModel; it->mount = mountModel; it->depthRatio = depthRatio; }
+        else g_swimming.push_back(Entry{ unit, worldModel, mountModel, depthRatio });
     }
 
     void ForgetUnit(const void* unit)
@@ -51,5 +52,14 @@ namespace wxl::unitstate
         for (const Entry& e : g_swimming)
             if (e.world == model || e.mount == model) return true;
         return false;
+    }
+
+    float WaterDepthRatio(const void* model)
+    {
+        if (!model) return -1.0f;
+        std::lock_guard<std::mutex> g(g_lock);
+        for (const Entry& e : g_swimming)
+            if (e.world == model || e.mount == model) return e.depthRatio;
+        return -1.0f;
     }
 }

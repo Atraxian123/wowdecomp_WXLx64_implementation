@@ -1,0 +1,105 @@
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -228,6 +228,7 @@
+             bool  trackedThroughWalls = false;
+             float trackedRange = 80.0f;     //   TrackedRange: yards from the player, 0 = every visible one
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
++            float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+             float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
+@@ -245,6 +246,7 @@
+               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+               trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange)
+         {
++            depthTol_ = o.depthTolerance;
+             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
+             std::memcpy(trackedCreatureColor_, o.trackedCreatureColor, sizeof(trackedCreatureColor_));
+             std::memcpy(trackedNpcColor_, o.trackedNpcColor, sizeof(trackedNpcColor_));
+@@ -310,6 +312,8 @@
+         Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
+         int                 trackedCount_ = 0;
+         bool                loggedNoDepth_ = false;
++        bool                loggedDepthInfo_ = false;
++        float               depthTol_ = 1.0f;
+         float               alphaRef_ = 0.5f;      // the engine's cutout reference for the batch being stamped
+         float               questColor_[4]{};
+         float               turnInColor_[4]{};
+@@ -382,6 +386,9 @@
+                 dev->SetRenderState(D3DRS_ZENABLE, 0);
+                 dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
+                 dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
++                dev->SetRenderState(D3DRS_STENCILENABLE, 0);
++                dev->SetRenderState(D3DRS_DEPTHBIAS, 0);
++                dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+                 dev->SetPixelShader(fillPS_);
+                 dev->SetPixelShaderConstantF(0, zero, 2); // c0 = silhouette color, c1 = alpha reference
+                 if (FAILED(dev->EndStateBlock(&stampSave_))) stampSave_ = nullptr;
+@@ -557,10 +564,38 @@
+         dev->SetRenderTarget(0, mask_.surface);
+         if (useDepth)
+         {
++            // The silhouette is the unit's own triangles drawn again after the engine drew them, so on its own
++            // pixels the depth is (nearly) equal to what the scene wrote, and it passes only if "equal" counts and
++            // the two draws agree to the last bit. Make that robust: follow the engine's depth convention (a
++            // reversed depth buffer would flip the test), accept equal, pull the redraw a hair toward the camera
++            // (a wall in front is still far nearer than that), and switch the engine's stencil test off, which
++            // could otherwise reject the second draw of a surface it has already marked.
++            DWORD engineZFunc = D3DCMP_LESSEQUAL;
++            dev->GetRenderState(D3DRS_ZFUNC, &engineZFunc);
++            const bool reversed = engineZFunc == D3DCMP_GREATER || engineZFunc == D3DCMP_GREATEREQUAL;
++            const float sign = reversed ? 1.0f : -1.0f;
++            const float bias = sign * 1.0e-5f * depthTol_, slope = sign * 1.0f * depthTol_;
++            DWORD biasBits = 0, slopeBits = 0;
++            std::memcpy(&biasBits, &bias, sizeof(biasBits));
++            std::memcpy(&slopeBits, &slope, sizeof(slopeBits));
++
+             dev->SetDepthStencilSurface(oldDS);
+             dev->SetRenderState(D3DRS_ZENABLE, 1);
+             dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
+-            dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
++            dev->SetRenderState(D3DRS_ZFUNC, reversed ? D3DCMP_GREATEREQUAL : D3DCMP_LESSEQUAL);
++            dev->SetRenderState(D3DRS_STENCILENABLE, 0);
++            dev->SetRenderState(D3DRS_DEPTHBIAS, biasBits);
++            dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, slopeBits);
++
++            if (!loggedDepthInfo_)
++            {
++                loggedDepthInfo_ = true;
++                D3DSURFACE_DESC d{};
++                oldDS->GetDesc(&d);
++                wxl::LogCat("OUTLINE", "depth test on: scene depth %ux%u format %u, mask %ux%u, engine ZFUNC %lu (%s), bias %.2g slope %.2g",
++                            d.Width, d.Height, static_cast<unsigned>(d.Format), mask_.width, mask_.height,
++                            static_cast<unsigned long>(engineZFunc), reversed ? "reversed" : "standard", bias, slope);
++            }
+         }
+         else
+         {
+@@ -810,6 +845,8 @@
+         IniColor("TrackedCreatureColor", o.trackedCreatureColor, o.trackedCreatureColor);
+         IniColor("TrackedNpcColor",      o.trackedNpcColor,      o.trackedNpcColor);
+         o.trackedThroughWalls = IniInt("Outline", "TrackedThroughWalls", o.questThroughWalls ? 1 : 0) != 0;
++        o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
++        if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
+         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
+         if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
+ 
+diff --git a/Engine/Source/WXLModules/Outline/README.md b/Engine/Source/WXLModules/Outline/README.md
+--- a/Engine/Source/WXLModules/Outline/README.md
++++ b/Engine/Source/WXLModules/Outline/README.md
+@@ -53,6 +53,14 @@
+ them show through walls, and `HideBehindObjects` applies as for the others. The trivial-quests entry of the tracking
+ menu changes quest icons only, so it has nothing to outline.
+ 
++Hiding behind walls (`QuestThroughWalls=0`, `TrackedThroughWalls=0`, `HideBehindObjects=1`) tests the outline against the
++scene's depth buffer. The silhouette is the unit's own triangles drawn again right after the engine drew them, so on its
++own pixels the depth only just matches; the module therefore follows the engine's depth convention, accepts equal depth,
++pulls the redraw a hair toward the camera and ignores the engine's stencil test for that draw. `DepthTolerance=1` scales
++that hair: raise it (2, 4, ...) if outlines are still missing with the walls switched on although nothing is in the
++way, lower it (0.25, 0) if outlines show through thin things that are right in front of the unit. The first depth-tested
++draw writes one `depth test on: ...` line to WXL.log with the depth buffer and the engine's depth function.
++
+ More keys:
+ 
+ ```ini

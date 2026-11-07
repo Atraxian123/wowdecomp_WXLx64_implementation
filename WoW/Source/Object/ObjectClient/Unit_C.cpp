@@ -20643,7 +20643,12 @@ void CGUnit_C::UpdateSwimmingStatus(uint32_t time, int32_t a3) {
 
     // [UnitState] tell the WXL modules whether this unit is in the water (the physics module scales its
     // constants for swimming units). The client swim bit is the same one that picks the swim animations.
-    wxl::unitstate::NoteUnit(this, this->m_worldModel, this->m_mountModel, (this->m_clientFlags & 0x200000) != 0);
+    // The depth is how far the feet are below the surface in bodies: the client starts a swim at 0.75, so a unit
+    // that swims at the water level reads about 0.75 and a diver more. Without a liquid under it (the swim
+    // movement flag alone) it counts as deep.
+    const float collisionHeight = this->m_movementData.m_collisionHeight;
+    const float depthRatio = (inLiquid && collisionHeight > 0.01f) ? depth / collisionHeight : 100.0f;
+    wxl::unitstate::NoteUnit(this, this->m_worldModel, this->m_mountModel, (this->m_clientFlags & 0x200000) != 0, depthRatio);
 }
 
 // VERIFY: c709791a manual

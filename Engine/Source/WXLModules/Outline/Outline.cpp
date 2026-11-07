@@ -220,19 +220,38 @@ namespace wxl::outline
             bool  mouseTarget = true;       // [Outline] Enabled: the reaction-colored mouseover / target outline
             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
             bool  questThroughWalls = false;
+            bool  questTurnIn = false;      // [Outline] QuestTurnIn: also outline whoever waits for a completed quest
+            bool  tracked = false;          // [Outline] Tracked: outline what the minimap tracks (behind the quest outlines)
+            bool  trackedObjects = true;    //   TrackedObjects: resource nodes, mailboxes
+            bool  trackedCreatures = true;  //   TrackedCreatures: the creatures the tracking spells show
+            bool  trackedNpcs = true;       //   TrackedNpcs: the NPCs of the tracking menu (vendors, trainers, ...)
+            bool  trackedThroughWalls = false;
+            float trackedRange = 80.0f;     //   TrackedRange: yards from the player, 0 = every visible one
             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+            float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
             float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
             float friendlyColor[4] = { 0.0f, 1.0f,  0.0f, 1.0f };
             float questColor[4]    = { 0.0f, 0.78f, 1.0f, 1.0f };
+            float turnInColor[4]   = { 1.0f, 0.82f, 0.0f, 1.0f };   // the gold of the "?" over a quest giver
+            float trackedObjectColor[4]   = { 1.0f, 0.63f, 0.25f, 1.0f };  // amber: nodes, mailboxes
+            float trackedCreatureColor[4] = { 1.0f, 0.25f, 1.0f,  1.0f };  // magenta: tracked creatures
+            float trackedNpcColor[4]      = { 1.0f, 1.0f,  1.0f,  1.0f };  // white: tracked NPC services
         };
 
         explicit Outline(const Options& o)
             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
-              questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+              questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
+              tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange)
         {
+            depthTol_ = o.depthTolerance;
+            std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
+            std::memcpy(trackedCreatureColor_, o.trackedCreatureColor, sizeof(trackedCreatureColor_));
+            std::memcpy(trackedNpcColor_, o.trackedNpcColor, sizeof(trackedNpcColor_));
             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
+            std::memcpy(turnInColor_, o.turnInColor, sizeof(turnInColor_));
             std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
             std::memcpy(neutralColor_, o.neutralColor, sizeof(neutralColor_));
             std::memcpy(friendlyColor_, o.friendlyColor, sizeof(friendlyColor_));
@@ -243,7 +262,8 @@ namespace wxl::outline
 
     private:
         static constexpr int kMaxQuestTargets = 32;
-        static constexpr int kMaxTargets = 2 + kMaxQuestTargets;
+        static constexpr int kMaxTrackedTargets = 48;
+        static constexpr int kMaxTargets = 2 + 2 * kMaxQuestTargets + kMaxTrackedTargets;   // mouseover + target, objectives, turn-ins, tracked
         static constexpr unsigned long long kQuestRefreshMs = 250;
         // depthTest: the scene hides the outline where it hides the unit. Otherwise the outline shows through.
         struct Tgt { const void* model; float color[4]; bool depthTest; };
@@ -281,16 +301,29 @@ namespace wxl::outline
         bool                debug_;                // draw the raw mask in the top-left corner
         bool                mouseTarget_;
         bool                quest_;
+        bool                questTurnIn_;
         bool                questThroughWalls_;
         bool                hideBehind_;
+        bool                tracked_;
+        bool                trackedObjects_, trackedCreatures_, trackedNpcs_;
+        bool                trackedThroughWalls_;
+        float               trackedRange_;
+        float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
+        Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
+        int                 trackedCount_ = 0;
         bool                loggedNoDepth_ = false;
+        bool                loggedDepthInfo_ = false;
+        float               depthTol_ = 1.0f;
         float               alphaRef_ = 0.5f;      // the engine's cutout reference for the batch being stamped
         float               questColor_[4]{};
+        float               turnInColor_[4]{};
         float               hostileColor_[4]{};
         float               neutralColor_[4]{};
         float               friendlyColor_[4]{};
         Tgt                 questTargets_[kMaxQuestTargets]{}; // refreshed every kQuestRefreshMs, appended every frame
         int                 questCount_ = 0;
+        Tgt                 turnInTargets_[kMaxQuestTargets]{}; // the same, for the NPCs that take a completed quest
+        int                 turnInCount_ = 0;
         unsigned long long  lastQuestRefresh_ = 0;
         IDirect3DPixelShader9* debugPS_ = nullptr;
     };
@@ -353,6 +386,9 @@ namespace wxl::outline
                 dev->SetRenderState(D3DRS_ZENABLE, 0);
                 dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
                 dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+                dev->SetRenderState(D3DRS_STENCILENABLE, 0);
+                dev->SetRenderState(D3DRS_DEPTHBIAS, 0);
+                dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
                 dev->SetPixelShader(fillPS_);
                 dev->SetPixelShaderConstantF(0, zero, 2); // c0 = silhouette color, c1 = alpha reference
                 if (FAILED(dev->EndStateBlock(&stampSave_))) stampSave_ = nullptr;
@@ -396,7 +432,7 @@ namespace wxl::outline
                 ++count_;
             }
         }
-        if (quest_) AppendQuestTargets();
+        if (quest_ || questTurnIn_ || tracked_) AppendQuestTargets();
     }
 
     // Rebuilds the quest target list from the client (the quest log, the quest cache and the visible objects). Run on
@@ -404,17 +440,58 @@ namespace wxl::outline
     void Outline::RefreshQuestTargets()
     {
         const void* models[kMaxQuestTargets] = {};
-        const uint32_t n = wxl::module::Api()->outlineQuestTargets(models, kMaxQuestTargets);
 
         // Pointers only: they are compared against the model being drawn, never dereferenced, so one that outlives
         // its object by a refresh interval is harmless.
         questCount_ = 0;
-        for (uint32_t i = 0; i < n && questCount_ < kMaxQuestTargets; ++i)
+        if (quest_)
         {
-            Tgt& t = questTargets_[questCount_++];
-            t.model = models[i];
-            std::memcpy(t.color, questColor_, sizeof(t.color));
-            t.depthTest = hideBehind_ || !questThroughWalls_;
+            const uint32_t n = wxl::module::Api()->outlineQuestTargets(models, kMaxQuestTargets);
+            for (uint32_t i = 0; i < n && questCount_ < kMaxQuestTargets; ++i)
+            {
+                Tgt& t = questTargets_[questCount_++];
+                t.model = models[i];
+                std::memcpy(t.color, questColor_, sizeof(t.color));
+                t.depthTest = hideBehind_ || !questThroughWalls_;
+            }
+        }
+
+        // Who waits for a completed quest (the "?" over an NPC or object), in its own color.
+        turnInCount_ = 0;
+        if (questTurnIn_)
+        {
+            const uint32_t n = wxl::module::Api()->outlineQuestTurnIns(models, kMaxQuestTargets);
+            for (uint32_t i = 0; i < n && turnInCount_ < kMaxQuestTargets; ++i)
+            {
+                Tgt& t = turnInTargets_[turnInCount_++];
+                t.model = models[i];
+                std::memcpy(t.color, turnInColor_, sizeof(t.color));
+                t.depthTest = hideBehind_ || !questThroughWalls_;
+            }
+        }
+
+        // What the minimap tracks (nodes, tracked creatures, the tracking menu's NPCs), by the client's own rules.
+        trackedCount_ = 0;
+        if (tracked_)
+        {
+            WxlOutlineTracked found[kMaxTrackedTargets] = {};
+            const uint32_t n = wxl::module::Api()->outlineTrackedTargets(found, kMaxTrackedTargets, trackedRange_);
+            for (uint32_t i = 0; i < n && trackedCount_ < kMaxTrackedTargets; ++i)
+            {
+                const float* color = nullptr;
+                switch (found[i].kind)
+                {
+                case WXL_TRACKED_OBJECT:   if (trackedObjects_)   color = trackedObjectColor_;   break;
+                case WXL_TRACKED_CREATURE: if (trackedCreatures_) color = trackedCreatureColor_; break;
+                case WXL_TRACKED_NPC:      if (trackedNpcs_)      color = trackedNpcColor_;      break;
+                default: break;
+                }
+                if (!color) continue;
+                Tgt& t = trackedTargets_[trackedCount_++];
+                t.model = found[i].model;
+                std::memcpy(t.color, color, sizeof(t.color));
+                t.depthTest = hideBehind_ || !trackedThroughWalls_;
+            }
         }
     }
 
@@ -433,6 +510,25 @@ namespace wxl::outline
             for (int i = 0; i < count_; ++i)
                 if (targets_[i].model == questTargets_[q].model) { dup = true; break; } // the mouseover / target color wins
             if (!dup) targets_[count_++] = questTargets_[q];
+        }
+
+        // Turn-in NPCs last: the mouseover / target color and the objective color win over theirs.
+        for (int q = 0; q < turnInCount_ && count_ < kMaxTargets; ++q)
+        {
+            bool dup = false;
+            for (int i = 0; i < count_; ++i)
+                if (targets_[i].model == turnInTargets_[q].model) { dup = true; break; }
+            if (!dup) targets_[count_++] = turnInTargets_[q];
+        }
+
+        // Tracked things come last of all: every other outline wins over them, and they are the first dropped
+        // when the list is full.
+        for (int q = 0; q < trackedCount_ && count_ < kMaxTargets; ++q)
+        {
+            bool dup = false;
+            for (int i = 0; i < count_; ++i)
+                if (targets_[i].model == trackedTargets_[q].model) { dup = true; break; }
+            if (!dup) targets_[count_++] = trackedTargets_[q];
         }
     }
 
@@ -468,10 +564,38 @@ namespace wxl::outline
         dev->SetRenderTarget(0, mask_.surface);
         if (useDepth)
         {
+            // The silhouette is the unit's own triangles drawn again after the engine drew them, so on its own
+            // pixels the depth is (nearly) equal to what the scene wrote, and it passes only if "equal" counts and
+            // the two draws agree to the last bit. Make that robust: follow the engine's depth convention (a
+            // reversed depth buffer would flip the test), accept equal, pull the redraw a hair toward the camera
+            // (a wall in front is still far nearer than that), and switch the engine's stencil test off, which
+            // could otherwise reject the second draw of a surface it has already marked.
+            DWORD engineZFunc = D3DCMP_LESSEQUAL;
+            dev->GetRenderState(D3DRS_ZFUNC, &engineZFunc);
+            const bool reversed = engineZFunc == D3DCMP_GREATER || engineZFunc == D3DCMP_GREATEREQUAL;
+            const float sign = reversed ? 1.0f : -1.0f;
+            const float bias = sign * 1.0e-5f * depthTol_, slope = sign * 1.0f * depthTol_;
+            DWORD biasBits = 0, slopeBits = 0;
+            std::memcpy(&biasBits, &bias, sizeof(biasBits));
+            std::memcpy(&slopeBits, &slope, sizeof(slopeBits));
+
             dev->SetDepthStencilSurface(oldDS);
             dev->SetRenderState(D3DRS_ZENABLE, 1);
             dev->SetRenderState(D3DRS_ZWRITEENABLE, 0);
-            dev->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+            dev->SetRenderState(D3DRS_ZFUNC, reversed ? D3DCMP_GREATEREQUAL : D3DCMP_LESSEQUAL);
+            dev->SetRenderState(D3DRS_STENCILENABLE, 0);
+            dev->SetRenderState(D3DRS_DEPTHBIAS, biasBits);
+            dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, slopeBits);
+
+            if (!loggedDepthInfo_)
+            {
+                loggedDepthInfo_ = true;
+                D3DSURFACE_DESC d{};
+                oldDS->GetDesc(&d);
+                wxl::LogCat("OUTLINE", "depth test on: scene depth %ux%u format %u, mask %ux%u, engine ZFUNC %lu (%s), bias %.2g slope %.2g",
+                            d.Width, d.Height, static_cast<unsigned>(d.Format), mask_.width, mask_.height,
+                            static_cast<unsigned long>(engineZFunc), reversed ? "reversed" : "standard", bias, slope);
+            }
         }
         else
         {
@@ -682,9 +806,25 @@ namespace wxl::outline
         Outline::Options o;
         o.mouseTarget = IniInt("Outline", "Enabled", 0) != 0;
         o.quest       = IniInt("Outline", "Quest", 0) != 0;
-        if (!o.mouseTarget && !o.quest)
+        o.questTurnIn = IniInt("Outline", "QuestTurnIn", 0) != 0;
+        if (o.questTurnIn && !WXL_API_HAS(wxl::module::Api(), outlineQuestTurnIns))
         {
-            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled and Quest are 0 or absent)");
+            wxl::LogCat("OUTLINE", "[Outline] QuestTurnIn=1, but this client does not offer the turn-in list: ignored");
+            o.questTurnIn = false;
+        }
+        o.tracked          = IniInt("Outline", "Tracked", 0) != 0;
+        o.trackedObjects   = IniInt("Outline", "TrackedObjects", 1) != 0;
+        o.trackedCreatures = IniInt("Outline", "TrackedCreatures", 1) != 0;
+        o.trackedNpcs      = IniInt("Outline", "TrackedNpcs", 1) != 0;
+        if (o.tracked && !WXL_API_HAS(wxl::module::Api(), outlineTrackedTargets))
+        {
+            wxl::LogCat("OUTLINE", "[Outline] Tracked=1, but this client does not offer the tracking list: ignored");
+            o.tracked = false;
+        }
+        if (o.tracked && !o.trackedObjects && !o.trackedCreatures && !o.trackedNpcs) o.tracked = false;
+        if (!o.mouseTarget && !o.quest && !o.questTurnIn && !o.tracked)
+        {
+            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest, QuestTurnIn and Tracked are 0 or absent)");
             return false;
         }
 
@@ -700,10 +840,20 @@ namespace wxl::outline
         IniColor("NeutralColor",  o.neutralColor,  o.neutralColor);
         IniColor("FriendlyColor", o.friendlyColor, o.friendlyColor);
         IniColor("QuestColor",    o.questColor,    o.questColor);
+        IniColor("QuestTurnInColor", o.turnInColor, o.turnInColor);
+        IniColor("TrackedObjectColor",   o.trackedObjectColor,   o.trackedObjectColor);
+        IniColor("TrackedCreatureColor", o.trackedCreatureColor, o.trackedCreatureColor);
+        IniColor("TrackedNpcColor",      o.trackedNpcColor,      o.trackedNpcColor);
+        o.trackedThroughWalls = IniInt("Outline", "TrackedThroughWalls", o.questThroughWalls ? 1 : 0) != 0;
+        o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
+        if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
+        o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
+        if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
 
         static Outline s_outline(o);
-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s (spread %.2f, intensity %.2f)",
-                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.spread, o.intensity);
+        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s (spread %.2f, intensity %.2f)",
+                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
+                    o.tracked ? "on" : "off", o.spread, o.intensity);
         return true;
     }
 }

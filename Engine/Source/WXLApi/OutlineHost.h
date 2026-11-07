@@ -12,5 +12,7 @@ namespace wxl::api::outlinehost
 {
     uint32_t Units(WxlOutlineUnit* out, uint32_t max);
     uint32_t QuestTargets(const void** models, uint32_t max);
+    uint32_t QuestTurnIns(const void** models, uint32_t max);
+    uint32_t TrackedTargets(WxlOutlineTracked* out, uint32_t max, float maxYards);
     int      BatchState(float* alphaRef);
 }

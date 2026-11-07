@@ -1,0 +1,281 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -448,6 +448,13 @@
+        that is swimming: the client's own swim state, the one that picks the swim animations. 0 otherwise, also
+        for an instance that is not a unit's. Cheap, thread-safe, never touches the map. */
+     int (*instanceSwimming)(void* instance);
++    /* ---- added after instanceSwimming: check WXL_API_HAS(api, instanceWaterDepth) once ---- */
++    /* How deep in the water the swimming unit is that `instance` (or a model it is attached to) belongs to:
++       (the liquid surface height - the unit's feet height) / the unit's collision height. The client starts a
++       swim at 0.75 (feet 3/4 of a body below the surface: it swims with its head out of the water), the head is
++       under at about 1.0, and a deep dive is above that. Returns -1 when the unit is not swimming or the
++       instance is not a unit's. Cheap, thread-safe, never touches the map. */
++    float (*instanceWaterDepth)(void* instance);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXL/UnitState.h b/Engine/Source/WXL/UnitState.h
+--- a/Engine/Source/WXL/UnitState.h
++++ b/Engine/Source/WXL/UnitState.h
+@@ -15,11 +15,16 @@
+ {
+     /// Called by the unit every time its swimming status is evaluated. `unit` is only an identity (never
+     /// dereferenced); the two model pointers are the unit's world model and mount model (either may be null).
+-    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming);
++    /// `depthRatio` is (liquid surface - feet height) / collision height; it is only read for a swimming unit.
++    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming, float depthRatio = 0.0f);
+ 
+     /// The unit is gone (destructor): forget it.
+     void ForgetUnit(const void* unit);
+ 
+     /// True when `model` is the world model or the mount model of a unit that is swimming. Thread-safe.
+     bool IsSwimming(const void* model);
++
++    /// The depth ratio of the swimming unit whose world model or mount model is `model` (see NoteUnit), or -1
++    /// when there is none. Thread-safe.
++    float WaterDepthRatio(const void* model);
+ }
+diff --git a/Engine/Source/WXL/UnitState.cpp b/Engine/Source/WXL/UnitState.cpp
+--- a/Engine/Source/WXL/UnitState.cpp
++++ b/Engine/Source/WXL/UnitState.cpp
+@@ -16,13 +16,14 @@
+             const void* unit;
+             const void* world;
+             const void* mount;
++            float depthRatio;
+         };
+ 
+         std::mutex g_lock;
+         std::vector<Entry> g_swimming;   // a few dozen at most: the units in water that the client is updating
+     }
+ 
+-    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming)
++    void NoteUnit(const void* unit, const void* worldModel, const void* mountModel, bool swimming, float depthRatio)
+     {
+         if (!unit) return;
+         std::lock_guard<std::mutex> g(g_lock);
+@@ -32,8 +33,8 @@
+             if (it != g_swimming.end()) g_swimming.erase(it);
+             return;
+         }
+-        if (it != g_swimming.end()) { it->world = worldModel; it->mount = mountModel; }
+-        else g_swimming.push_back(Entry{ unit, worldModel, mountModel });
++        if (it != g_swimming.end()) { it->world = worldModel; it->mount = mountModel; it->depthRatio = depthRatio; }
++        else g_swimming.push_back(Entry{ unit, worldModel, mountModel, depthRatio });
+     }
+ 
+     void ForgetUnit(const void* unit)
+@@ -52,4 +53,13 @@
+             if (e.world == model || e.mount == model) return true;
+         return false;
+     }
++
++    float WaterDepthRatio(const void* model)
++    {
++        if (!model) return -1.0f;
++        std::lock_guard<std::mutex> g(g_lock);
++        for (const Entry& e : g_swimming)
++            if (e.world == model || e.mount == model) return e.depthRatio;
++        return -1.0f;
++    }
+ }
+diff --git a/Engine/Source/WXLApi/ModelAccess.h b/Engine/Source/WXLApi/ModelAccess.h
+--- a/Engine/Source/WXLApi/ModelAccess.h
++++ b/Engine/Source/WXLApi/ModelAccess.h
+@@ -14,4 +14,5 @@
+     int ReadBones(void* instance, uint32_t count, float* palette, int16_t* parents, float* pivots);
+     int WritePalette(void* instance, const float* palette, uint32_t count);
+     int InstanceSwimming(void* instance);
++    float InstanceWaterDepth(void* instance);
+ }
+diff --git a/Engine/Source/WXLApi/ModelAccess.cpp b/Engine/Source/WXLApi/ModelAccess.cpp
+--- a/Engine/Source/WXLApi/ModelAccess.cpp
++++ b/Engine/Source/WXLApi/ModelAccess.cpp
+@@ -138,4 +138,19 @@
+         }
+         return 0;
+     }
++
++    float InstanceWaterDepth(void* instance)
++    {
++        // Same walk as InstanceSwimming: the instance, then the models it hangs on.
++        const CM2Model* m = static_cast<const CM2Model*>(instance);
++        for (int hop = 0; m && hop < 8; ++hop)
++        {
++            const float depth = wxl::unitstate::WaterDepthRatio(m);
++            if (depth >= 0.0f) return depth;
++            const CM2Model* parent = nullptr;
++            if (!SafeCopy(&parent, &m->m_attachParent, sizeof(parent))) return -1.0f;
++            m = parent;
++        }
++        return -1.0f;
++    }
+ }
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -237,6 +237,7 @@
+             &wxl::api::outlinehost::BatchState,
+             // unit state for the physics module (ModelAccess.cpp, UnitState.h)
+             &wxl::api::model::InstanceSwimming,
++            &wxl::api::model::InstanceWaterDepth,
+         };
+     }
+ 
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -20643,7 +20643,12 @@
+ 
+     // [UnitState] tell the WXL modules whether this unit is in the water (the physics module scales its
+     // constants for swimming units). The client swim bit is the same one that picks the swim animations.
+-    wxl::unitstate::NoteUnit(this, this->m_worldModel, this->m_mountModel, (this->m_clientFlags & 0x200000) != 0);
++    // The depth is how far the feet are below the surface in bodies: the client starts a swim at 0.75, so a unit
++    // that swims at the water level reads about 0.75 and a diver more. Without a liquid under it (the swim
++    // movement flag alone) it counts as deep.
++    const float collisionHeight = this->m_movementData.m_collisionHeight;
++    const float depthRatio = (inLiquid && collisionHeight > 0.01f) ? depth / collisionHeight : 100.0f;
++    wxl::unitstate::NoteUnit(this, this->m_worldModel, this->m_mountModel, (this->m_clientFlags & 0x200000) != 0, depthRatio);
+ }
+ 
+ // VERIFY: c709791a manual
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+@@ -186,6 +186,9 @@
+         bool  g_uwActive = false;        // Enabled=1 and the water changes at least one multiplier (see UpdateUnderwaterActive)
+         float g_uwBlendSec = 0.4f;       // BlendSeconds
+         bool  g_hasSwimApi = false;      // the core offers WxlApi::instanceSwimming
++        bool  g_hasDepthApi = false;     // ... and WxlApi::instanceWaterDepth
++        float g_uwSurfaceDepth = 0.75f;  // SurfaceDepth: the swim depth ratio at which the water level is reached: 0 underwater effect
++        float g_uwFullDepth = 1.0f;      // FullDepth: the ratio from which the whole underwater effect applies
+         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
+         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
+         uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
+@@ -548,6 +551,19 @@
+                 if (tuning::ParseMultiplier(text, &v)) g_uwBlendSec = std::max(0.0f, std::min(v, 10.0f));
+                 else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: BlendSeconds='%s' is not a number; ignored, stays %.2f", text, g_uwBlendSec);
+             }
++            auto readDepth = [&](const char* key, float& out, float def) {
++                out = def;
++                char t[64] = {};
++                if (!ReadUnderwaterKey(key, t, sizeof(t)) || !t[0]) return;
++                float v = 0;
++                if (tuning::ParseMultiplier(t, &v) && std::isfinite(v)) out = std::max(0.0f, std::min(v, 10.0f));
++                else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: %s='%s' is not a number; ignored, stays %.2f", key, t, def);
++            };
++            readDepth("SurfaceDepth", g_uwSurfaceDepth, 0.75f);
++            readDepth("FullDepth", g_uwFullDepth, 1.0f);
++            if (g_uwFullDepth < g_uwSurfaceDepth) g_uwFullDepth = g_uwSurfaceDepth;
++            wxl::LogCat("PHYS", "physics: underwater depth: effect starts at %.2f bodies below the surface (the water level of a swimmer), full from %.2f%s",
++                        g_uwSurfaceDepth, g_uwFullDepth, g_hasDepthApi ? "" : " (this client does not report the depth: swimming = full)");
+             g_uwOn = host::IniGetBool("Physics.Underwater", "Enabled", true);
+             if (g_underwater.gravity != 1.0f || g_underwater.buoyancy != 1.0f)
+                 wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: GravityScale and Buoyancy are not used there; underwater the "
+@@ -577,6 +593,7 @@
+                     g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
+         g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
+         g_hasSwimApi = WXL_API_HAS(api, instanceSwimming) && api->instanceSwimming != nullptr;
++        g_hasDepthApi = WXL_API_HAS(api, instanceWaterDepth) && api->instanceWaterDepth != nullptr;
+         LoadTuning();
+         LoadOverrides();
+         if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers and %s are re-read whenever they are saved", kOverrideName);
+@@ -735,8 +752,20 @@
+ 
+         // Underwater: is this instance, or the unit it hangs on, swimming? (the core answers from the unit's own
+         // swim state, so this is a flag read, not a world query)
++        // With the depth the unit reports, the effect grows from the water level (a swimmer's feet SurfaceDepth
++        // bodies below the surface: nothing floats in the air there) to full at FullDepth (diving).
+         float uwTarget = 0;
+-        if (g_uwActive && g_hasSwimApi) uwTarget = api->instanceSwimming(instance) ? 1.0f : 0.0f;
++        if (g_uwActive && g_hasDepthApi)
++        {
++            const float depth = api->instanceWaterDepth(instance);
++            if (depth >= 0.0f)
++            {
++                const float span = g_uwFullDepth - g_uwSurfaceDepth;
++                uwTarget = span > 0.0001f ? (depth - g_uwSurfaceDepth) / span : (depth > g_uwSurfaceDepth ? 1.0f : 0.0f);
++                uwTarget = std::max(0.0f, std::min(uwTarget, 1.0f));
++            }
++        }
++        else if (g_uwActive && g_hasSwimApi) uwTarget = api->instanceSwimming(instance) ? 1.0f : 0.0f;
+ 
+         std::vector<float> before(size_t(boneCount) * 16);
+         std::vector<int16_t> parents(boneCount);
+diff --git a/Engine/Source/WXLModules/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+--- a/Engine/Source/WXLModules/Physics/README.md
++++ b/Engine/Source/WXLModules/Physics/README.md
+@@ -238,6 +238,21 @@
+ * **Gravity is a multiplier on each body's own file value**, so a body whose `.phy2` gravity is 0 stays at 0 whatever
+   the scale: a negative `Buoyancy` lifts only the bodies that have gravity.
+ * **Upgrading:** an old `[Physics.Underwater] GravityScale=-0.2` is no longer used. Put `Buoyancy=-0.2` in `[Physics]`.
++* **Swimming at the water level.** The client calls a unit "swimming" as soon as its feet are 0.75 body heights under
++  the surface, so a swimmer at the water level is swimming with its head out. The core reports how deep the unit is
++  (`WxlApi::instanceWaterDepth`: surface minus feet, divided by the unit's collision height) and the underwater effect
++  grows with it instead of switching on at once:
++
++  ```ini
++  [Physics.Underwater]
++  SurfaceDepth=0.75    ; depth (in bodies) of a swimmer at the water level: no underwater effect there, parts fall normally
++  FullDepth=1.0        ; from this depth the whole effect applies (about: the head is under)
++  ```
++
++  Between the two, gravity, damping and the other multipliers are blended in proportion (still eased over
++  `BlendSeconds`). `FullDepth` equal to `SurfaceDepth` makes it a step. Raise `SurfaceDepth` if parts still lift
++  while you float at the surface, lower it to have the effect start sooner. A client that does not report the depth
++  falls back to swimming = full effect.
+ * **Needs the core's `instanceSwimming` call** (`WxlApi`, checked at start-up). With an older core the section is
+   read and logged but not applied, and the log says so.
+ * Log lines: `physics: underwater multipliers (on top of the above): ...` at start-up and on every re-read, and
+diff --git a/Tools/WxlModuleTest/physics_override_host_test.cpp b/Tools/WxlModuleTest/physics_override_host_test.cpp
+--- a/Tools/WxlModuleTest/physics_override_host_test.cpp
++++ b/Tools/WxlModuleTest/physics_override_host_test.cpp
+@@ -54,6 +54,7 @@
+     std::vector<Sub> g_subs;
+     std::set<std::string> g_virtual;          // paths the fake core says were minted by VirtualPath
+     std::set<void*> g_swimming;               // instances the fake core says belong to a swimming unit
++    std::map<void*, float> g_depth;           // ... and, where set, how deep (bodies below the surface); else 100 when swimming
+ 
+     void ApiLog(const char* cat, const char* msg) { g_log.push_back(std::string(cat) + ": " + msg); }
+     int  ApiThrottle(const char*, uint32_t, uint32_t) { return 1; }
+@@ -101,6 +102,12 @@
+     }
+     const char* ApiWorkingDirectory() { return ""; }   // the module then looks in the current folder
+     int ApiInstanceSwimming(void* inst) { return g_swimming.count(inst) ? 1 : 0; }
++    float ApiInstanceWaterDepth(void* inst)
++    {
++        if (!g_swimming.count(inst)) return -1.0f;
++        auto it = g_depth.find(inst);
++        return it != g_depth.end() ? it->second : 100.0f;
++    }
+ 
+     // "<dir>\<stem>_<digits>.m2" -> id
+     int ApiDecode(const char* path, char* out, size_t cap, uint32_t* id)
+@@ -199,6 +206,7 @@
+         a.workingDirectory = ApiWorkingDirectory; a.vpathDecodeGlobalVirtualKey = ApiDecode;
+         a.modelInfo = ApiModelInfo; a.findAttachedChild = ApiFindAttachedChild; a.itemDisplayInfo = ApiItemDisplayInfo;
+         a.instanceSwimming = ApiInstanceSwimming;
++        a.instanceWaterDepth = ApiInstanceWaterDepth;
+         return a;
+     }
+ 
+@@ -436,6 +444,18 @@
+     Check(Play(*a, 6.0) > wet1001 + 0.25, "out of the water again: 1001 is back to its row");
+     Check(Play(*b, 6.0) < -0.2, "...and 1002 hangs again");
+ 
++    std::printf("4d. swimming at the water level: the depth scales the effect\n");
++    g_swimming.insert(b);
++    g_depth[b] = 0.75f;                                        // a swimmer's feet: the water level
++    const double surf1002 = Play(*b, 6.0);
++    g_depth[b] = 1.4f;                                         // diving
++    const double dive1002 = Play(*b, 6.0);
++    std::printf("     1002 at the water level -> %.3f   diving -> %.3f\n", surf1002, dive1002);
++    Check(surf1002 < -0.2, "at the water level (0.75 bodies) nothing floats up: 1002 hangs");
++    Check(dive1002 > surf1002 + 0.25, "diving (1.4 bodies): 1002 lifts with its Buoyancy");
++    g_depth.clear();
++    g_swimming.clear();
++
+     std::printf("5. the csv is saved while the game runs (WatchIni=1)\n");
+     a->parent = wearer;
+     FireHand(wearer, 15, 1, 1001, false);

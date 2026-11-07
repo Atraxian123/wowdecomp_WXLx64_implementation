@@ -186,6 +186,9 @@ namespace wxl::equip::physics
         bool  g_uwActive = false;        // Enabled=1 and the water changes at least one multiplier (see UpdateUnderwaterActive)
         float g_uwBlendSec = 0.4f;       // BlendSeconds
         bool  g_hasSwimApi = false;      // the core offers WxlApi::instanceSwimming
+        bool  g_hasDepthApi = false;     // ... and WxlApi::instanceWaterDepth
+        float g_uwSurfaceDepth = 0.75f;  // SurfaceDepth: the swim depth ratio at which the water level is reached: 0 underwater effect
+        float g_uwFullDepth = 1.0f;      // FullDepth: the ratio from which the whole underwater effect applies
         bool g_watchIni = false;       // [Physics] WatchIni: re-read the multipliers when the ini is saved
         uint64_t g_iniStamp = 0;       // the ini's last-write time when the multipliers were last read
         uint32_t g_lastIniPoll = 0;    // NowMs of the last look at it
@@ -548,6 +551,19 @@ namespace wxl::equip::physics
                 if (tuning::ParseMultiplier(text, &v)) g_uwBlendSec = std::max(0.0f, std::min(v, 10.0f));
                 else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: BlendSeconds='%s' is not a number; ignored, stays %.2f", text, g_uwBlendSec);
             }
+            auto readDepth = [&](const char* key, float& out, float def) {
+                out = def;
+                char t[64] = {};
+                if (!ReadUnderwaterKey(key, t, sizeof(t)) || !t[0]) return;
+                float v = 0;
+                if (tuning::ParseMultiplier(t, &v) && std::isfinite(v)) out = std::max(0.0f, std::min(v, 10.0f));
+                else wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: %s='%s' is not a number; ignored, stays %.2f", key, t, def);
+            };
+            readDepth("SurfaceDepth", g_uwSurfaceDepth, 0.75f);
+            readDepth("FullDepth", g_uwFullDepth, 1.0f);
+            if (g_uwFullDepth < g_uwSurfaceDepth) g_uwFullDepth = g_uwSurfaceDepth;
+            wxl::LogCat("PHYS", "physics: underwater depth: effect starts at %.2f bodies below the surface (the water level of a swimmer), full from %.2f%s",
+                        g_uwSurfaceDepth, g_uwFullDepth, g_hasDepthApi ? "" : " (this client does not report the depth: swimming = full)");
             g_uwOn = host::IniGetBool("Physics.Underwater", "Enabled", true);
             if (g_underwater.gravity != 1.0f || g_underwater.buoyancy != 1.0f)
                 wxl::LogCat("PHYS", "physics: ini [Physics.Underwater]: GravityScale and Buoyancy are not used there; underwater the "
@@ -577,6 +593,7 @@ namespace wxl::equip::physics
                     g_carryAnchors ? 1 : 0, g_guardCfg.enabled ? 1 : 0, g_guardCfg.reach * 100.0f, g_guardCfg.teleportYards);
         g_watchIni = host::IniGetBool("Physics", "WatchIni", false);
         g_hasSwimApi = WXL_API_HAS(api, instanceSwimming) && api->instanceSwimming != nullptr;
+        g_hasDepthApi = WXL_API_HAS(api, instanceWaterDepth) && api->instanceWaterDepth != nullptr;
         LoadTuning();
         LoadOverrides();
         if (g_watchIni) wxl::LogCat("PHYS", "physics: WatchIni=1, the multipliers and %s are re-read whenever they are saved", kOverrideName);
@@ -735,8 +752,20 @@ namespace wxl::equip::physics
 
         // Underwater: is this instance, or the unit it hangs on, swimming? (the core answers from the unit's own
         // swim state, so this is a flag read, not a world query)
+        // With the depth the unit reports, the effect grows from the water level (a swimmer's feet SurfaceDepth
+        // bodies below the surface: nothing floats in the air there) to full at FullDepth (diving).
         float uwTarget = 0;
-        if (g_uwActive && g_hasSwimApi) uwTarget = api->instanceSwimming(instance) ? 1.0f : 0.0f;
+        if (g_uwActive && g_hasDepthApi)
+        {
+            const float depth = api->instanceWaterDepth(instance);
+            if (depth >= 0.0f)
+            {
+                const float span = g_uwFullDepth - g_uwSurfaceDepth;
+                uwTarget = span > 0.0001f ? (depth - g_uwSurfaceDepth) / span : (depth > g_uwSurfaceDepth ? 1.0f : 0.0f);
+                uwTarget = std::max(0.0f, std::min(uwTarget, 1.0f));
+            }
+        }
+        else if (g_uwActive && g_hasSwimApi) uwTarget = api->instanceSwimming(instance) ? 1.0f : 0.0f;
 
         std::vector<float> before(size_t(boneCount) * 16);
         std::vector<int16_t> parents(boneCount);

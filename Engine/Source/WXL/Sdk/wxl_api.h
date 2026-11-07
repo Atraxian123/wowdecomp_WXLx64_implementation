@@ -289,6 +289,16 @@ typedef struct WxlOutlineUnit
     uint32_t    isPlayer;
 } WxlOutlineUnit;
 
+/* What the minimap is tracking, for the outline: kind says why it is tracked. */
+#define WXL_TRACKED_OBJECT   1u   /* a game object: a resource node (minerals, herbs, treasure, ...) or a mailbox */
+#define WXL_TRACKED_CREATURE 2u   /* a creature the tracking spells show (beasts, humanoids, undead, ... hidden ones) */
+#define WXL_TRACKED_NPC      3u   /* an NPC of the kind picked in the tracking menu (vendors, trainers, innkeepers, ...) */
+typedef struct WxlOutlineTracked
+{
+    const void* model;
+    uint32_t    kind;
+} WxlOutlineTracked;
+
 /* The held-item model resolver: may replace the file name the client loads for a held weapon (a bare file name; the
  * client prepends its folder). 1 = out holds a replacement. */
 typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
@@ -448,6 +458,29 @@ typedef struct WxlApi
        that is swimming: the client's own swim state, the one that picks the swim animations. 0 otherwise, also
        for an instance that is not a unit's. Cheap, thread-safe, never touches the map. */
     int (*instanceSwimming)(void* instance);
+    /* ---- added after instanceSwimming: check WXL_API_HAS(api, instanceWaterDepth) once ---- */
+    /* How deep in the water the swimming unit is that `instance` (or a model it is attached to) belongs to:
+       (the liquid surface height - the unit's feet height) / the unit's collision height. The client starts a
+       swim at 0.75 (feet 3/4 of a body below the surface: it swims with its head out of the water), the head is
+       under at about 1.0, and a deep dive is above that. Returns -1 when the unit is not swimming or the
+       instance is not a unit's. Cheap, thread-safe, never touches the map. */
+    float (*instanceWaterDepth)(void* instance);
+    /* ---- added for the outline module's quest turn-ins: check WXL_API_HAS(api, outlineQuestTurnIns) once ---- */
+    /* The model instances of the visible creatures and objects that are waiting for the player to hand in a
+       completed quest: the ones the server has marked with the "?" (the client's own quest giver status of the
+       object, which the server sends for the quests of this player), up to `max`, returned as the count. Pointers
+       only, never dereferenced by the caller. Cheaper than outlineQuestTargets (no quest cache), but call it on a
+       timer all the same. */
+    uint32_t (*outlineQuestTurnIns)(const void** models, uint32_t max);
+    /* ---- added for the outline module's tracking outlines: check WXL_API_HAS(api, outlineTrackedTargets) once ---- */
+    /* The visible creatures and objects the minimap is tracking for this player, exactly by the client's own rules
+       for a minimap blip: a game object a tracking spell (Find Minerals, Find Herbs, Find Treasure, ...) or the
+       tracking menu (mailboxes) shows, a creature a creature-type tracking spell or the server's tracking flag
+       shows (not a player, not the player's own pet, not a dead one), and an NPC the tracking menu has picked
+       (repair, vendors, trainers, innkeeper, ...). At most `max` entries, nearest limits aside: when maxYards is
+       above 0 only the ones within that many yards of the player are listed. Pointers only, never dereferenced
+       by the caller; call it on a timer. */
+    uint32_t (*outlineTrackedTargets)(WxlOutlineTracked* out, uint32_t max, float maxYards);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

@@ -138,4 +138,19 @@ namespace wxl::api::model
         }
         return 0;
     }
+
+    float InstanceWaterDepth(void* instance)
+    {
+        // Same walk as InstanceSwimming: the instance, then the models it hangs on.
+        const CM2Model* m = static_cast<const CM2Model*>(instance);
+        for (int hop = 0; m && hop < 8; ++hop)
+        {
+            const float depth = wxl::unitstate::WaterDepthRatio(m);
+            if (depth >= 0.0f) return depth;
+            const CM2Model* parent = nullptr;
+            if (!SafeCopy(&parent, &m->m_attachParent, sizeof(parent))) return -1.0f;
+            m = parent;
+        }
+        return -1.0f;
+    }
 }

@@ -1,0 +1,361 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -289,6 +289,16 @@
+     uint32_t    isPlayer;
+ } WxlOutlineUnit;
+ 
++/* What the minimap is tracking, for the outline: kind says why it is tracked. */
++#define WXL_TRACKED_OBJECT   1u   /* a game object: a resource node (minerals, herbs, treasure, ...) or a mailbox */
++#define WXL_TRACKED_CREATURE 2u   /* a creature the tracking spells show (beasts, humanoids, undead, ... hidden ones) */
++#define WXL_TRACKED_NPC      3u   /* an NPC of the kind picked in the tracking menu (vendors, trainers, innkeepers, ...) */
++typedef struct WxlOutlineTracked
++{
++    const void* model;
++    uint32_t    kind;
++} WxlOutlineTracked;
++
+ /* The held-item model resolver: may replace the file name the client loads for a held weapon (a bare file name; the
+  * client prepends its folder). 1 = out holds a replacement. */
+ typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char* out, size_t outSize);
+@@ -462,6 +472,15 @@
+        only, never dereferenced by the caller. Cheaper than outlineQuestTargets (no quest cache), but call it on a
+        timer all the same. */
+     uint32_t (*outlineQuestTurnIns)(const void** models, uint32_t max);
++    /* ---- added for the outline module's tracking outlines: check WXL_API_HAS(api, outlineTrackedTargets) once ---- */
++    /* The visible creatures and objects the minimap is tracking for this player, exactly by the client's own rules
++       for a minimap blip: a game object a tracking spell (Find Minerals, Find Herbs, Find Treasure, ...) or the
++       tracking menu (mailboxes) shows, a creature a creature-type tracking spell or the server's tracking flag
++       shows (not a player, not the player's own pet, not a dead one), and an NPC the tracking menu has picked
++       (repair, vendors, trainers, innkeeper, ...). At most `max` entries, nearest limits aside: when maxYards is
++       above 0 only the ones within that many yards of the player are listed. Pointers only, never dereferenced
++       by the caller; call it on a timer. */
++    uint32_t (*outlineTrackedTargets)(WxlOutlineTracked* out, uint32_t max, float maxYards);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -240,6 +240,8 @@
+             &wxl::api::model::InstanceWaterDepth,
+             // quest turn-ins for the outline module (OutlineHost.cpp)
+             &wxl::api::outlinehost::QuestTurnIns,
++            // minimap tracking for the outline module (OutlineHost.cpp)
++            &wxl::api::outlinehost::TrackedTargets,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/OutlineHost.h b/Engine/Source/WXLApi/OutlineHost.h
+--- a/Engine/Source/WXLApi/OutlineHost.h
++++ b/Engine/Source/WXLApi/OutlineHost.h
+@@ -13,5 +13,6 @@
+     uint32_t Units(WxlOutlineUnit* out, uint32_t max);
+     uint32_t QuestTargets(const void** models, uint32_t max);
+     uint32_t QuestTurnIns(const void** models, uint32_t max);
++    uint32_t TrackedTargets(WxlOutlineTracked* out, uint32_t max, float maxYards);
+     int      BatchState(float* alphaRef);
+ }
+diff --git a/Engine/Source/WXLApi/OutlineHost.cpp b/Engine/Source/WXLApi/OutlineHost.cpp
+--- a/Engine/Source/WXLApi/OutlineHost.cpp
++++ b/Engine/Source/WXLApi/OutlineHost.cpp
+@@ -133,6 +133,73 @@
+             return 1;
+         }
+ 
++        // What the minimap tracks. The rules are the ones of the minimap's blip callback (UpdateObjectBlip in
++        // MinimapFrame.cpp), so the outline marks what the player sees as a tracked blip:
++        //   game object: IsTracked() (the tracking menu: mailboxes) and in reach, or CanTrackObject() (a tracking
++        //                spell: the lock type of a node against the player's resource tracking mask);
++        //   unit:        IsTracked() (the menu's NPC flag: vendors, trainers, ...) and in reach, or CanTrackUnit()
++        //                (the creature types of the tracking spells, the server's tracking flag, hidden units).
++        struct TrackedScan
++        {
++            CGPlayer_C*        player;
++            C3Vector           position;
++            float              range2;      // squared yards, 0 = no limit
++            WxlOutlineTracked* out;
++            uint32_t           limit;
++            uint32_t           count;
++        };
++
++        int32_t TrackedScanCallback(WOWGUID guid, void* param)
++        {
++            auto* scan = static_cast<TrackedScan*>(param);
++            if (scan->count >= scan->limit) return 0;
++            if (guid == ClntObjMgrGetActivePlayer()) return 1;
++
++            CGObject_C* obj = ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
++            if (!obj || !obj->m_obj) return 1;
++
++            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
++            uint32_t kind = 0;
++
++            if (type & TYPEMASK_PLAYER)
++            {
++                return 1;   // tracked players are left to the reaction outline (and the scene hides them)
++            }
++            else if (type & TYPEMASK_GAMEOBJECT)
++            {
++                CGGameObject_C* go = static_cast<CGGameObject_C*>(obj);
++                if ((go->IsTracked() && static_cast<CGUnit_C*>(scan->player)->CanInteract(go)) || scan->player->CanTrackObject(go))
++                    kind = WXL_TRACKED_OBJECT;
++            }
++            else if (type & TYPEMASK_UNIT)
++            {
++                CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
++                const WOWGUID& controller = unit->m_unit->m_unitFieldCharmedby ? unit->m_unit->m_unitFieldCharmedby : unit->m_unit->m_unitFieldSummonedby;
++                if (controller == ClntObjMgrGetActivePlayer()) return 1;                          // the player's own pet
++                if (unit->m_unit->m_unitFieldHealth <= 0 && !unit->CanInteractWhileDead()) return 1;
++
++                if (unit->IsTracked() && scan->player->CanInteract(unit)) kind = WXL_TRACKED_NPC;
++                else if (scan->player->CanTrackUnit(unit))                kind = WXL_TRACKED_CREATURE;
++            }
++            if (!kind) return 1;
++
++            if (scan->range2 > 0.0f)
++            {
++                const C3Vector p = obj->GetPosition();
++                const float dx = p.x - scan->position.x, dy = p.y - scan->position.y, dz = p.z - scan->position.z;
++                if (dx * dx + dy * dy + dz * dz > scan->range2) return 1;
++            }
++
++            const CM2Model* model = obj->GetObjectModel();
++            if (model)
++            {
++                scan->out[scan->count].model = model;
++                scan->out[scan->count].kind  = kind;
++                ++scan->count;
++            }
++            return 1;
++        }
++
+         // Visible objects, one at a time. Returns non-zero to keep going.
+         int32_t QuestScanCallback(WOWGUID guid, void* param)
+         {
+@@ -238,6 +305,19 @@
+         return scan.count;
+     }
+ 
++    // The visible creatures and objects the minimap is tracking, with the reason (see WxlOutlineTracked).
++    uint32_t TrackedTargets(WxlOutlineTracked* out, uint32_t max, float maxYards)
++    {
++        if (!out || max == 0) return 0;
++
++        CGPlayer_C* player = static_cast<CGPlayer_C*>(ClntObjMgrObjectPtr(ClntObjMgrGetActivePlayer(), static_cast<TypeMask>(TYPEMASK_PLAYER), __FILE__, __LINE__));
++        if (!player || !player->m_player || player->IsDeadOrGhost()) return 0;
++
++        TrackedScan scan{ player, player->GetPosition(), maxYards > 0.0f ? maxYards * maxYards : 0.0f, out, max, 0 };
++        ClntObjMgrEnumVisibleObjects(TrackedScanCallback, &scan);
++        return scan.count;
++    }
++
+     // What the engine is doing for the batch it just drew: the blend mode and the depth write say whether it is an
+     // opaque (or alpha-tested) batch, the alpha reference is the cutout the batch used.
+     int BatchState(float* alphaRef)
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -221,6 +221,12 @@
+             bool  quest = false;            // [Outline] Quest: the always-on quest objective outline
+             bool  questThroughWalls = false;
+             bool  questTurnIn = false;      // [Outline] QuestTurnIn: also outline whoever waits for a completed quest
++            bool  tracked = false;          // [Outline] Tracked: outline what the minimap tracks (behind the quest outlines)
++            bool  trackedObjects = true;    //   TrackedObjects: resource nodes, mailboxes
++            bool  trackedCreatures = true;  //   TrackedCreatures: the creatures the tracking spells show
++            bool  trackedNpcs = true;       //   TrackedNpcs: the NPCs of the tracking menu (vendors, trainers, ...)
++            bool  trackedThroughWalls = false;
++            float trackedRange = 80.0f;     //   TrackedRange: yards from the player, 0 = every visible one
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+@@ -228,12 +234,20 @@
+             float friendlyColor[4] = { 0.0f, 1.0f,  0.0f, 1.0f };
+             float questColor[4]    = { 0.0f, 0.78f, 1.0f, 1.0f };
+             float turnInColor[4]   = { 1.0f, 0.82f, 0.0f, 1.0f };   // the gold of the "?" over a quest giver
++            float trackedObjectColor[4]   = { 1.0f, 0.63f, 0.25f, 1.0f };  // amber: nodes, mailboxes
++            float trackedCreatureColor[4] = { 1.0f, 0.25f, 1.0f,  1.0f };  // magenta: tracked creatures
++            float trackedNpcColor[4]      = { 1.0f, 1.0f,  1.0f,  1.0f };  // white: tracked NPC services
+         };
+ 
+         explicit Outline(const Options& o)
+             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+-              questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects)
+-        {
++              questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
++              tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
++              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange)
++        {
++            std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
++            std::memcpy(trackedCreatureColor_, o.trackedCreatureColor, sizeof(trackedCreatureColor_));
++            std::memcpy(trackedNpcColor_, o.trackedNpcColor, sizeof(trackedNpcColor_));
+             std::memcpy(questColor_, o.questColor, sizeof(questColor_));
+             std::memcpy(turnInColor_, o.turnInColor, sizeof(turnInColor_));
+             std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
+@@ -246,7 +260,8 @@
+ 
+     private:
+         static constexpr int kMaxQuestTargets = 32;
+-        static constexpr int kMaxTargets = 2 + 2 * kMaxQuestTargets;   // mouseover + target, objectives, turn-ins
++        static constexpr int kMaxTrackedTargets = 48;
++        static constexpr int kMaxTargets = 2 + 2 * kMaxQuestTargets + kMaxTrackedTargets;   // mouseover + target, objectives, turn-ins, tracked
+         static constexpr unsigned long long kQuestRefreshMs = 250;
+         // depthTest: the scene hides the outline where it hides the unit. Otherwise the outline shows through.
+         struct Tgt { const void* model; float color[4]; bool depthTest; };
+@@ -287,6 +302,13 @@
+         bool                questTurnIn_;
+         bool                questThroughWalls_;
+         bool                hideBehind_;
++        bool                tracked_;
++        bool                trackedObjects_, trackedCreatures_, trackedNpcs_;
++        bool                trackedThroughWalls_;
++        float               trackedRange_;
++        float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
++        Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
++        int                 trackedCount_ = 0;
+         bool                loggedNoDepth_ = false;
+         float               alphaRef_ = 0.5f;      // the engine's cutout reference for the batch being stamped
+         float               questColor_[4]{};
+@@ -403,7 +425,7 @@
+                 ++count_;
+             }
+         }
+-        if (quest_ || questTurnIn_) AppendQuestTargets();
++        if (quest_ || questTurnIn_ || tracked_) AppendQuestTargets();
+     }
+ 
+     // Rebuilds the quest target list from the client (the quest log, the quest cache and the visible objects). Run on
+@@ -440,6 +462,30 @@
+                 t.depthTest = hideBehind_ || !questThroughWalls_;
+             }
+         }
++
++        // What the minimap tracks (nodes, tracked creatures, the tracking menu's NPCs), by the client's own rules.
++        trackedCount_ = 0;
++        if (tracked_)
++        {
++            WxlOutlineTracked found[kMaxTrackedTargets] = {};
++            const uint32_t n = wxl::module::Api()->outlineTrackedTargets(found, kMaxTrackedTargets, trackedRange_);
++            for (uint32_t i = 0; i < n && trackedCount_ < kMaxTrackedTargets; ++i)
++            {
++                const float* color = nullptr;
++                switch (found[i].kind)
++                {
++                case WXL_TRACKED_OBJECT:   if (trackedObjects_)   color = trackedObjectColor_;   break;
++                case WXL_TRACKED_CREATURE: if (trackedCreatures_) color = trackedCreatureColor_; break;
++                case WXL_TRACKED_NPC:      if (trackedNpcs_)      color = trackedNpcColor_;      break;
++                default: break;
++                }
++                if (!color) continue;
++                Tgt& t = trackedTargets_[trackedCount_++];
++                t.model = found[i].model;
++                std::memcpy(t.color, color, sizeof(t.color));
++                t.depthTest = hideBehind_ || !trackedThroughWalls_;
++            }
++        }
+     }
+ 
+     void Outline::AppendQuestTargets()
+@@ -467,6 +513,16 @@
+                 if (targets_[i].model == turnInTargets_[q].model) { dup = true; break; }
+             if (!dup) targets_[count_++] = turnInTargets_[q];
+         }
++
++        // Tracked things come last of all: every other outline wins over them, and they are the first dropped
++        // when the list is full.
++        for (int q = 0; q < trackedCount_ && count_ < kMaxTargets; ++q)
++        {
++            bool dup = false;
++            for (int i = 0; i < count_; ++i)
++                if (targets_[i].model == trackedTargets_[q].model) { dup = true; break; }
++            if (!dup) targets_[count_++] = trackedTargets_[q];
++        }
+     }
+ 
+     // Draw the model again into the mask render target.
+@@ -721,9 +777,19 @@
+             wxl::LogCat("OUTLINE", "[Outline] QuestTurnIn=1, but this client does not offer the turn-in list: ignored");
+             o.questTurnIn = false;
+         }
+-        if (!o.mouseTarget && !o.quest && !o.questTurnIn)
++        o.tracked          = IniInt("Outline", "Tracked", 0) != 0;
++        o.trackedObjects   = IniInt("Outline", "TrackedObjects", 1) != 0;
++        o.trackedCreatures = IniInt("Outline", "TrackedCreatures", 1) != 0;
++        o.trackedNpcs      = IniInt("Outline", "TrackedNpcs", 1) != 0;
++        if (o.tracked && !WXL_API_HAS(wxl::module::Api(), outlineTrackedTargets))
++        {
++            wxl::LogCat("OUTLINE", "[Outline] Tracked=1, but this client does not offer the tracking list: ignored");
++            o.tracked = false;
++        }
++        if (o.tracked && !o.trackedObjects && !o.trackedCreatures && !o.trackedNpcs) o.tracked = false;
++        if (!o.mouseTarget && !o.quest && !o.questTurnIn && !o.tracked)
+         {
+-            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest and QuestTurnIn are 0 or absent)");
++            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest, QuestTurnIn and Tracked are 0 or absent)");
+             return false;
+         }
+ 
+@@ -740,10 +806,17 @@
+         IniColor("FriendlyColor", o.friendlyColor, o.friendlyColor);
+         IniColor("QuestColor",    o.questColor,    o.questColor);
+         IniColor("QuestTurnInColor", o.turnInColor, o.turnInColor);
++        IniColor("TrackedObjectColor",   o.trackedObjectColor,   o.trackedObjectColor);
++        IniColor("TrackedCreatureColor", o.trackedCreatureColor, o.trackedCreatureColor);
++        IniColor("TrackedNpcColor",      o.trackedNpcColor,      o.trackedNpcColor);
++        o.trackedThroughWalls = IniInt("Outline", "TrackedThroughWalls", o.questThroughWalls ? 1 : 0) != 0;
++        o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
++        if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
+ 
+         static Outline s_outline(o);
+-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s (spread %.2f, intensity %.2f)",
+-                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off", o.spread, o.intensity);
++        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s (spread %.2f, intensity %.2f)",
++                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
++                    o.tracked ? "on" : "off", o.spread, o.intensity);
+         return true;
+     }
+ }
+diff --git a/Engine/Source/WXLModules/Outline/README.md b/Engine/Source/WXLModules/Outline/README.md
+--- a/Engine/Source/WXLModules/Outline/README.md
++++ b/Engine/Source/WXLModules/Outline/README.md
+@@ -2,7 +2,7 @@
+ 
+ Reaction-colored silhouette outline on the mouseover and target units, ported from the standalone
+ `wxl-unit-outline` extension. Now a module, `WXL\Modules\wxl_outline.dll`, loaded by the client like the others; it
+-unloads itself when `[Outline] Enabled`, `Quest` and `QuestTurnIn` are all 0 or absent. Off by default.
++unloads itself when `[Outline] Enabled`, `Quest`, `QuestTurnIn` and `Tracked` are all 0 or absent. Off by default.
+ 
+ ```ini
+ [Outline]
+@@ -14,6 +14,8 @@
+ QuestColor=00C8FF
+ QuestTurnIn=1      ; also outline the NPCs / objects where a completed quest is handed in
+ QuestTurnInColor=FFD200
++Tracked=1          ; also outline what the minimap tracks (nodes, tracked creatures, tracking-menu NPCs)
++TrackedRange=80    ; yards from you, 0 = every visible one
+ QuestThroughWalls=0
+ HideBehindObjects=0  ; 1 = no outline shows through anything in front
+ Spread=1.5
+@@ -35,6 +37,22 @@
+ giver. Dead units and players are skipped. A unit that is a mouseover / target keeps the reaction color, and one that
+ is also a quest objective keeps `QuestColor`. `QuestThroughWalls` and `HideBehindObjects` apply to it as well.
+ 
++Tracked things: with `Tracked=1` the outline marks what your minimap is tracking, by the client's own rules for a
++minimap blip, so it follows whatever you switch on. Three kinds, each with its own switch and color:
++
++| kind | what the client tracks | switch | color |
++|---|---|---|---|
++| objects | resource nodes of the tracking spells (Find Minerals, Find Herbs, Find Treasure, ...: the node's lock type against your resource tracking), and the mailboxes of the tracking menu | `TrackedObjects=1` | `TrackedObjectColor=FFA040` |
++| creatures | the creature types of the tracking spells (Track Beasts, Humanoids, Undead, ...), units the server flags as tracked, and hidden units while you detect them | `TrackedCreatures=1` | `TrackedCreatureColor=FF40FF` |
++| NPCs | the NPCs of the tracking menu: repair, vendors, trainers, innkeeper, flight master, stable master, battle master, auctioneer, banker | `TrackedNpcs=1` | `TrackedNpcColor=FFFFFF` |
++
++Only visible units that are alive (or can be used dead), not your own pet and not players, are outlined. They come after
++every other outline: a unit that is the mouseover / target, a quest objective or a quest turn-in keeps that color, and
++the tracked ones are the first dropped if the list is full. `TrackedRange` (default 80 yards, 0 = no limit) keeps a
++far node from being outlined across the map; `TrackedThroughWalls` (default: the value of `QuestThroughWalls`) lets
++them show through walls, and `HideBehindObjects` applies as for the others. The trivial-quests entry of the tracking
++menu changes quest icons only, so it has nothing to outline.
++
+ More keys:
+ 
+ ```ini
