@@ -24,6 +24,7 @@ restarting.
 Enabled=1
 Own=1                   ; your own spells
 Others=0                ; everybody else's too (an enemy casting an area spell shows where it will land)
+EnemiesOnly=0           ; 1 = ONLY what hostile units cast: your own and friendly areas are left out
 Precast=1               ; the area of a spell being cast
 Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
 Persistent=1            ; areas lying on the ground (the game's dynamic objects)
@@ -54,6 +55,11 @@ The size is the spell's own radius from the client data, worked out for the cast
 with your talents' and auras' radius modifiers (the same ones the targeting circle uses). The color says what the spell
 does: red for the areas that hit enemies, green for the ones that help friends, amber otherwise; an enemy's dynamic
 object is always red.
+
+`EnemiesOnly=1` is for watching what the enemy is about to hit you with: it ignores `Own` and `Others`, and shows the
+casts, channels and ground effects of hostile units only (the ones whose reaction toward you is unfriendly or worse;
+neutral creatures are not enemies until they turn hostile). Ground effects whose caster is no longer around are left out,
+since nobody can say whose they are.
 
 When a dynamic object of a spell exists, it is the one that is drawn (its radius is the truth), so Blizzard shows one
 circle, not two.

@@ -1,0 +1,108 @@
+diff --git a/Engine/Source/WXLApi/SpellArea.cpp b/Engine/Source/WXLApi/SpellArea.cpp
+--- a/Engine/Source/WXLApi/SpellArea.cpp
++++ b/Engine/Source/WXLApi/SpellArea.cpp
+@@ -60,6 +60,7 @@
+             bool  enabled      = false;
+             bool  own          = true;    // the player's own casts and areas
+             bool  others       = false;   // everybody else's too
++            bool  enemiesOnly  = false;   // only what hostile units cast: own and friendly areas are left out
+             bool  precast      = true;    // the area of a spell that is being cast
+             bool  channel      = true;    // the area of a spell that is being channeled
+             bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
+@@ -143,6 +144,11 @@
+ 
+         float Clamp(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
+ 
++        // EnemiesOnly shows what hostile units cast and nothing else: your own areas are left out and everybody else's
++        // are looked at (a hostile caster is one whose reaction toward the player is unfriendly or worse).
++        bool OwnOn()    { return g_cfg.own && !g_cfg.enemiesOnly; }
++        bool OthersOn() { return g_cfg.others || g_cfg.enemiesOnly; }
++
+         void LoadConfig(const char* ini)
+         {
+ #ifdef _WIN32
+@@ -150,6 +156,7 @@
+             c.enabled    = IniInt(ini, "Enabled", 0) != 0;
+             c.own        = IniInt(ini, "Own", 1) != 0;
+             c.others     = IniInt(ini, "Others", 0) != 0;
++            c.enemiesOnly = IniInt(ini, "EnemiesOnly", 0) != 0;
+             c.precast    = IniInt(ini, "Precast", 1) != 0;
+             c.channel    = IniInt(ini, "Channel", 1) != 0;
+             c.persistent = IniInt(ini, "Persistent", 1) != 0;
+@@ -167,8 +174,10 @@
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (own %d, others %d, precast %d, channel %d, persistent %d, cones %d, opacity %.2f)",
+-                            c.enabled ? "on" : "off", c.own, c.others, c.precast, c.channel, c.persistent, c.cones, c.opacity);
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, opacity %.2f)",
++                            c.enabled ? "on" : "off",
++                            c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
++                            c.precast, c.channel, c.persistent, c.cones, c.opacity);
+ #else
+             (void)ini;
+ #endif
+@@ -323,13 +332,15 @@
+             const CGDynamicObjectData* d = static_cast<CGDynamicObject_C*>(obj)->m_dynamicObject;
+             if (!d || d->m_bytes[0] == 2) return;                    // type 2 is a far sight focus, not an area
+             const bool own = d->m_caster == c.player;
+-            if (own ? !g_cfg.own : !g_cfg.others) return;
++            if (own ? !OwnOn() : !OthersOn()) return;
+             if (!(d->m_radius >= g_cfg.minRadius)) return;
+ 
++            CGUnit_C* caster = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(d->m_caster, TYPEMASK_UNIT, __FILE__, __LINE__));
++            if (g_cfg.enemiesOnly && !Hostile(caster, c.playerUnit)) return;   // a caster that is gone is not known to be an enemy
++
+             c.dyn.push_back(DynKey{ d->m_caster, d->m_spellID });
+             if (!g_cfg.persistent) return;
+ 
+-            CGUnit_C* caster = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(d->m_caster, TYPEMASK_UNIT, __FILE__, __LINE__));
+             Area a;
+             a.shape.kind = ShapeKind::Circle;
+             a.shape.radius = std::min(d->m_radius, g_cfg.maxRadius);
+@@ -355,10 +366,11 @@
+             {
+                 AddDynamicObject(*c, obj, guid);
+             }
+-            else if ((type & TYPEMASK_UNIT) && g_cfg.others)
++            else if ((type & TYPEMASK_UNIT) && OthersOn())
+             {
+                 CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
+-                if (unit->m_castingSpellId || unit->m_channelSpellId) c->casters.push_back(guid);
++                if ((unit->m_castingSpellId || unit->m_channelSpellId) && (!g_cfg.enemiesOnly || Hostile(unit, c->playerUnit)))
++                    c->casters.push_back(guid);
+             }
+             return 1;
+         }
+@@ -442,7 +454,7 @@
+ 
+             ClntObjMgrEnumVisibleObjects(CollectCallback, &c);
+ 
+-            if (g_cfg.own) AddCasts(c, c.player, now);
++            if (OwnOn()) AddCasts(c, c.player, now);
+             for (const WOWGUID& g : c.casters) AddCasts(c, g, now);
+         }
+ 
+diff --git a/Engine/Source/WXL/SpellArea.md b/Engine/Source/WXL/SpellArea.md
+--- a/Engine/Source/WXL/SpellArea.md
++++ b/Engine/Source/WXL/SpellArea.md
+@@ -24,6 +24,7 @@
+ Enabled=1
+ Own=1                   ; your own spells
+ Others=0                ; everybody else's too (an enemy casting an area spell shows where it will land)
++EnemiesOnly=0           ; 1 = ONLY what hostile units cast: your own and friendly areas are left out
+ Precast=1               ; the area of a spell being cast
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+@@ -55,6 +56,11 @@
+ does: red for the areas that hit enemies, green for the ones that help friends, amber otherwise; an enemy's dynamic
+ object is always red.
+ 
++`EnemiesOnly=1` is for watching what the enemy is about to hit you with: it ignores `Own` and `Others`, and shows the
++casts, channels and ground effects of hostile units only (the ones whose reaction toward you is unfriendly or worse;
++neutral creatures are not enemies until they turn hostile). Ground effects whose caster is no longer around are left out,
++since nobody can say whose they are.
++
+ When a dynamic object of a spell exists, it is the one that is drawn (its radius is the truth), so Blizzard shows one
+ circle, not two.
+ 
