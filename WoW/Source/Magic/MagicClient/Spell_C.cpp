@@ -802,6 +802,19 @@ PendingSpellCast* GetPendingSpellCast(uint8_t castCount, int32_t spellId, const 
     return nullptr;
 }
 
+// WXL: the cast `caster` has in progress for `spellId` (who or where it is aimed at), copied to `out`; false when there
+// is none. For the spell area indicator, which needs the destination of a ground-targeted cast.
+bool Spell_C_WxlFindPendingCast(const WOWGUID& caster, uint32_t spellId, PendingSpellCastData* out) {
+    for (PendingSpellCast* cast = s_pendingSpellCasts.Head(); cast; cast = s_pendingSpellCasts.Next(cast)) {
+        if (cast->m_data.m_caster == caster && cast->m_data.m_spellId == spellId) {
+            *out = cast->m_data;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // VERIFY: 01cc0239 auto
 // OFFSET: 0x008051D0
 PendingSpellCast* FindPendingSpellCast(const WOWGUID& castItem, PendingSpellCast* fallback, uint8_t castCount, int32_t spellId, const WOWGUID& caster) {

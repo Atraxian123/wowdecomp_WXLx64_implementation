@@ -1,0 +1,16 @@
+# SpellAreaOverride.csv: put it beside the client executable (the name can be changed with [SpellArea] OverrideFile).
+# Fixes or adds the area of a spell the spell data cannot describe. Read again when saved. See SpellArea.md.
+#
+# SpellId  : the spell's id (the number in its wowhead link)
+# Shape    : circle | cone | line | none   (none = never draw this spell)
+# Anchor   : caster | dest                  (circles only; cones and lines start at the caster)
+# Radius   : circle radius / cone radius / line length, in yards
+# Param    : cone angle in degrees / line width in yards
+# Intent   : harmful | helpful | neutral    (the color)
+#
+# Examples (these ids are placeholders, replace them):
+#   100001,line,caster,40,6,harmful
+#   100002,cone,caster,25,60,harmful
+#   100003,circle,dest,8,,harmful
+#   100004,none
+SpellId,Shape,Anchor,Radius,Param,Intent

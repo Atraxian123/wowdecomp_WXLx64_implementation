@@ -257,6 +257,7 @@ void Spell_C_Destroy();
 void Spell_C_Initialize();
 PendingSpellCast* CreatePendingSpellCast(bool assignCastCount);
 PendingSpellCast* GetPendingSpellCast(uint8_t castCount, int32_t spellId, const WOWGUID& caster);
+bool Spell_C_WxlFindPendingCast(const WOWGUID& caster, uint32_t spellId, PendingSpellCastData* out); // WXL: the targets of a cast in progress
 void Spell_C_PlayMissileTrajectoryCastVisuals(CGUnit_C* unit, PendingSpellCast* cast, const SpellRec* spell, const SpellVisualRec* visual, const SpellVisualKitRec* kit, const TSStackArray<CGUnit_C*>* targets, float time);
 PendingSpellCast* FindPendingSpellCast(const WOWGUID& castItem, PendingSpellCast* fallback, uint8_t castCount, int32_t spellId, const WOWGUID& caster);
 void ReleasePendingSpellCast(PendingSpellCast* cast);
