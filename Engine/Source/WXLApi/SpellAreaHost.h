@@ -22,4 +22,7 @@ namespace wxl::api::spellareahost
     void*    CreateTexture(const uint32_t* argbPixels, uint32_t size, const char* name);
     void     Draw(const WxlSpellAreaDraw* draw);
     void     SetRenderer(WxlSpellAreaRenderFn fn, void* user);
+    uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
+    int      Triggers(uint32_t spellId, WxlSpellAreaTriggers* out);
+    uint32_t TriggerAuras(WxlSpellAreaAura* out, uint32_t max);
 }

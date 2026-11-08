@@ -1,0 +1,9 @@
+# SpellsCustomAttribute.csv: put it in the WXL folder beside the client executable (WXL\SpellsCustomAttribute.csv; the path
+# can be changed with [SpellArea] CustomAttributeFile). Export of the server's spell custom attribute column: spell id,
+# attribute mask (decimal or 0x hex). See SpellArea.md. Only two bits matter here:
+#   2 = CONE_BACK  the cone is behind the caster (a tail sweep)
+#   4 = CONE_LINE  the cone is a line in front of the caster
+# The rows below are examples.
+#spell_id,attributes
+26029,4
+24340,8

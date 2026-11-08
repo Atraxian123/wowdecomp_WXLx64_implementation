@@ -1,3 +1,4 @@
+#include "Engine/Source/WXLApi/SpellAreaRender.h"
 #include "Spell_C.h"
 #include "WoW/Source/Magic/Types.h"
 #include "Engine/Source/Base/CDataStore.h"
@@ -1889,6 +1890,20 @@ void PendingSpellCast::OnSpellGo(CDataStore* msg) {
     if (!g_spellDB.GetRecord(this->m_data.m_spellId, &spell)) {
         ReleasePendingSpellCast(this);
         return;
+    }
+
+    // WXL: tell the spell area indicator what just went off and where (the instant-cast fade)
+    {
+        float destPos[3] = { 0.0f, 0.0f, 0.0f };
+        if (this->m_data.m_targetFlags & 0x40) {
+            const C3Vector dest = this->m_data.GetDestLocation();
+            destPos[0] = dest.x;
+            destPos[1] = dest.y;
+            destPos[2] = dest.z;
+        }
+        wxl::api::spellareahost::NoteSpellGo(caster.m_guid, static_cast<uint32_t>(this->m_data.m_spellId), this->m_data.m_castFlags,
+                                             this->m_data.m_targetFlags, (this->m_data.m_targetFlags & 0x40) ? destPos : nullptr,
+                                             this->m_data.m_objectTarget.m_guid, (castFlags & 0x20000) ? delay : 0);
     }
 
     CGUnit_C* unit = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(caster, TYPEMASK_UNIT, __FILE__, __LINE__));

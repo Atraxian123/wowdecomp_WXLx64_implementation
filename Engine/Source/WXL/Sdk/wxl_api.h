@@ -372,6 +372,56 @@ typedef struct WxlSpellAreaDraw
     uint32_t projectFlags;
 } WxlSpellAreaDraw;
 
+/* A spell that has just gone off (SMSG_SPELL_GO), kept for a few seconds so the module can show where an instant spell hit.
+ * `instant` is 1 when the spell has no cast time and no channel (Thunder Clap, Arcane Explosion, Cone of Cold ...): the
+ * spells that never show up as a cast in progress. sequence counts up from 1; ask for what came after the last one seen. */
+typedef struct WxlSpellAreaCastEvent
+{
+    uint64_t sequence;
+    uint64_t casterGuid;
+    uint64_t objectTarget;      /* what the cast was aimed at, 0 for none */
+    uint32_t spellId;
+    uint32_t instant;
+    uint32_t castFlags;
+    uint32_t targetFlags;       /* WXL_SPELLAREA_TARGET_DEST set: dest is the ground point */
+    float    dest[3];
+    uint32_t atMs;              /* the client's millisecond clock when the packet was handled */
+    uint32_t casterIsPlayer;
+    uint32_t casterHostile;
+    uint32_t delayMs;           /* the missile's flight time from the packet, 0 when it carried none */
+    uint32_t reserved;
+} WxlSpellAreaCastEvent;
+
+/* The spells a spell triggers (Spell.dbc EffectTriggerSpell), by how they are triggered. */
+#define WXL_SPELLAREA_TRIGGER_MISSILE  1u   /* TRIGGER_MISSILE (grenades): the spell goes off where the missile lands */
+#define WXL_SPELLAREA_TRIGGER_PERIODIC 2u   /* an aura that casts the spell every `periodMs` (PERIODIC_TRIGGER_SPELL) */
+#define WXL_SPELLAREA_TRIGGER_CAST     3u   /* TRIGGER_SPELL: the spell goes off together with this one */
+typedef struct WxlSpellAreaTrigger
+{
+    uint32_t kind;              /* WXL_SPELLAREA_TRIGGER_* */
+    uint32_t spellId;           /* the triggered spell (it exists in Spell.dbc) */
+    uint32_t periodMs;          /* periodic only: milliseconds between casts, 0 when the record has none */
+    uint32_t effectIndex;       /* 0..2: the effect of the triggering spell */
+} WxlSpellAreaTrigger;
+
+typedef struct WxlSpellAreaTriggers
+{
+    float               speed;      /* the triggering spell's missile speed in yards per second, 0 for none */
+    uint32_t            count;      /* entries used in trigger[] */
+    WxlSpellAreaTrigger trigger[3];
+} WxlSpellAreaTriggers;
+
+/* An aura on a visible unit that casts a spell periodically. */
+typedef struct WxlSpellAreaAura
+{
+    uint64_t holderGuid;        /* the unit that carries it */
+    uint64_t casterGuid;        /* who put it there, 0 when not known */
+    uint32_t spellId;           /* the aura's spell */
+    uint32_t casterIsPlayer;
+    uint32_t casterHostile;
+    uint32_t reserved;
+} WxlSpellAreaAura;
+
 /* Called from the world render, beside the client's own spell cursor shadow: once after the opaque pass with
  * (0x200122, 5) and once after the transparent ones with (0x20000, 4) (the second leaves the doodads out so nothing is
  * drawn twice). Draw from it with spellAreaDraw, nowhere else. */
@@ -572,6 +622,14 @@ typedef struct WxlApi
     void     (*spellAreaDraw)(const WxlSpellAreaDraw* draw);
     /* The one function the world render calls (see WxlSpellAreaRenderFn); a later call replaces the earlier. */
     void     (*setSpellAreaRenderer)(WxlSpellAreaRenderFn fn, void* user);
+    /* The spells that went off after `afterSequence` (0 for all that are kept), oldest first, up to `max`; returns the
+     * count. The core keeps the last 64. Check WXL_API_HAS(api, spellAreaCastEvents) once. */
+    uint32_t (*spellAreaCastEvents)(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
+    /* The spells `spellId` triggers. 1 when it triggers any (and `out` says which), 0 otherwise. */
+    int      (*spellAreaTriggers)(uint32_t spellId, WxlSpellAreaTriggers* out);
+    /* The auras of the visible units whose spell casts another periodically, up to `max`, returned as the count.
+     * Check WXL_API_HAS(api, spellAreaTriggerAuras) once. */
+    uint32_t (*spellAreaTriggerAuras)(WxlSpellAreaAura* out, uint32_t max);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

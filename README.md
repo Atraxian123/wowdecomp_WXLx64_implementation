@@ -26,12 +26,14 @@ Additional things:
 - outlines for quest targets and tracked npcs and objects
 - opt-in for most of the modules
 - solved some crashes with overflowing of native m2 models materials that happened on 64 bits client.
+- mounts choosing flight animations from the mountflight animation ids before falling back to swimming animations.
 
 all configuration files are in the <root>/WXL folder
 
 KNOWN ISSUES:
 - Modern water sometimes disappears when no reflection is present and no creature model is rendered underwater.
 - Outlines sometimes screw up the rendering of the image. Just close the client and reopen it and it should be fine.
+- Outlines not showing at all when in the setup file the flags for hiding behind walls are set as active.
 - Sometimes it crashes when exiting the game. Cause unknown, it might be because I filled my client with gigabites of random patches.
 
 # wowdecomp

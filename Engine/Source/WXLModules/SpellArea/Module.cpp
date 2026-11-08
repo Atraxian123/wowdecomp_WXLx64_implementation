@@ -15,9 +15,9 @@ WXL_DEFINE_MODULE_ABI()
 
 WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
 {
-    // setSpellAreaRenderer is the last member of the engine access added for this module: its presence means all of
+    // spellAreaTriggerAuras is the last member of the engine access added for this module: its presence means all of
     // them are.
-    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, setSpellAreaRenderer)) return 1;
+    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, spellAreaTriggerAuras)) return 1;
     wxl::module::Bind(api);
     if (info)
     {

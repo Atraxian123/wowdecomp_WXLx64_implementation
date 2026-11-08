@@ -1,0 +1,95 @@
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index f2b24ba..ab1e753 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -103,6 +103,19 @@ namespace wxl::spellarea
+ #endif
+         }
+ 
++        // Where a configured file is: a full path as it is; a name with a folder in it (WXL\\Cones.csv) under the client's
++        // folder; a bare name (SpellsCone.csv) in <client folder>\\WXL first, where the module's files live, then in the
++        // client folder itself. When it is in neither the second path comes back (it is what gets logged as missing).
++        bool ResolvePath(const std::string& name, char* path, size_t cap)
++        {
++            const bool bare = name.find('\\') == std::string::npos && name.find('/') == std::string::npos && name.find(':') == std::string::npos;
++            if (bare)
++            {
++                if (FolderPath("WXL\\" + name, path, cap) && FileStamp(path) != 0) return true;
++            }
++            return FolderPath(name, path, cap);
++        }
++
+         int IniInt(const char* key, int def) { return Api()->iniGetInt(kSection, key, def); }
+ 
+         std::string IniStr(const char* key)
+@@ -188,9 +201,13 @@ namespace wxl::spellarea
+         bool ReadCsv(const std::string& name, uint64_t& stamp, std::string& text)
+         {
+             char path[1024] = {};
+-            if (!FolderPath(name, path, sizeof(path))) return false;
++            if (!ResolvePath(name, path, sizeof(path))) return false;
+             stamp = FileStamp(path);
+-            if (!stamp) return false;
++            if (!stamp)
++            {
++                wxl::LogCat("AOE", "%s: not found (looked in the WXL folder and the client folder: %s)", name.c_str(), path);
++                return false;
++            }
+             std::ifstream f(path, std::ios::binary);
+             text.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+             return true;
+@@ -252,7 +269,7 @@ namespace wxl::spellarea
+         bool FileChanged(const std::string& name, uint64_t last)
+         {
+             char path[1024] = {};
+-            return FolderPath(name, path, sizeof(path)) && FileStamp(path) != last;
++            return ResolvePath(name, path, sizeof(path)) && FileStamp(path) != last;
+         }
+ 
+         // Reads the ini (and the csv files) again whenever they are saved; looks once a second.
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index c626c8c..a785548 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -28,6 +28,7 @@ static int g_eventInstant = 1, g_auraOn = 0, g_triggeredOn = 0;
+ static float g_eventDest[3] = {};
+ static int g_periodicDraws = 0, g_missileDraws = 0, g_missileAlpha = -1, g_periodicRed = 0;
+ static float g_periodicPos[3] = {}, g_missilePos[3] = {};
++static int g_instantRotated = 0;
+ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
+ static std::string g_dir;
+ 
+@@ -38,6 +39,8 @@ int main()
+     std::filesystem::remove_all(root);
+     std::filesystem::create_directories(root / "WXL");
+     { std::ofstream f(root / "WXL" / "SpellsCustomAttribute.csv"); f << "#spell_id,attributes\r\n20,2\r\n30,4\r\n"; }
++    // a cone file that sits in the WXL folder while the ini names it bare (ConeFile=SpellsCone.csv): spell 40 is a 180 degree cone
++    { std::ofstream f(root / "WXL" / "SpellsCone.csv"); f << "#ID,ConeDegrees\r\n40,180\r\n"; }
+     g_dir = root.string();
+ 
+     static WxlApi api = {};
+@@ -47,6 +50,7 @@ int main()
+     api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : !std::strcmp(k, "Instant") ? g_instantOn : !std::strcmp(k, "Triggered") ? g_triggeredOn : d; };
+     api.iniGetString = [](const char*, const char* k, char* out, size_t cap) -> int
+     {
++        if (!std::strcmp(k, "ConeFile")) { std::snprintf(out, cap, "SpellsCone.csv"); return 1; }
+         if (std::strcmp(k, "InstantFadeSeconds") != 0) return 0;
+         std::snprintf(out, cap, "%.2f", g_fadeSeconds);
+         return 1;
+@@ -104,7 +108,7 @@ int main()
+         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
+         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
+         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
+-        if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; }     // the instant spell's area (spell 40)
++        if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; if (d->rotate) ++g_instantRotated; }     // the instant spell's area (spell 40)
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing) < 0.001f) ++g_frontLine;               // spell 30: in front
+     };
+@@ -146,6 +150,7 @@ int main()
+     Check(g_instantDraws == 1, "an instant spell is drawn the moment it goes off");
+     const int full = g_lastAlpha;
+     Check(full == 166, "at the full opacity (0.65)");
++    Check(g_instantRotated == g_instantDraws && g_instantDraws > 0, "spell 40 is a cone: SpellsCone.csv was found in the WXL folder from a bare name");
+     g_fn(g_user, 0x200122, 5, 31000);
+     const int half = g_lastAlpha;
+     Check(half > 0 && half < full && half >= full / 2 - 2 && half <= full / 2 + 2, "half way through it is half as strong");

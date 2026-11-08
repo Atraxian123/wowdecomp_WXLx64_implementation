@@ -174,6 +174,68 @@ int main()
               problems.find("line 3") != std::string::npos && problems.find("line 4") != std::string::npos, "bad rows (0, over 360, text, missing degrees) are reported and skipped");
     }
 
+    std::printf("2e. custom attributes: cone back, cone line\n");
+    {
+        SpellEffects cone;            // a cone target type
+        cone.effect[0] = 2; cone.targetA[0] = 24; cone.radius[0] = 12;
+        Check(ShapesFromSpell(cone, rules, out) == 1 && out[0].kind == ShapeKind::Cone && !out[0].back, "no attributes: a cone in front");
+
+        SpellEffects back = cone; back.customAttributes = kAttrConeBack;
+        Check(ShapesFromSpell(back, rules, out) == 1 && out[0].kind == ShapeKind::Cone && out[0].back && Near(out[0].param, 90) && Near(out[0].radius, 12) && out[0].anchor == Anchor::Caster,
+              "CONE_BACK: the cone is behind the caster");
+        back.coneAngle = 60.0f;
+        Check(ShapesFromSpell(back, rules, out) == 1 && out[0].back && Near(out[0].param, 60), "CONE_BACK with a listed angle: behind, 60 degrees");
+
+        SpellEffects line = cone; line.customAttributes = kAttrConeLine;
+        Check(ShapesFromSpell(line, rules, out) == 1 && out[0].kind == ShapeKind::Line && !out[0].back && Near(out[0].radius, 12) && Near(out[0].param, 4.0f) && out[0].anchor == Anchor::Caster,
+              "CONE_LINE: a line as long as the radius, 4 yards wide");
+        line.coneAngle = 60.0f;
+        Check(ShapesFromSpell(line, rules, out) == 1 && out[0].kind == ShapeKind::Line, "CONE_LINE ignores a listed angle");
+        ShapeRules wide = rules; wide.lineWidth = 6.5f;
+        Check(ShapesFromSpell(line, wide, out) == 1 && Near(out[0].param, 6.5f), "the line width follows the rules");
+
+        SpellEffects both = cone; both.customAttributes = kAttrConeBack | kAttrConeLine;
+        Check(ShapesFromSpell(both, rules, out) == 1 && out[0].kind == ShapeKind::Line && out[0].back, "both: a line behind the caster");
+
+        SpellEffects area;            // the DBC only says "area around the caster"; the attribute is what makes it a cone
+        area.effect[0] = 2; area.targetA[0] = 22; area.targetB[0] = 15; area.radius[0] = 10;
+        area.customAttributes = kAttrConeBack;
+        Check(ShapesFromSpell(area, rules, out) == 1 && out[0].kind == ShapeKind::Cone && out[0].back && out[0].intent == Intent::Harmful, "an area around the caster with CONE_BACK: a cone behind");
+        area.customAttributes = kAttrConeLine;
+        Check(ShapesFromSpell(area, rules, out) == 1 && out[0].kind == ShapeKind::Line, "an area around the caster with CONE_LINE: a line");
+
+        SpellEffects dest;            // an area around a destination is not a cone, whatever the attributes say
+        dest.effect[0] = 2; dest.targetA[0] = 16; dest.radius[0] = 8; dest.customAttributes = kAttrConeBack | kAttrConeLine;
+        Check(ShapesFromSpell(dest, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest && !out[0].back, "a destination area stays a circle");
+
+        SpellEffects other = cone; other.customAttributes = 0x8 | 0x40 | 0x80000000u;   // other custom attributes change nothing
+        Check(ShapesFromSpell(other, rules, out) == 1 && out[0].kind == ShapeKind::Cone && !out[0].back, "unrelated attribute bits are ignored");
+
+        ShapeRules nolines = rules; nolines.lines = false;
+        Check(ShapesFromSpell(line, nolines, out) == 0, "Lines off: a line spell draws nothing");
+        Check(ShapesFromSpell(back, nolines, out) == 1, "Lines off leaves cones alone");
+        ShapeRules nocones = rules; nocones.cones = false;
+        Check(ShapesFromSpell(back, nocones, out) == 0, "Cones off: a back cone draws nothing");
+        Check(ShapesFromSpell(line, nocones, out) == 1 && out[0].kind == ShapeKind::Line, "Cones off leaves lines alone");
+
+        SpellEffects full = cone; full.customAttributes = kAttrConeBack; full.coneAngle = 360.0f;
+        Check(ShapesFromSpell(full, rules, out) == 1 && out[0].kind == ShapeKind::Circle && !out[0].back, "a 360 degree cone is a circle, front or back");
+
+        CustomAttributeTable t;
+        std::string problems;
+        t.Parse("#spell_id,attributes\r\n12323,0\r\n26029,4\r\n24340,8\r\n4294967296,1\r\n99,2\r\n100,6\r\n101;0x2\r\n102\t2147483648\r\n26029,4\r\n", problems);
+        uint32_t m = 0;
+        Check(t.Find(26029, m) && m == 4 && t.Find(24340, m) && m == 8 && t.Find(12323, m) && m == 0 && !t.Find(1, m), "table: decimal masks, comments, the usual header line");
+        Check(t.Find(101, m) && m == 2 && t.Find(102, m) && m == 0x80000000u, "table: hex mask, semicolon and tab, a mask above 2^31");
+        Check(problems.find("line 5") != std::string::npos, "table: a spell id above 32 bits is reported");
+        Check(t.CountWith(kAttrConeLine) == 2 && t.CountWith(kAttrConeBack) == 3 && t.CountWith(kAttrConeBack | kAttrConeLine) == 1, "table: counts by bit (26029 and 100 are lines; 99, 100 and 101 are back)");
+        CustomAttributeTable bad;
+        problems.clear();
+        bad.Parse("spell_id,attributes\n7,notanumber\n8\n9,4294967296\nabc,4\n10,4\n", problems);
+        Check(bad.Rows() == 1 && bad.Find(10, m) && m == 4 && problems.find("line 2") != std::string::npos && problems.find("line 3") != std::string::npos &&
+              problems.find("line 4") != std::string::npos && problems.find("line 5") != std::string::npos, "table: bad rows are reported and skipped, a plain header line is skipped quietly");
+    }
+
     std::printf("3. override file\n");
     {
         OverrideTable t;
@@ -214,6 +276,19 @@ int main()
         Check(AlphaAt(t, N, 0.485f, 0) > 220 && AlphaAt(t, N, 0, -0.485f) > 220, "circle: bright rim");
         Check(AlphaAt(t, N, 0.45f, 0.45f) == 0 && AlphaAt(t, N, 0.499f, 0) < 100, "circle: clear outside, the outline does not run into the texture border");
         Check((t[0] & 0x00FFFFFF) == 0x00FFFFFF, "white color channels");
+
+        // the outline's thickness: a fraction of the texture's width, 0 for the default
+        std::vector<uint32_t> thick, thin, same;
+        RenderCircleTexture(thick, N, 0.10f);
+        RenderCircleTexture(thin, N, 0.008f);
+        RenderCircleTexture(same, N, 0.025f);
+        Check(AlphaAt(t, N, 0.45f, 0) < 90, "outline: the default is thin: fill only 0.035 inside the edge");
+        Check(AlphaAt(thick, N, 0.45f, 0) > 220 && AlphaAt(thick, N, 0, -0.45f) > 220, "outline: 0.10 reaches 0.035 inside the edge");
+        Check(AlphaAt(thick, N, 0, 0) > 40 && AlphaAt(thick, N, 0, 0) < 90, "outline: the fill in the middle does not change");
+        Check(AlphaAt(thin, N, 0.485f, 0) > 150 && AlphaAt(thin, N, 0.47f, 0) < 90, "outline: 0.008 is a thin line on the edge");
+        Check(AlphaAt(same, N, 0.485f, 0) == AlphaAt(t, N, 0.485f, 0) && AlphaAt(same, N, 0.47f, 0) == AlphaAt(t, N, 0.47f, 0), "outline: 0.025 is the default");
+        RenderConeTexture(thick, N, 90, 0.10f);
+        Check(AlphaAt(thick, N, 0, 0.485f) > 220 && AlphaAt(thick, N, 0, 0.44f) > 220, "outline: the cone's far edge gets thick as well");
 
         RenderConeTexture(t, N, 90);
         Check(AlphaAt(t, N, 0, 0.30f) > 40 && AlphaAt(t, N, 0, 0.30f) < 90, "cone: fill straight ahead");

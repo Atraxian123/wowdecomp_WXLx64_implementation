@@ -1,0 +1,222 @@
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index 15c8859..bde01a4 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -43,6 +43,7 @@ namespace wxl::spellarea
+             bool  instant      = false;   // spells with no cast time: an area that shows where they hit and fades away
+             float instantFade  = 1.5f;    // seconds it takes to fade out
+             float opacity      = 0.65f;
++            float outline      = 0.0f;    // yards; 0 = automatic: a twentieth of the shape's radius, as it always was
+             float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
+             bool  chain        = true;    // chain spells: the circle of the first jump around the target
+             float chainRadius  = 12.5f;
+@@ -149,6 +150,9 @@ namespace wxl::spellarea
+             c.instant     = IniInt("Instant", 0) != 0;
+             c.instantFade = Clamp(IniFloat("InstantFadeSeconds", c.instantFade), 0.05f, 30.0f);
+             c.opacity     = Clamp(IniFloat("Opacity", c.opacity), 0.05f, 1.0f);
++            c.outline     = IniFloat("OutlineThickness", c.outline);
++            if (c.outline > 0.0f) c.outline = Clamp(c.outline, 0.05f, 5.0f);
++            else c.outline = 0.0f;
+             c.maxOpacity  = Clamp(IniFloat("MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
+             c.chain       = IniInt("Chain", 1) != 0;
+             c.chainRadius = Clamp(IniFloat("ChainRadius", c.chainRadius), 1.0f, 60.0f);
+@@ -172,10 +176,10 @@ namespace wxl::spellarea
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, instant %d fading over %.2fs, opacity %.2f max %.2f)",
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, instant %d fading over %.2fs, opacity %.2f max %.2f, outline %.2f yd)",
+                             c.enabled ? "on" : "off",
+                             c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
+-                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.instant, c.instantFade, c.opacity, c.maxOpacity);
++                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.instant, c.instantFade, c.opacity, c.maxOpacity, c.outline);
+         }
+ 
+         // One csv the module reads: its text, or false when the file is not there (they are all optional).
+@@ -528,18 +532,21 @@ namespace wxl::spellarea
+ 
+         std::map<uint64_t, void*> g_textures;   // shape kind + parameter -> the core's texture handle
+ 
+-        void* TextureFor(ShapeKind kind, uint32_t param)
++        // `outlineQ` is the outline's thickness in 512ths of the texture's width, 0 for the default: shapes of nearly the
++        // same size share a texture.
++        void* TextureFor(ShapeKind kind, uint32_t param, uint32_t outlineQ)
+         {
+-            const uint64_t key = (static_cast<uint64_t>(kind) << 32) | param;
++            const uint64_t key = (static_cast<uint64_t>(outlineQ) << 40) | (static_cast<uint64_t>(kind) << 32) | param;
++            const float outline = static_cast<float>(outlineQ) / 512.0f;
+             auto it = g_textures.find(key);
+             if (it != g_textures.end()) return it->second;
+ 
+             std::vector<uint32_t> pixels;
+             switch (kind)
+             {
+-            case ShapeKind::Circle: RenderCircleTexture(pixels, kTexSize); break;
+-            case ShapeKind::Cone:   RenderConeTexture(pixels, kTexSize, static_cast<float>(param)); break;
+-            case ShapeKind::Line:   RenderLineTexture(pixels, kTexSize, static_cast<float>(param) / 256.0f); break;
++            case ShapeKind::Circle: RenderCircleTexture(pixels, kTexSize, outline); break;
++            case ShapeKind::Cone:   RenderConeTexture(pixels, kTexSize, static_cast<float>(param), outline); break;
++            case ShapeKind::Line:   RenderLineTexture(pixels, kTexSize, static_cast<float>(param) / 256.0f, outline); break;
+             }
+             void* tex = Api()->spellAreaCreateTexture(pixels.data(), kTexSize, "WxlSpellArea");
+             g_textures.emplace(key, tex);
+@@ -564,7 +571,12 @@ namespace wxl::spellarea
+             }
+             }
+ 
+-            void* texture = TextureFor(s.kind, param);
++            // the outline is a thickness in yards on a texture that spans twice the radius
++            uint32_t outlineQ = 0;
++            if (g_cfg.outline > 0.0f && half > 0.0f)
++                outlineQ = static_cast<uint32_t>(Clamp(std::floor(g_cfg.outline / (2.0f * half) * 512.0f + 0.5f), 1.0f, 100.0f));
++
++            void* texture = TextureFor(s.kind, param, outlineQ);
+             if (!texture || !(half > 0.0f)) return;
+ 
+             const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index 10debc4..1f30371 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -29,6 +29,7 @@ Others=0                ; everybody else's too (an enemy casting an area spell s
+ EnemiesOnly=0           ; 1 = ONLY what hostile units cast: your own and friendly areas are left out
+ Precast=1               ; the area of a spell being cast
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
++OutlineThickness=0     ; thickness of the bright edge of every shape, in yards: 0.05 to 5; 0 = automatic (a twentieth of the radius, as before)
+ Instant=0               ; spells with no cast time (Thunder Clap, Arcane Explosion, Cone of Cold ...): an area where they hit, fading away
+ InstantFadeSeconds=1.5  ; how long that area takes to fade out: 0.05 to 30, fractions allowed (0.4, 2.5 ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+@@ -173,6 +174,19 @@ SpellId,Shape,Anchor,Radius,Param,Intent
+ * Comma or semicolon separated; `#` starts a comment; a header line is skipped. A bad line is skipped and written to
+   `WXL.log` (category AOE, needs `[Log] Enabled=1`).
+ 
++## The outline
++
++Every shape is a faint fill with a bright edge. `OutlineThickness` sets how thick that edge is, in **yards**, so a 0.5
++outline is half a yard on a 5 yard circle and on a 30 yard one. With 0 (the default) the edge is a twentieth of the
++shape's radius, which is thin on small shapes and thick on big ones, as it has always been. The fill is not changed.
++
++* The edge is drawn into the shape's texture (256 pixels across the shape's diameter), so it is never finer than about
++  a pixel and a half: on a 40 yard shape anything under about 0.4 yards looks like 0.4. A very thick value on a small
++  shape (more than 20 percent of its diameter) is cut short.
++* It applies to circles, cones and lines alike, to the instant spell fade, and to anything the override file draws.
++* It is hot-reloaded with the ini. Shapes of nearly the same size share a texture, so a few dozen small textures are made
++  for the sizes seen; none are made while the value is 0.
++
+ ## Instant spells
+ 
+ A spell with no cast time never shows up as a cast in progress, so the other indicators never see it. With `Instant=1` the
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+index 49cf94f..f035b7b 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+@@ -47,14 +47,18 @@ namespace wxl::spellarea
+             return true;
+         }
+ 
++        constexpr float kDefaultOutline = 0.025f;
++
+         float Smooth(float x) { x = std::max(0.0f, std::min(1.0f, x)); return x * x * (3.0f - 2.0f * x); }
+ 
+         // alpha of a shape drawn as a translucent fill with a bright outline, from the signed distance to its border
+         // (positive inside, in texture units)
+-        float ShapeAlpha(float signedDist, float pixel)
++        // `outline` is the outline's thickness as a fraction of the texture's width (<= 0: the default, 2.5%); it is never
++        // thinner than about a pixel and a half, which is as fine as a texture this size can draw.
++        float ShapeAlpha(float signedDist, float pixel, float outline)
+         {
+             const float fill = 0.24f * Smooth(0.5f + signedDist / pixel);
+-            const float ringHalf = 0.0125f;
++            const float ringHalf = std::max(pixel * 0.75f, (outline > 0.0f ? outline : kDefaultOutline) * 0.5f);
+             const float ring = 1.0f - Smooth((std::fabs(signedDist) - ringHalf) / pixel + 0.5f);
+             return std::max(fill, ring);
+         }
+@@ -476,7 +480,7 @@ namespace wxl::spellarea
+         return true;
+     }
+ 
+-    void RenderCircleTexture(std::vector<uint32_t>& argb, int size)
++    void RenderCircleTexture(std::vector<uint32_t>& argb, int size, float outline)
+     {
+         argb.assign(static_cast<size_t>(size) * size, 0);
+         const float pixel = 1.0f / static_cast<float>(size);
+@@ -485,11 +489,11 @@ namespace wxl::spellarea
+             for (int col = 0; col < size; ++col)
+             {
+                 const float x = (col + 0.5f) * pixel - 0.5f, y = 0.5f - (row + 0.5f) * pixel;
+-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(R - std::sqrt(x * x + y * y), pixel));
++                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(R - std::sqrt(x * x + y * y), pixel, outline));
+             }
+     }
+ 
+-    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg)
++    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg, float outline)
+     {
+         argb.assign(static_cast<size_t>(size) * size, 0);
+         const float pixel = 1.0f / static_cast<float>(size);
+@@ -513,11 +517,11 @@ namespace wxl::spellarea
+                 if (half <= kPi * 0.5f) edge = wedge(r, theta, half);
+                 else edge = -wedge(r, kPi - theta, kPi - half);       // wider than a half circle: the circle minus the wedge behind
+                 const float d = std::min(R - r, edge);
+-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel));
++                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel, outline));
+             }
+     }
+ 
+-    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction)
++    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction, float outline)
+     {
+         argb.assign(static_cast<size_t>(size) * size, 0);
+         const float pixel = 1.0f / static_cast<float>(size);
+@@ -529,7 +533,7 @@ namespace wxl::spellarea
+                 const float x = (col + 0.5f) * pixel - 0.5f, y = 0.5f - (row + 0.5f) * pixel;
+                 const float dx = halfW - std::fabs(x);
+                 const float dy = std::min(y, top - y);
+-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(std::min(dx, dy), pixel));
++                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(std::min(dx, dy), pixel, outline));
+             }
+     }
+ }
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+index d91f3f7..80e7d56 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+@@ -158,9 +158,11 @@ namespace wxl::spellarea
+     bool ParseColorHex(const char* text, float rgb[3]);
+ 
+     // ---- textures: ARGB8888 (0xAARRGGBB), white with the shape in the alpha channel, row 0 = the shape's front ----
+-    void RenderCircleTexture(std::vector<uint32_t>& argb, int size);
++    /// `outline`: how thick the bright edge is, as a fraction of the texture's width (the shape is drawn on a square of
++    /// twice its radius, so 0.05 on a 10 yard shape is one yard); 0 or less for the default, 0.025.
++    void RenderCircleTexture(std::vector<uint32_t>& argb, int size, float outline = 0.0f);
+     /// a cone with its apex at the center of the texture, opening toward row 0, `angleDeg` wide (1 .. 359)
+-    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg);
++    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg, float outline = 0.0f);
+     /// a strip from the center of the texture to row 0, `widthFraction` of the texture wide (0..1)
+-    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction);
++    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction, float outline = 0.0f);
+ }
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+index f1990ac..b428002 100644
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -277,6 +277,19 @@ int main()
+         Check(AlphaAt(t, N, 0.45f, 0.45f) == 0 && AlphaAt(t, N, 0.499f, 0) < 100, "circle: clear outside, the outline does not run into the texture border");
+         Check((t[0] & 0x00FFFFFF) == 0x00FFFFFF, "white color channels");
+ 
++        // the outline's thickness: a fraction of the texture's width, 0 for the default
++        std::vector<uint32_t> thick, thin, same;
++        RenderCircleTexture(thick, N, 0.10f);
++        RenderCircleTexture(thin, N, 0.008f);
++        RenderCircleTexture(same, N, 0.025f);
++        Check(AlphaAt(t, N, 0.45f, 0) < 90, "outline: the default is thin: fill only 0.035 inside the edge");
++        Check(AlphaAt(thick, N, 0.45f, 0) > 220 && AlphaAt(thick, N, 0, -0.45f) > 220, "outline: 0.10 reaches 0.035 inside the edge");
++        Check(AlphaAt(thick, N, 0, 0) > 40 && AlphaAt(thick, N, 0, 0) < 90, "outline: the fill in the middle does not change");
++        Check(AlphaAt(thin, N, 0.485f, 0) > 150 && AlphaAt(thin, N, 0.47f, 0) < 90, "outline: 0.008 is a thin line on the edge");
++        Check(AlphaAt(same, N, 0.485f, 0) == AlphaAt(t, N, 0.485f, 0) && AlphaAt(same, N, 0.47f, 0) == AlphaAt(t, N, 0.47f, 0), "outline: 0.025 is the default");
++        RenderConeTexture(thick, N, 90, 0.10f);
++        Check(AlphaAt(thick, N, 0, 0.485f) > 220 && AlphaAt(thick, N, 0, 0.44f) > 220, "outline: the cone's far edge gets thick as well");
++
+         RenderConeTexture(t, N, 90);
+         Check(AlphaAt(t, N, 0, 0.30f) > 40 && AlphaAt(t, N, 0, 0.30f) < 90, "cone: fill straight ahead");
+         Check(AlphaAt(t, N, 0, -0.30f) == 0, "cone: nothing behind the apex");

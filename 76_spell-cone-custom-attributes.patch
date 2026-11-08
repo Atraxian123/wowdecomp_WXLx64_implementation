@@ -1,0 +1,568 @@
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index e7709f6..1d9e658 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -48,12 +48,15 @@ namespace wxl::spellarea
+             float helpful[3]   = { 0.235f, 1.0f, 0.353f };
+             float neutral[3]   = { 1.0f, 0.784f, 0.235f };
+             float coneAngle    = 90.0f;
++            bool  lines        = true;    // spells whose attributes make their cone a line
++            float lineWidth    = 4.0f;    // yards
+             float minRadius    = 1.0f;
+             float maxRadius    = 60.0f;
+             int   maxAreas     = 16;
+             std::string overrideFile = "SpellAreaOverride.csv";
+             std::string jumpFile     = "WXL\\SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
+             std::string coneFile     = "WXL\\SpellCone.csv";           // spell id, cone degrees; no header
++            std::string attrFile     = "WXL\\SpellsCustomAttribute.csv";   // spell id, custom attribute mask (cone back / line)
+         };
+ 
+         const char* const kSection = "SpellArea";
+@@ -62,9 +65,10 @@ namespace wxl::spellarea
+         OverrideTable     g_overrides;
+         JumpDistanceTable g_jump;
+         ConeAngleTable    g_cone;
++        CustomAttributeTable g_attrs;
+         bool              g_loaded = false;
+         uint32_t          g_lastPoll = 0;
+-        uint64_t          g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0;
++        uint64_t          g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0, g_attrStamp = 0;
+ 
+         const WxlApi* Api() { return wxl::module::Api(); }
+ 
+@@ -76,7 +80,11 @@ namespace wxl::spellarea
+             std::string dir = wxl::WorkingDirectory();
+             if (dir.empty()) return false;
+             if (dir.back() != '\\' && dir.back() != '/') dir += '\\';
+-            return std::snprintf(path, cap, "%s%s", dir.c_str(), name.c_str()) > 0;
++            std::string full = dir + name;
++#ifndef _WIN32
++            for (char& c : full) if (c == '\\') c = '/';        // the ini names use backslashes; anywhere else they are not separators
++#endif
++            return std::snprintf(path, cap, "%s", full.c_str()) > 0;
+         }
+ 
+         uint64_t FileStamp(const char* path)
+@@ -141,6 +149,8 @@ namespace wxl::spellarea
+             c.chain       = IniInt("Chain", 1) != 0;
+             c.chainRadius = Clamp(IniFloat("ChainRadius", c.chainRadius), 1.0f, 60.0f);
+             c.coneAngle   = Clamp(IniFloat("ConeAngle", c.coneAngle), 5.0f, 180.0f);
++            c.lines       = IniInt("Lines", 1) != 0;
++            c.lineWidth   = Clamp(IniFloat("LineWidth", c.lineWidth), 0.5f, 40.0f);
+             c.minRadius   = Clamp(IniFloat("MinRadius", c.minRadius), 0.1f, 50.0f);
+             c.maxRadius   = Clamp(IniFloat("MaxRadius", c.maxRadius), c.minRadius, 150.0f);
+             c.maxAreas    = std::max(1, std::min(64, IniInt("MaxAreas", c.maxAreas)));
+@@ -153,6 +163,8 @@ namespace wxl::spellarea
+             if (!jump.empty()) c.jumpFile = jump;
+             const std::string cone = IniStr("ConeFile");
+             if (!cone.empty()) c.coneFile = cone;
++            const std::string attrs = IniStr("CustomAttributeFile");
++            if (!attrs.empty()) c.attrFile = attrs;
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+@@ -216,6 +228,17 @@ namespace wxl::spellarea
+             LogProblems(g_cfg.coneFile, problems);
+         }
+ 
++        void LoadCustomAttributes()
++        {
++            g_attrs = CustomAttributeTable{};
++            std::string text, problems;
++            if (!ReadCsv(g_cfg.attrFile, g_attrStamp, text)) return;
++            g_attrs.Parse(text, problems);
++            wxl::LogCat("AOE", "%s: %zu spell(s), %zu with a cone behind the caster, %zu with a cone that is a line", g_cfg.attrFile.c_str(),
++                        g_attrs.Rows(), g_attrs.CountWith(kAttrConeBack), g_attrs.CountWith(kAttrConeLine));
++            LogProblems(g_cfg.attrFile, problems);
++        }
++
+         bool FileChanged(const std::string& name, uint64_t last)
+         {
+             char path[1024] = {};
+@@ -235,6 +258,7 @@ namespace wxl::spellarea
+             if (iniChanged || FileChanged(g_cfg.overrideFile, g_csvStamp)) LoadOverrides();
+             if (iniChanged || FileChanged(g_cfg.jumpFile, g_jumpStamp))    LoadJumpDistances();
+             if (iniChanged || FileChanged(g_cfg.coneFile, g_coneStamp))    LoadConeAngles();
++            if (iniChanged || FileChanged(g_cfg.attrFile, g_attrStamp))    LoadCustomAttributes();
+             g_loaded = true;
+         }
+ 
+@@ -257,7 +281,8 @@ namespace wxl::spellarea
+         // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
+         size_t ShapesOf(uint32_t spellId, uint64_t casterGuid, Shape out[8])
+         {
+-            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius };
++            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius,
++                                    g_cfg.lines, g_cfg.lineWidth };
+ 
+             bool none = false;
+             std::vector<Shape> rows;
+@@ -284,6 +309,8 @@ namespace wxl::spellarea
+             if (g_jump.Find(spellId, jumpYards)) effects.chainRadius = jumpYards;   // the server's own jump distance first
+             float coneDegrees = 0;
+             if (g_cone.Find(spellId, coneDegrees)) effects.coneAngle = coneDegrees; // and its own cone angle
++            uint32_t attributes = 0;
++            if (g_attrs.Find(spellId, attributes)) effects.customAttributes = attributes;   // and which way the cone goes, and whether it is a line
+             Shape derived[3];
+             const size_t n = ShapesFromSpell(effects, rules, derived);
+             for (size_t i = 0; i < n; ++i) out[i] = derived[i];
+@@ -456,6 +483,9 @@ namespace wxl::spellarea
+             const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
+             const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
+ 
++            const float kPi = 3.14159265358979f;
++            if (s.back) facing += kPi;                                       // a cone or line behind the caster
++
+             WxlSpellAreaDraw d = {};
+             d.structSize   = sizeof(d);
+             d.texture      = texture;
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index b0f2d5c..734b97d 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -31,12 +31,15 @@ Precast=1               ; the area of a spell being cast
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+ Cones=1                 ; cone spells
++Lines=1                 ; spells whose "cone" is a line (CONE_LINE in the custom attributes file)
++LineWidth=4             ; 0.5 .. 40 yards: how wide such a line is
+ Opacity=0.65            ; 0.05 .. 1: how strong an indicator is once its cast is done (it fades in from 45% of this)
+ MaxOpacity=1.0          ; 0.05 .. 1: ceiling for every indicator, applied last; lower it to keep them faint whatever Opacity says
+ Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
+ ChainRadius=12.5        ; 1 .. 60 yards: the jump radius for a chain spell the jump distance file does not list
+ JumpDistanceFile=WXL\SpellJumpDistance.csv   ; export of the server's spell_jump_distance table (see below)
+ ConeFile=WXL\SpellCone.csv  ; spell id, cone degrees, one spell per line, no header (see below)
++CustomAttributeFile=WXL\SpellsCustomAttribute.csv   ; spell id, attribute mask: cone behind / cone line (see below)
+ HarmfulColor=FF3C28     ; RRGGBB: areas that hurt (enemy area targets)
+ HelpfulColor=3CFF5A     ; areas that help (party, raid, ally area targets, area auras)
+ NeutralColor=FFC83C     ; the rest
+@@ -57,6 +60,8 @@ OverrideFile=SpellAreaOverride.csv
+ | a chain spell (Chain Lightning, Chain Heal, Prayer of Mending style jumps ...) | circle of the **first jump**, `ChainRadius` unless the spell data has a radius | the target the cast is aimed at |
+ | a channel's area aura (Tranquility, Divine Hymn ...) | circle | the caster |
+ | a cone spell (Cone of Cold, Dragon's Breath ...) | cone, 90 degrees by default | the caster, turning with it |
++| a cone spell the custom attributes mark CONE_BACK (a tail sweep) | the same cone, **behind** the caster | the caster, turning with it |
++| a cone spell the custom attributes mark CONE_LINE | a **line** as long as the spell's radius, `LineWidth` wide, in front | the caster, turning with it |
+ | anything lying on the ground (Blizzard, Consecration, Death and Decay, Rain of Fire, Volley, ground effects of bosses) | circle of its real radius | the game's dynamic object, for as long as it exists |
+ 
+ The size is the spell's own radius from the client data, worked out for the caster's level, and for **your** spells
+@@ -112,10 +117,39 @@ around the caster are drawn as cones of that angle (the radius is still the spel
+ over 180 is the circle minus a wedge behind the caster, and 360 is a full circle. A row in the override file still
+ beats this file for the same spell. A bad line is skipped and written to `WXL.log` (category AOE).
+ 
++## Cone direction and shape: WXL\SpellsCustomAttribute.csv
++
++The server marks some spells' cones with custom attributes the client data does not have. `SpellsCustomAttribute.csv`
++(in the `WXL` folder beside the client executable) is an export of that column: one spell per line, spell id then the
++attribute mask as a decimal number (`0x` hex works too), comma, semicolon or tab separated. The usual
++`#spell_id,attributes` header is a comment; read again when saved:
++
++```
++#spell_id,attributes
++12323,0
++26029,4
++24340,8
++```
++
++Two bits are used, the rest are ignored:
++
++| bit | server name | what is drawn |
++|---|---|---|
++| `0x2` (2) | `SPELL_ATTR0_CU_CONE_BACK` | the cone is **behind** the caster, like a tail sweep: the same cone turned around |
++| `0x4` (4) | `SPELL_ATTR0_CU_CONE_LINE` | the cone is really a **line**: a strip in front of the caster as long as the spell's radius and `LineWidth` yards wide (the cone angle is not used) |
++
++With both bits (6) the line points behind the caster. A spell with one of these bits is treated as a cone even when its
++data only says "area around the caster", exactly like a spell listed in `SpellCone.csv`; the listed angle (or
++`ConeAngle`) is the cone's opening, and a line ignores it. An area around a destination (ground target) is never turned
++into a cone. `Lines=0` hides the line spells, `Cones=0` hides the cone ones. A row in `SpellAreaOverride.csv` still beats
++all of this for its spell. A bad line is skipped and written to `WXL.log` (category AOE); when the file is read the
++log says how many spells it holds and how many of them are back cones and lines.
++
+ ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
+ 
+-The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. A file beside the
+-client executable fixes that, spell by spell. It is read again when saved.
++The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. The two files above
++cover what the server's own tables say; this file fixes or adds anything else, spell by spell, and wins over them. It is
++beside the client executable and is read again when saved.
+ 
+ ```csv
+ SpellId,Shape,Anchor,Radius,Param,Intent
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+index cf9a519..49cf94f 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+@@ -85,6 +85,8 @@ namespace wxl::spellarea
+ 
+             const int32_t a = spell.targetA[i], b = spell.targetB[i], eff = spell.effect[i];
+             bool cone = IsConeTarget(a) || IsConeTarget(b);
++            const bool attrBack = (spell.customAttributes & kAttrConeBack) != 0;
++            const bool attrLine = (spell.customAttributes & kAttrConeLine) != 0;
+             bool casterArea = IsCasterAreaTarget(a) || IsCasterAreaTarget(b);
+             bool destArea = IsDestAreaTarget(a) || IsDestAreaTarget(b);
+             if (!cone && !casterArea && !destArea)
+@@ -92,7 +94,11 @@ namespace wxl::spellarea
+                 if (In(eff, kAreaAuraCaster)) casterArea = true;
+                 else if (eff == 27) destArea = true;       // persistent area aura: the area is at the destination
+             }
+-            if (spell.coneAngle > 0.0f && !cone && casterArea) { cone = true; casterArea = false; }   // a listed spell: its area is a cone
++            if ((attrBack || attrLine || spell.coneAngle > 0.0f) && !cone && casterArea)
++            {
++                cone = true;                                        // a listed spell: the server cones its area around the caster
++                casterArea = false;
++            }
+             if (!cone && !casterArea && !destArea && rules.chain && spell.chainTargets[i] > 1)
+             {
+                 destArea = true;                                  // the first jump: around the target
+@@ -100,7 +106,7 @@ namespace wxl::spellarea
+                 else if (!(r >= rules.minRadius)) r = rules.chainRadius;
+             }
+             if (!cone && !casterArea && !destArea) continue;
+-            if (cone && !rules.cones) continue;
++            if (cone && (attrLine ? !rules.lines : !rules.cones)) continue;
+             if (!(r >= rules.minRadius)) continue;
+             r = std::min(r, rules.maxRadius);
+ 
+@@ -110,8 +116,9 @@ namespace wxl::spellarea
+             {
+                 const float angle = spell.coneAngle > 0.0f ? spell.coneAngle : rules.coneAngle;
+                 s.anchor = Anchor::Caster;
+-                if (angle >= 360.0f) s.kind = ShapeKind::Circle;                 // all around: just the circle
+-                else { s.kind = ShapeKind::Cone; s.param = angle; }
++                if (attrLine) { s.kind = ShapeKind::Line; s.param = rules.lineWidth; s.back = attrBack; }   // radius = the line's length
++                else if (angle >= 360.0f) s.kind = ShapeKind::Circle;                                     // all around: just the circle
++                else { s.kind = ShapeKind::Cone; s.param = angle; s.back = attrBack; }
+             }
+             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
+             else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
+@@ -122,7 +129,7 @@ namespace wxl::spellarea
+ 
+             bool dup = false;
+             for (size_t k = 0; k < n; ++k)
+-                if (out[k].kind == s.kind && out[k].anchor == s.anchor && std::fabs(out[k].radius - s.radius) < 0.01f)
++                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && std::fabs(out[k].radius - s.radius) < 0.01f)
+                 {
+                     // a damaging effect and a helpful one on the same spot: the damage is what to be careful about
+                     if (s.intent == Intent::Harmful) out[k].intent = Intent::Harmful;
+@@ -222,6 +229,82 @@ namespace wxl::spellarea
+         return found;
+     }
+ 
++    void CustomAttributeTable::Parse(const std::string& text, std::string& problems)
++    {
++        m_rows.clear();
++        size_t pos = 0;
++        int lineNo = 0;
++        bool first = true;
++        while (pos <= text.size())
++        {
++            size_t eol = text.find('\n', pos);
++            if (eol == std::string::npos) eol = text.size();
++            std::string line = text.substr(pos, eol - pos);
++            pos = eol + 1;
++            ++lineNo;
++            if (!line.empty() && line.back() == '\r') line.pop_back();
++            line = Trim(line);
++            if (line.empty() || line[0] == '#') continue;
++
++            const char sep = line.find('\t') != std::string::npos ? '\t' : line.find(';') != std::string::npos ? ';' : ',';
++            std::vector<std::string> cells;
++            size_t a = 0;
++            for (;;)
++            {
++                const size_t b = line.find(sep, a);
++                std::string cell = Trim(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
++                while (!cell.empty() && (cell.front() == '"' || cell.front() == '`')) cell.erase(cell.begin());
++                while (!cell.empty() && (cell.back() == '"' || cell.back() == '`')) cell.pop_back();
++                cells.push_back(cell);
++                if (b == std::string::npos) break;
++                a = b + 1;
++            }
++
++            char* end = nullptr;
++            const unsigned long spell = std::strtoul(cells[0].c_str(), &end, 10);
++            const bool numeric = !cells[0].empty() && *end == '\0';
++            if (!numeric && first) { first = false; continue; }       // a header line
++            first = false;
++
++            unsigned long long mask = 0;
++            bool maskOk = false;
++            if (numeric && spell <= 0xFFFFFFFFul && cells.size() >= 2 && !cells[1].empty())
++            {
++                const std::string& m = cells[1];
++                const bool hex = m.size() > 2 && m[0] == '0' && (m[1] == 'x' || m[1] == 'X');
++                char* e2 = nullptr;
++                mask = std::strtoull(m.c_str() + (hex ? 2 : 0), &e2, hex ? 16 : 10);
++                maskOk = *e2 == '\0' && mask <= 0xFFFFFFFFull;
++            }
++            if (!maskOk)
++            {
++                problems += "line " + std::to_string(lineNo) + ": expected a spell id and an attribute mask (whole numbers up to 4294967295); skipped\n";
++                continue;
++            }
++            bool found = false;
++            for (Row& r : m_rows)
++                if (r.spell == spell) { r.attributes = static_cast<uint32_t>(mask); found = true; break; }   // the last line of a spell counts
++            if (!found) m_rows.push_back(Row{ static_cast<uint32_t>(spell), static_cast<uint32_t>(mask) });
++        }
++        std::sort(m_rows.begin(), m_rows.end(), [](const Row& x, const Row& y) { return x.spell < y.spell; });
++    }
++
++    bool CustomAttributeTable::Find(uint32_t spellId, uint32_t& attributes) const
++    {
++        auto it = std::lower_bound(m_rows.begin(), m_rows.end(), spellId, [](const Row& r, uint32_t id) { return r.spell < id; });
++        if (it == m_rows.end() || it->spell != spellId) return false;
++        attributes = it->attributes;
++        return true;
++    }
++
++    size_t CustomAttributeTable::CountWith(uint32_t mask) const
++    {
++        size_t n = 0;
++        for (const Row& r : m_rows)
++            if ((r.attributes & mask) == mask) ++n;
++        return n;
++    }
++
+     void ConeAngleTable::Parse(const std::string& text, std::string& problems)
+     {
+         m_rows.clear();
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+index 24cd735..d91f3f7 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+@@ -27,8 +27,13 @@ namespace wxl::spellarea
+         float     radius = 0;   // circle radius, cone radius, line length (yards)
+         float     param  = 0;   // cone angle in degrees, line width in yards
+         Intent    intent = Intent::Neutral;
++        bool      back   = false;   // a cone or line that points behind the caster (the server's CONE_BACK attribute)
+     };
+ 
++    // ---- the server's custom spell attributes (acore SpellInfo::AttributesCu) that change the shape of a cone ----
++    constexpr uint32_t kAttrConeBack = 0x00000002;   // SPELL_ATTR0_CU_CONE_BACK: the cone is behind the caster (a tail sweep)
++    constexpr uint32_t kAttrConeLine = 0x00000004;   // SPELL_ATTR0_CU_CONE_LINE: the "cone" is a line in front of the caster
++
+     /// The part of a spell record this needs: its three effects, the target types of each (Spell.dbc
+     /// ImplicitTargetA / B), and each effect's radius in yards (already worked out from SpellRadius.dbc and the
+     /// caster's level; 0 = no radius).
+@@ -41,6 +46,7 @@ namespace wxl::spellarea
+         int32_t chainTargets[3] = {};   // Spell.dbc EffectChainTargets: how many targets the effect reaches by jumping
+         float   chainRadius = 0;        // the spell's jump distance from the server's table, yards; 0 = not known
+         float   coneAngle = 0;          // the spell's cone angle from SpellCone.csv, degrees; 0 = not listed
++        uint32_t customAttributes = 0;  // the spell's custom attribute mask from SpellsCustomAttribute.csv; 0 = none / not listed
+     };
+ 
+     struct ShapeRules
+@@ -51,6 +57,8 @@ namespace wxl::spellarea
+         bool  cones     = true;
+         bool  chain     = true;     // chain spells get the circle of their first jump around the target
+         float chainRadius = 12.5f;  // yards, for a chain effect that has no radius of its own
++        bool  lines     = true;     // the spells whose attributes say their "cone" is a line
++        float lineWidth = 4.0f;     // yards, the width of such a line
+     };
+ 
+     // ---- target type classes (3.3.5 Spell.dbc implicit target ids) ----
+@@ -66,7 +74,11 @@ namespace wxl::spellarea
+     /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
+     /// of its first jump, around the target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
+     /// cone: its cone target types use that angle instead of the default, and its areas around the caster become cones
+-    /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle. Its radius, in order: the spell's jump distance from the server's table
++    /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle.
++    /// The custom attributes (SpellEffects::customAttributes, from SpellsCustomAttribute.csv) pick the cone's direction
++    /// and shape: kAttrConeBack puts it behind the caster (Shape::back), kAttrConeLine makes it a line of
++    /// ShapeRules::lineWidth yards instead of a cone, as long as the radius (or behind, with both). Like a listed
++    /// cone angle, they turn the effect's area around the caster into that shape. Its radius, in order: the spell's jump distance from the server's table
+     /// (SpellEffects::chainRadius), the effect's own radius, ShapeRules::chainRadius. Lines cannot be told from the
+     /// DBC: they come from the override file.
+     size_t ShapesFromSpell(const SpellEffects& spell, const ShapeRules& rules, Shape out[3]);
+@@ -109,6 +121,24 @@ namespace wxl::spellarea
+         std::vector<Row> m_rows;   // sorted by spell id
+     };
+ 
++    // ---- custom attributes ----
++    /// SpellsCustomAttribute.csv: `spellId,attributes`, one spell per line, the attributes a decimal (or 0x hex) bit mask
++    /// like the server's spell custom attribute column. Comma, semicolon or tab separated; `#` starts a comment (the
++    /// usual `#spell_id,attributes` header line is one); a first line that is not numbers is skipped as a header.
++    class CustomAttributeTable
++    {
++    public:
++        void Parse(const std::string& text, std::string& problems);
++        bool Find(uint32_t spellId, uint32_t& attributes) const;
++        /// how many spells have every bit of `mask` set
++        size_t CountWith(uint32_t mask) const;
++        size_t Rows() const { return m_rows.size(); }
++
++    private:
++        struct Row { uint32_t spell; uint32_t attributes; };
++        std::vector<Row> m_rows;   // sorted by spell id
++    };
++
+     // ---- cone angles ----
+     /// SpellCone.csv: one line per spell, no header: `spellId,degrees` (comma, semicolon or tab; `#` starts a comment; a
+     /// first line that is not numbers is taken for a header and skipped). Degrees are above 0 and up to 360.
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellsCustomAttribute.example.csv b/Engine/Source/WXLModules/SpellArea/SpellsCustomAttribute.example.csv
+new file mode 100644
+index 0000000..af00b67
+--- /dev/null
++++ b/Engine/Source/WXLModules/SpellArea/SpellsCustomAttribute.example.csv
+@@ -0,0 +1,9 @@
++# SpellsCustomAttribute.csv: put it in the WXL folder beside the client executable (WXL\SpellsCustomAttribute.csv; the path
++# can be changed with [SpellArea] CustomAttributeFile). Export of the server's spell custom attribute column: spell id,
++# attribute mask (decimal or 0x hex). See SpellArea.md. Only two bits matter here:
++#   2 = CONE_BACK  the cone is behind the caster (a tail sweep)
++#   4 = CONE_LINE  the cone is a line in front of the caster
++# The rows below are examples.
++#spell_id,attributes
++26029,4
++24340,8
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index cd4f522..c3ab359 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -3,8 +3,12 @@
+ // size and color, caches its textures, and unregisters the renderer on shutdown.
+ #include "wxl_api.h"
+ 
++#include <cmath>
+ #include <cstdio>
+ #include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <string>
+ 
+ extern "C" int  WxlModuleInit(const WxlApi*, WxlModuleInfo*);
+ extern "C" void WxlModuleShutdown();
+@@ -14,10 +18,18 @@ static void Check(bool ok, const char* what) { if (!ok) { ++g_failed; std::print
+ 
+ static WxlSpellAreaRenderFn g_fn;
+ static void* g_user;
+-static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0;
++static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
++static std::string g_dir;
+ 
+ int main()
+ {
++    // the module's files live under <working directory>\WXL: a back cone (spell 20) and a line (spell 30)
++    const std::filesystem::path root = std::filesystem::temp_directory_path() / "spell_area_module_test";
++    std::filesystem::remove_all(root);
++    std::filesystem::create_directories(root / "WXL");
++    { std::ofstream f(root / "WXL" / "SpellsCustomAttribute.csv"); f << "#spell_id,attributes\r\n20,2\r\n30,4\r\n"; }
++    g_dir = root.string();
++
+     static WxlApi api = {};
+     api.abiVersion = WXL_ABI_VERSION;
+     api.structSize = sizeof(api);
+@@ -25,7 +37,7 @@ int main()
+     api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : d; };
+     api.iniGetString = [](const char*, const char*, char*, size_t) { return 0; };
+     api.iniStamp = []() -> uint64_t { return 1; };
+-    api.workingDirectory = []() -> const char* { return "/nonexistent"; };
++    api.workingDirectory = []() -> const char* { return g_dir.c_str(); };
+     api.spellAreaDynamicObjects = [](WxlSpellAreaDynObject* o, uint32_t) -> uint32_t
+     {
+         o[0] = {}; o[0].guid = 5; o[0].casterGuid = 9; o[0].spellId = 10; o[0].radius = 8; o[0].casterKnown = 1; o[0].casterHostile = 1;
+@@ -34,6 +46,7 @@ int main()
+     api.spellAreaCasters = [](WxlSpellAreaCaster* o, uint32_t) -> uint32_t
+     {
+         o[0] = {}; o[0].guid = 1; o[0].isPlayer = 1; o[0].castSpell = 20; o[0].castStartMs = 0; o[0].castEndMs = 5000; o[0].target = 7;
++        o[0].channelSpell = 30; o[0].channelEndMs = 5000;
+         return 1;
+     };
+     api.spellAreaEffects = [](uint32_t, uint64_t, WxlSpellAreaEffects* o) -> int
+@@ -49,6 +62,8 @@ int main()
+         ++g_draws;
+         if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
+         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
++        if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
++        if (d->half == 10.0f && d->rotate && std::fabs(d->facing) < 0.001f) ++g_frontLine;               // spell 30: in front
+     };
+     api.setSpellAreaRenderer = [](WxlSpellAreaRenderFn f, void* u) { g_fn = f; g_user = u; };
+ 
+@@ -61,10 +76,12 @@ int main()
+     std::printf("2. one frame (two render calls)\n");
+     g_fn(g_user, 0x200122, 5, 2500);
+     g_fn(g_user, 0x20000, 4, 2500);
+-    Check(g_draws == 4, "two areas drawn on each of the two calls");
++    Check(g_draws == 6, "three areas drawn on each of the two calls: the ground effect, the cast, the channel");
+     Check(g_redHalf8 == 2, "the enemy's dynamic object: 8 yards, red");
+-    Check(g_halfTen == 2, "the player's cast: 10 yards");
+-    Check(g_textures == 1, "one circle texture, made once");
++    Check(g_halfTen == 4, "the player's cast and channel: 10 yards");
++    Check(g_backCone == 2, "spell 20 has CONE_BACK: its cone is turned around, behind the caster");
++    Check(g_frontLine == 2, "spell 30 has CONE_LINE: a line along the facing");
++    Check(g_textures == 3, "a circle, a cone and a line texture, each made once");
+ 
+     std::printf("3. a cast that is over\n");
+     g_draws = 0;
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+index 7158004..f1990ac 100644
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -174,6 +174,68 @@ int main()
+               problems.find("line 3") != std::string::npos && problems.find("line 4") != std::string::npos, "bad rows (0, over 360, text, missing degrees) are reported and skipped");
+     }
+ 
++    std::printf("2e. custom attributes: cone back, cone line\n");
++    {
++        SpellEffects cone;            // a cone target type
++        cone.effect[0] = 2; cone.targetA[0] = 24; cone.radius[0] = 12;
++        Check(ShapesFromSpell(cone, rules, out) == 1 && out[0].kind == ShapeKind::Cone && !out[0].back, "no attributes: a cone in front");
++
++        SpellEffects back = cone; back.customAttributes = kAttrConeBack;
++        Check(ShapesFromSpell(back, rules, out) == 1 && out[0].kind == ShapeKind::Cone && out[0].back && Near(out[0].param, 90) && Near(out[0].radius, 12) && out[0].anchor == Anchor::Caster,
++              "CONE_BACK: the cone is behind the caster");
++        back.coneAngle = 60.0f;
++        Check(ShapesFromSpell(back, rules, out) == 1 && out[0].back && Near(out[0].param, 60), "CONE_BACK with a listed angle: behind, 60 degrees");
++
++        SpellEffects line = cone; line.customAttributes = kAttrConeLine;
++        Check(ShapesFromSpell(line, rules, out) == 1 && out[0].kind == ShapeKind::Line && !out[0].back && Near(out[0].radius, 12) && Near(out[0].param, 4.0f) && out[0].anchor == Anchor::Caster,
++              "CONE_LINE: a line as long as the radius, 4 yards wide");
++        line.coneAngle = 60.0f;
++        Check(ShapesFromSpell(line, rules, out) == 1 && out[0].kind == ShapeKind::Line, "CONE_LINE ignores a listed angle");
++        ShapeRules wide = rules; wide.lineWidth = 6.5f;
++        Check(ShapesFromSpell(line, wide, out) == 1 && Near(out[0].param, 6.5f), "the line width follows the rules");
++
++        SpellEffects both = cone; both.customAttributes = kAttrConeBack | kAttrConeLine;
++        Check(ShapesFromSpell(both, rules, out) == 1 && out[0].kind == ShapeKind::Line && out[0].back, "both: a line behind the caster");
++
++        SpellEffects area;            // the DBC only says "area around the caster"; the attribute is what makes it a cone
++        area.effect[0] = 2; area.targetA[0] = 22; area.targetB[0] = 15; area.radius[0] = 10;
++        area.customAttributes = kAttrConeBack;
++        Check(ShapesFromSpell(area, rules, out) == 1 && out[0].kind == ShapeKind::Cone && out[0].back && out[0].intent == Intent::Harmful, "an area around the caster with CONE_BACK: a cone behind");
++        area.customAttributes = kAttrConeLine;
++        Check(ShapesFromSpell(area, rules, out) == 1 && out[0].kind == ShapeKind::Line, "an area around the caster with CONE_LINE: a line");
++
++        SpellEffects dest;            // an area around a destination is not a cone, whatever the attributes say
++        dest.effect[0] = 2; dest.targetA[0] = 16; dest.radius[0] = 8; dest.customAttributes = kAttrConeBack | kAttrConeLine;
++        Check(ShapesFromSpell(dest, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest && !out[0].back, "a destination area stays a circle");
++
++        SpellEffects other = cone; other.customAttributes = 0x8 | 0x40 | 0x80000000u;   // other custom attributes change nothing
++        Check(ShapesFromSpell(other, rules, out) == 1 && out[0].kind == ShapeKind::Cone && !out[0].back, "unrelated attribute bits are ignored");
++
++        ShapeRules nolines = rules; nolines.lines = false;
++        Check(ShapesFromSpell(line, nolines, out) == 0, "Lines off: a line spell draws nothing");
++        Check(ShapesFromSpell(back, nolines, out) == 1, "Lines off leaves cones alone");
++        ShapeRules nocones = rules; nocones.cones = false;
++        Check(ShapesFromSpell(back, nocones, out) == 0, "Cones off: a back cone draws nothing");
++        Check(ShapesFromSpell(line, nocones, out) == 1 && out[0].kind == ShapeKind::Line, "Cones off leaves lines alone");
++
++        SpellEffects full = cone; full.customAttributes = kAttrConeBack; full.coneAngle = 360.0f;
++        Check(ShapesFromSpell(full, rules, out) == 1 && out[0].kind == ShapeKind::Circle && !out[0].back, "a 360 degree cone is a circle, front or back");
++
++        CustomAttributeTable t;
++        std::string problems;
++        t.Parse("#spell_id,attributes\r\n12323,0\r\n26029,4\r\n24340,8\r\n4294967296,1\r\n99,2\r\n100,6\r\n101;0x2\r\n102\t2147483648\r\n26029,4\r\n", problems);
++        uint32_t m = 0;
++        Check(t.Find(26029, m) && m == 4 && t.Find(24340, m) && m == 8 && t.Find(12323, m) && m == 0 && !t.Find(1, m), "table: decimal masks, comments, the usual header line");
++        Check(t.Find(101, m) && m == 2 && t.Find(102, m) && m == 0x80000000u, "table: hex mask, semicolon and tab, a mask above 2^31");
++        Check(problems.find("line 5") != std::string::npos, "table: a spell id above 32 bits is reported");
++        Check(t.CountWith(kAttrConeLine) == 2 && t.CountWith(kAttrConeBack) == 3 && t.CountWith(kAttrConeBack | kAttrConeLine) == 1, "table: counts by bit (26029 and 100 are lines; 99, 100 and 101 are back)");
++        CustomAttributeTable bad;
++        problems.clear();
++        bad.Parse("spell_id,attributes\n7,notanumber\n8\n9,4294967296\nabc,4\n10,4\n", problems);
++        Check(bad.Rows() == 1 && bad.Find(10, m) && m == 4 && problems.find("line 2") != std::string::npos && problems.find("line 3") != std::string::npos &&
++              problems.find("line 4") != std::string::npos && problems.find("line 5") != std::string::npos, "table: bad rows are reported and skipped, a plain header line is skipped quietly");
++    }
++
+     std::printf("3. override file\n");
+     {
+         OverrideTable t;

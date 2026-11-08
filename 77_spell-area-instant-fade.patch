@@ -1,0 +1,540 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 49c963c..921a9e9 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -372,6 +372,24 @@ typedef struct WxlSpellAreaDraw
+     uint32_t projectFlags;
+ } WxlSpellAreaDraw;
+ 
++/* A spell that has just gone off (SMSG_SPELL_GO), kept for a few seconds so the module can show where an instant spell hit.
++ * `instant` is 1 when the spell has no cast time and no channel (Thunder Clap, Arcane Explosion, Cone of Cold ...): the
++ * spells that never show up as a cast in progress. sequence counts up from 1; ask for what came after the last one seen. */
++typedef struct WxlSpellAreaCastEvent
++{
++    uint64_t sequence;
++    uint64_t casterGuid;
++    uint64_t objectTarget;      /* what the cast was aimed at, 0 for none */
++    uint32_t spellId;
++    uint32_t instant;
++    uint32_t castFlags;
++    uint32_t targetFlags;       /* WXL_SPELLAREA_TARGET_DEST set: dest is the ground point */
++    float    dest[3];
++    uint32_t atMs;              /* the client's millisecond clock when the packet was handled */
++    uint32_t casterIsPlayer;
++    uint32_t casterHostile;
++} WxlSpellAreaCastEvent;
++
+ /* Called from the world render, beside the client's own spell cursor shadow: once after the opaque pass with
+  * (0x200122, 5) and once after the transparent ones with (0x20000, 4) (the second leaves the doodads out so nothing is
+  * drawn twice). Draw from it with spellAreaDraw, nowhere else. */
+@@ -572,6 +590,9 @@ typedef struct WxlApi
+     void     (*spellAreaDraw)(const WxlSpellAreaDraw* draw);
+     /* The one function the world render calls (see WxlSpellAreaRenderFn); a later call replaces the earlier. */
+     void     (*setSpellAreaRenderer)(WxlSpellAreaRenderFn fn, void* user);
++    /* The spells that went off after `afterSequence` (0 for all that are kept), oldest first, up to `max`; returns the
++     * count. The core keeps the last 64. Check WXL_API_HAS(api, spellAreaCastEvents) once. */
++    uint32_t (*spellAreaCastEvents)(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+index 2a88972..2e2520c 100644
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -252,6 +252,7 @@ namespace wxl::api
+             &wxl::api::spellareahost::CreateTexture,
+             &wxl::api::spellareahost::Draw,
+             &wxl::api::spellareahost::SetRenderer,
++            &wxl::api::spellareahost::CastEvents,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.cpp b/Engine/Source/WXLApi/SpellAreaHost.cpp
+index 9b272b1..d6c16a9 100644
+--- a/Engine/Source/WXLApi/SpellAreaHost.cpp
++++ b/Engine/Source/WXLApi/SpellAreaHost.cpp
+@@ -19,7 +19,9 @@ namespace wxl::api::spellareahost
+     void*    CreateTexture(const uint32_t*, uint32_t, const char*) { return nullptr; }
+     void     Draw(const WxlSpellAreaDraw*) {}
+     void     SetRenderer(WxlSpellAreaRenderFn, void*) {}
++    uint32_t CastEvents(uint64_t, WxlSpellAreaCastEvent*, uint32_t) { return 0; }
+     void     Render(uint32_t, uint32_t) {}
++    void     NoteSpellGo(uint64_t, uint32_t, uint32_t, uint32_t, const float*, uint64_t) {}
+ }
+ 
+ #else
+@@ -35,6 +37,7 @@ namespace wxl::api::spellareahost
+ #include "Engine/Source/Tempest/CAaBox.h"
+ #include "Engine/Source/Tempest/CImVector.h"
+ #include "WoW/Source/DB/DBClient/DBClient.h"
++#include "WoW/Source/DB/Rec/SpellCastTimesRec.h"
+ #include "WoW/Source/DB/Rec/SpellRadiusRec.h"
+ #include "WoW/Source/DB/Rec/SpellRec.h"
+ #include "WoW/Source/Game/GameClient/ProjectTex.h"
+@@ -166,6 +169,20 @@ namespace wxl::api::spellareahost
+         }
+ 
+         template <class T> T Clamp(T v, T lo, T hi) { return std::max(lo, std::min(hi, v)); }
++
++        // ----------------------------------------------------------------------------------- the spell-go events
++        constexpr uint32_t kEventRing = 64;
++        WxlSpellAreaCastEvent g_events[kEventRing];
++        uint64_t              g_eventCount = 0;   // events ever noted: the newest has this sequence
++
++        // No cast time (no record, base and per-level 0) and not a channel (attributes ex 0x4 and 0x40).
++        bool IsInstant(const SpellRec& spell)
++        {
++            if (spell.m_attributesEx & 0x44) return false;
++            if (spell.m_castingTimeIndex == 0) return true;
++            SpellCastTimesRec* castTime = g_spellCastTimesDB.GetRecord(spell.m_castingTimeIndex);
++            return !castTime || (castTime->m_base <= 0 && castTime->m_perLevel <= 0);
++        }
+     }
+ 
+     uint32_t DynamicObjects(WxlSpellAreaDynObject* out, uint32_t max)
+@@ -304,6 +321,42 @@ namespace wxl::api::spellareahost
+         g_theGxDevicePtr->RsPop();
+     }
+ 
++    uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max)
++    {
++        if (!out || !max) return 0;
++        const uint64_t oldest = g_eventCount > kEventRing ? g_eventCount - kEventRing + 1 : 1;
++        uint64_t first = std::max(afterSequence + 1, oldest);
++        uint32_t count = 0;
++        for (uint64_t seq = first; seq <= g_eventCount && count < max; ++seq)
++            out[count++] = g_events[(seq - 1) % kEventRing];
++        return count;
++    }
++
++    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget)
++    {
++        SpellRec spell;
++        if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return;
++
++        WxlSpellAreaCastEvent e = {};
++        e.sequence     = g_eventCount + 1;
++        e.casterGuid   = caster;
++        e.objectTarget = objectTarget;
++        e.spellId      = spellId;
++        e.instant      = IsInstant(spell) ? 1u : 0u;
++        e.castFlags    = castFlags;
++        e.targetFlags  = targetFlags;
++        if (dest) { e.dest[0] = dest[0]; e.dest[1] = dest[1]; e.dest[2] = dest[2]; }
++        e.atMs         = OsGetAsyncTimeMs();
++
++        WOWGUID player;
++        CGUnit_C* playerUnit = PlayerUnit(player);
++        e.casterIsPlayer = caster && player.m_guid == caster ? 1u : 0u;
++        e.casterHostile  = Hostile(caster ? Unit(WOWGUID{ caster }) : nullptr, playerUnit) ? 1u : 0u;
++
++        g_events[g_eventCount % kEventRing] = e;
++        ++g_eventCount;
++    }
++
+     void SetRenderer(WxlSpellAreaRenderFn fn, void* user)
+     {
+         g_renderer = fn;
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.h b/Engine/Source/WXLApi/SpellAreaHost.h
+index 40bfa7e..b0ad4df 100644
+--- a/Engine/Source/WXLApi/SpellAreaHost.h
++++ b/Engine/Source/WXLApi/SpellAreaHost.h
+@@ -22,4 +22,5 @@ namespace wxl::api::spellareahost
+     void*    CreateTexture(const uint32_t* argbPixels, uint32_t size, const char* name);
+     void     Draw(const WxlSpellAreaDraw* draw);
+     void     SetRenderer(WxlSpellAreaRenderFn fn, void* user);
++    uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
+ }
+diff --git a/Engine/Source/WXLApi/SpellAreaRender.h b/Engine/Source/WXLApi/SpellAreaRender.h
+index c42cb21..17cb68a 100644
+--- a/Engine/Source/WXLApi/SpellAreaRender.h
++++ b/Engine/Source/WXLApi/SpellAreaRender.h
+@@ -1,4 +1,4 @@
+-// The one call the world render makes for the spell area indicator. See SpellAreaHost.h.
++// The calls the client makes for the spell area indicator. See SpellAreaHost.h.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+ // Kept apart from SpellAreaHost.h so the client's UI code can include it without the module API header (which refuses
+@@ -14,4 +14,9 @@ namespace wxl::api::spellareahost
+     /// flags of those two calls (the second leaves the doodads out so nothing is drawn twice). Calls the spell area
+     /// module's renderer when there is one; does nothing when that module is not loaded (or declined to load).
+     void Render(uint32_t triFlags, uint32_t projectFlags);
++
++    /// Called when a spell-go packet has been read (PendingSpellCast::OnSpellGo): the caster, the spell, its cast flags
++    /// and what it was aimed at. `dest` is the ground point (three floats) or null. Kept for the spell area module's
++    /// instant-cast indicator; costs a few stores when nobody asks.
++    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget);
+ }
+diff --git a/Engine/Source/WXLModules/SpellArea/Module.cpp b/Engine/Source/WXLModules/SpellArea/Module.cpp
+index 2c9f628..691df82 100644
+--- a/Engine/Source/WXLModules/SpellArea/Module.cpp
++++ b/Engine/Source/WXLModules/SpellArea/Module.cpp
+@@ -15,9 +15,9 @@ WXL_DEFINE_MODULE_ABI()
+ 
+ WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
+ {
+-    // setSpellAreaRenderer is the last member of the engine access added for this module: its presence means all of
++    // spellAreaCastEvents is the last member of the engine access added for this module: its presence means all of
+     // them are.
+-    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, setSpellAreaRenderer)) return 1;
++    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, spellAreaCastEvents)) return 1;
+     wxl::module::Bind(api);
+     if (info)
+     {
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index 1d9e658..15c8859 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -40,6 +40,8 @@ namespace wxl::spellarea
+             bool  channel      = true;    // the area of a spell that is being channeled
+             bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
+             bool  cones        = true;
++            bool  instant      = false;   // spells with no cast time: an area that shows where they hit and fades away
++            float instantFade  = 1.5f;    // seconds it takes to fade out
+             float opacity      = 0.65f;
+             float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
+             bool  chain        = true;    // chain spells: the circle of the first jump around the target
+@@ -144,6 +146,8 @@ namespace wxl::spellarea
+             c.channel     = IniInt("Channel", 1) != 0;
+             c.persistent  = IniInt("Persistent", 1) != 0;
+             c.cones       = IniInt("Cones", 1) != 0;
++            c.instant     = IniInt("Instant", 0) != 0;
++            c.instantFade = Clamp(IniFloat("InstantFadeSeconds", c.instantFade), 0.05f, 30.0f);
+             c.opacity     = Clamp(IniFloat("Opacity", c.opacity), 0.05f, 1.0f);
+             c.maxOpacity  = Clamp(IniFloat("MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
+             c.chain       = IniInt("Chain", 1) != 0;
+@@ -168,10 +172,10 @@ namespace wxl::spellarea
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, opacity %.2f max %.2f)",
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, instant %d fading over %.2fs, opacity %.2f max %.2f)",
+                             c.enabled ? "on" : "off",
+                             c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
+-                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.opacity, c.maxOpacity);
++                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.instant, c.instantFade, c.opacity, c.maxOpacity);
+         }
+ 
+         // One csv the module reads: its text, or false when the file is not there (they are all optional).
+@@ -271,11 +275,25 @@ namespace wxl::spellarea
+             float    pos[3] = {};        // a fixed ground point, when !follow
+             float    facing = 0;         // a fixed facing, when !follow
+             float    strength = 1.0f;    // 0..1: how far the cast is (an area that is only being cast fades in)
++            float    alphaScale = 1.0f;  // 0..1: what is left of an instant spell's area as it fades out
+         };
+ 
+         std::vector<Area> g_areas;
+         uint32_t          g_lastCollect = 0;
+ 
++        // The areas of instant spells that went off a moment ago: where they hit, fading away.
++        struct Fading
++        {
++            Area     area;               // a fixed place and facing: it happened there
++            uint32_t startMs = 0;
++            uint32_t durationMs = 0;
++            uint64_t caster = 0;
++            uint32_t spell = 0;
++        };
++        std::vector<Fading> g_fading;
++        uint64_t            g_eventSeq = 0;         // the last cast event looked at
++        bool                g_eventsPrimed = false; // the ones from before the indicator was switched on are skipped
++
+         constexpr uint32_t kMaxScan = 128;   // dynamic objects / casting units asked of the core per collection
+ 
+         // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
+@@ -427,6 +445,14 @@ namespace wxl::spellarea
+             const uint32_t dynCount = Api()->spellAreaDynamicObjects(dynBuf, kMaxScan);
+             for (uint32_t i = 0; i < dynCount; ++i) AddDynamicObject(dynBuf[i], dyn);
+ 
++            // a ground effect that now exists draws the real area: the fading circle of the same cast goes
++            g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [&dyn](const Fading& f)
++            {
++                if (f.area.shape.kind != ShapeKind::Circle) return false;
++                for (const DynKey& d : dyn) if (d.caster == f.caster && d.spell == f.spell) return true;
++                return false;
++            }), g_fading.end());
++
+             const uint32_t casterCount = Api()->spellAreaCasters(casterBuf, kMaxScan);   // the player first
+             for (uint32_t i = 0; i < casterCount; ++i)
+             {
+@@ -436,6 +462,67 @@ namespace wxl::spellarea
+             }
+         }
+ 
++        // ----------------------------------------------------------------------------------------- instant spells
++        // A spell with no cast time never shows up as a cast in progress: the core reports each spell that goes off, and
++        // the ones without a cast time or channel get an area that starts at full strength and fades out.
++        void AddInstant(const WxlSpellAreaCastEvent& e, uint32_t now)
++        {
++            if (!e.instant) return;
++            if (e.casterIsPlayer ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || e.casterHostile))) return;
++
++            const uint32_t durationMs = static_cast<uint32_t>(g_cfg.instantFade * 1000.0f + 0.5f);
++            if (now - e.atMs >= durationMs) return;                       // it is over before it is seen
++
++            Shape shapes[8];
++            const size_t n = ShapesOf(e.spellId, e.casterGuid, shapes);
++            for (size_t i = 0; i < n; ++i)
++            {
++                Fading f;
++                f.area.shape = shapes[i];
++                f.startMs = e.atMs;
++                f.durationMs = durationMs;
++                f.caster = e.casterGuid;
++                f.spell = e.spellId;
++
++                float pos[3] = {}, facing = 0;
++                bool placed = false;
++                if (shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster)
++                    placed = Api()->spellAreaObjectPose(e.casterGuid, pos, &facing) != 0;      // around or in front of the caster
++                else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
++                    { std::memcpy(pos, e.dest, sizeof(pos)); placed = true; }                  // the ground point it was aimed at
++                else if (e.objectTarget)
++                    placed = Api()->spellAreaObjectPose(e.objectTarget, pos, &facing) != 0;    // around its target
++                if (!placed) continue;
++
++                std::memcpy(f.area.pos, pos, sizeof(pos));
++                f.area.facing = facing;
++                if (static_cast<int>(g_fading.size()) >= g_cfg.maxAreas) g_fading.erase(g_fading.begin());
++                g_fading.push_back(f);
++            }
++        }
++
++        void UpdateInstant(uint32_t now)
++        {
++            if (!g_cfg.instant)
++            {
++                g_fading.clear();
++                g_eventsPrimed = false;
++                return;
++            }
++
++            static WxlSpellAreaCastEvent events[64];
++            const uint32_t count = Api()->spellAreaCastEvents(g_eventSeq, events, 64);
++            for (uint32_t i = 0; i < count; ++i)
++            {
++                g_eventSeq = std::max(g_eventSeq, events[i].sequence);
++                if (g_eventsPrimed) AddInstant(events[i], now);
++            }
++            g_eventsPrimed = true;
++
++            g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [now](const Fading& f)
++                { return now - f.startMs >= f.durationMs; }), g_fading.end());
++        }
++
+         // ------------------------------------------------------------------------------------------- the textures
+         constexpr int kTexSize = 256;
+ 
+@@ -481,7 +568,7 @@ namespace wxl::spellarea
+             if (!texture || !(half > 0.0f)) return;
+ 
+             const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
+-            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
++            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity) * a.alphaScale;
+ 
+             const float kPi = 3.14159265358979f;
+             if (s.back) facing += kPi;                                       // a cone or line behind the caster
+@@ -516,6 +603,14 @@ namespace wxl::spellarea
+                 g_lastCollect = now ? now : 1;
+             }
+ 
++            UpdateInstant(now);
++            for (const Fading& f : g_fading)
++            {
++                Area a = f.area;
++                a.alphaScale = 1.0f - static_cast<float>(now - f.startMs) / static_cast<float>(f.durationMs);
++                if (a.alphaScale > 0.0f) DrawArea(a, a.pos, a.facing, triFlags, projectFlags);
++            }
++
+             for (const Area& a : g_areas)
+             {
+                 float pos[3] = { a.pos[0], a.pos[1], a.pos[2] };
+@@ -537,6 +632,7 @@ namespace wxl::spellarea
+         const WxlApi* api = Api();
+         if (api && WXL_API_HAS(api, setSpellAreaRenderer)) api->setSpellAreaRenderer(nullptr, nullptr);
+         g_areas.clear();
++        g_fading.clear();
+         g_textures.clear();
+     }
+ }
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index 734b97d..10debc4 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -29,6 +29,8 @@ Others=0                ; everybody else's too (an enemy casting an area spell s
+ EnemiesOnly=0           ; 1 = ONLY what hostile units cast: your own and friendly areas are left out
+ Precast=1               ; the area of a spell being cast
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
++Instant=0               ; spells with no cast time (Thunder Clap, Arcane Explosion, Cone of Cold ...): an area where they hit, fading away
++InstantFadeSeconds=1.5  ; how long that area takes to fade out: 0.05 to 30, fractions allowed (0.4, 2.5 ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+ Cones=1                 ; cone spells
+ Lines=1                 ; spells whose "cone" is a line (CONE_LINE in the custom attributes file)
+@@ -62,6 +64,7 @@ OverrideFile=SpellAreaOverride.csv
+ | a cone spell (Cone of Cold, Dragon's Breath ...) | cone, 90 degrees by default | the caster, turning with it |
+ | a cone spell the custom attributes mark CONE_BACK (a tail sweep) | the same cone, **behind** the caster | the caster, turning with it |
+ | a cone spell the custom attributes mark CONE_LINE | a **line** as long as the spell's radius, `LineWidth` wide, in front | the caster, turning with it |
++| an instant spell that has just gone off, with `Instant=1` (Thunder Clap, Arcane Explosion, Cone of Cold, Fan of Knives ...) | the spell's usual shape (circle, cone or line) at **full** strength that fades out linearly over `InstantFadeSeconds` | where it went off: around or in front of the caster, on the ground point it was aimed at, or around its target; it stays there, it does not follow |
+ | anything lying on the ground (Blizzard, Consecration, Death and Decay, Rain of Fire, Volley, ground effects of bosses) | circle of its real radius | the game's dynamic object, for as long as it exists |
+ 
+ The size is the spell's own radius from the client data, worked out for the caster's level, and for **your** spells
+@@ -170,6 +173,20 @@ SpellId,Shape,Anchor,Radius,Param,Intent
+ * Comma or semicolon separated; `#` starts a comment; a header line is skipped. A bad line is skipped and written to
+   `WXL.log` (category AOE, needs `[Log] Enabled=1`).
+ 
++## Instant spells
++
++A spell with no cast time never shows up as a cast in progress, so the other indicators never see it. With `Instant=1` the
++client reports every spell that goes off (the server's spell-go packet) and the ones with **no cast time and no channel**
++get an area for `InstantFadeSeconds`: full strength the moment it goes off, then fading out evenly to nothing. The shape is
++worked out exactly as for a cast (the override, cone, jump and attribute files all apply), and `Own`, `Others` and
++`EnemiesOnly` decide whose spells show.
++
++* Spells the client does not draw a shape for (single target spells, buffs) show nothing, as they do for casts.
++* A ground effect that appears with the spell (Consecration ...) replaces the fading circle as soon as it exists, so it is
++  not drawn twice. Channels and spells with a cast time are left to `Channel` and `Precast`.
++* The areas that are fading count toward `MaxAreas`; the oldest goes first when there are too many.
++* Switching `Instant` on does not show spells that went off before.
++
+ ## Limits
+ 
+ * Area traps and other game objects (Explosive Trap, a placed totem's radius) are not drawn: they are objects, not
+@@ -195,7 +212,8 @@ drawn; it sees the engine only through the module API (`Engine/Source/WXL/Sdk/wx
+   the targets of a cast in progress, an object's position, the texture upload and the projected-texture draw.
+ * `WorldFrame.cpp`: two `wxl::api::spellareahost::Render` calls beside the client's own cursor shadow; they call the
+   renderer the module registered with `setSpellAreaRenderer`, and do nothing without the module.
+-* `Spell_C.cpp`: `Spell_C_WxlFindPendingCast`, the targets of a cast in progress.
++* `Spell_C.cpp`: `Spell_C_WxlFindPendingCast`, the targets of a cast in progress, and the call in `PendingSpellCast::OnSpellGo`
++  that reports a spell going off (`NoteSpellGo`, kept in a ring of 64 for the instant spell fade).
+ 
+ The csv files are read from the client's folder as before (`WXL\SpellJumpDistance.csv`, `WXL\SpellCone.csv`,
+ `SpellAreaOverride.csv`); the examples next to this file show the format.
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index c3ab359..1de376e 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -18,6 +18,11 @@ static void Check(bool ok, const char* what) { if (!ok) { ++g_failed; std::print
+ 
+ static WxlSpellAreaRenderFn g_fn;
+ static void* g_user;
++static int g_instantOn = 0;
++static float g_fadeSeconds = 2.0f;
++static uint32_t g_eventAt = 0;
++static uint64_t g_eventsMade = 0;
++static int g_lastAlpha = -1, g_instantDraws = 0;
+ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
+ static std::string g_dir;
+ 
+@@ -34,9 +39,21 @@ int main()
+     api.abiVersion = WXL_ABI_VERSION;
+     api.structSize = sizeof(api);
+     api.log = [](const char*, const char*) {};
+-    api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : d; };
+-    api.iniGetString = [](const char*, const char*, char*, size_t) { return 0; };
+-    api.iniStamp = []() -> uint64_t { return 1; };
++    api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : !std::strcmp(k, "Instant") ? g_instantOn : d; };
++    api.iniGetString = [](const char*, const char* k, char* out, size_t cap) -> int
++    {
++        if (std::strcmp(k, "InstantFadeSeconds") != 0) return 0;
++        std::snprintf(out, cap, "%.2f", g_fadeSeconds);
++        return 1;
++    };
++    api.iniStamp = []() -> uint64_t { return 1 + g_instantOn + static_cast<uint64_t>(g_fadeSeconds * 100.0f); };   // saving the ini changes the stamp
++    api.spellAreaCastEvents = [](uint64_t after, WxlSpellAreaCastEvent* out, uint32_t) -> uint32_t
++    {
++        if (!g_eventsMade || g_eventsMade <= after) return 0;
++        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = 1; out[0].spellId = 40; out[0].instant = 1;
++        out[0].casterIsPlayer = 1; out[0].atMs = g_eventAt;
++        return 1;
++    };
+     api.workingDirectory = []() -> const char* { return g_dir.c_str(); };
+     api.spellAreaDynamicObjects = [](WxlSpellAreaDynObject* o, uint32_t) -> uint32_t
+     {
+@@ -49,9 +66,9 @@ int main()
+         o[0].channelSpell = 30; o[0].channelEndMs = 5000;
+         return 1;
+     };
+-    api.spellAreaEffects = [](uint32_t, uint64_t, WxlSpellAreaEffects* o) -> int
++    api.spellAreaEffects = [](uint32_t sp, uint64_t, WxlSpellAreaEffects* o) -> int
+     {
+-        *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = 10;   // an area around the caster, 10 yards
++        *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = sp == 40 ? 6.0f : 10.0f;   // around the caster
+         return 1;
+     };
+     api.spellAreaPendingCast = [](uint64_t, uint32_t, WxlSpellAreaPending*) -> int { return 0; };
+@@ -62,6 +79,7 @@ int main()
+         ++g_draws;
+         if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
+         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
++        if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; }     // the instant spell's area (spell 40)
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing) < 0.001f) ++g_frontLine;               // spell 30: in front
+     };
+@@ -88,7 +106,36 @@ int main()
+     g_fn(g_user, 0x200122, 5, 2500 + 5000 + 1000);   // past the cast's end: only the dynamic object is left
+     Check(g_draws == 1, "only the ground effect remains");
+ 
+-    std::printf("4. shutdown\n");
++    std::printf("4. instant spells (off by default, fading over 2 s when on)\n");
++    g_instantOn = 0;
++    g_eventsMade = 1; g_eventAt = 20000;
++    g_instantDraws = 0;
++    g_fn(g_user, 0x200122, 5, 20000);
++    Check(g_instantDraws == 0, "nothing drawn with Instant=0");
++    g_instantOn = 1;
++    g_fn(g_user, 0x200122, 5, 21000);               // switching on: the event from before is not shown
++    Check(g_instantDraws == 0, "events from before it was switched on are skipped");
++    g_eventsMade = 2; g_eventAt = 30000;
++    g_instantDraws = 0; g_lastAlpha = -1;
++    g_fn(g_user, 0x200122, 5, 30000);
++    Check(g_instantDraws == 1, "an instant spell is drawn the moment it goes off");
++    const int full = g_lastAlpha;
++    Check(full == 166, "at the full opacity (0.65)");
++    g_fn(g_user, 0x200122, 5, 31000);
++    const int half = g_lastAlpha;
++    Check(half > 0 && half < full && half >= full / 2 - 2 && half <= full / 2 + 2, "half way through it is half as strong");
++    g_instantDraws = 0;
++    g_fn(g_user, 0x200122, 5, 32100);
++    Check(g_instantDraws == 0, "gone after the fade time");
++    g_fadeSeconds = 0.5f; g_instantOn = 0; g_fn(g_user, 0x200122, 5, 33000); g_instantOn = 1; g_fn(g_user, 0x200122, 5, 34000);  // reload with 0.5 s
++    g_eventsMade = 3; g_eventAt = 40000; g_instantDraws = 0;
++    g_fn(g_user, 0x200122, 5, 40300);
++    Check(g_instantDraws == 1, "a fraction of a second works");
++    g_instantDraws = 0;
++    g_fn(g_user, 0x200122, 5, 40600);
++    Check(g_instantDraws == 0, "and is over after it");
++
++    std::printf("5. shutdown\n");
+     WxlModuleShutdown();
+     Check(g_fn == nullptr, "renderer unregistered");
+ 
+diff --git a/WoW/Source/Magic/MagicClient/Spell_C.cpp b/WoW/Source/Magic/MagicClient/Spell_C.cpp
+index e6a88bb..9c348fa 100644
+--- a/WoW/Source/Magic/MagicClient/Spell_C.cpp
++++ b/WoW/Source/Magic/MagicClient/Spell_C.cpp
+@@ -1,3 +1,4 @@
++#include "Engine/Source/WXLApi/SpellAreaRender.h"
+ #include "Spell_C.h"
+ #include "WoW/Source/Magic/Types.h"
+ #include "Engine/Source/Base/CDataStore.h"
+@@ -1891,6 +1892,20 @@ void PendingSpellCast::OnSpellGo(CDataStore* msg) {
+         return;
+     }
+ 
++    // WXL: tell the spell area indicator what just went off and where (the instant-cast fade)
++    {
++        float destPos[3] = { 0.0f, 0.0f, 0.0f };
++        if (this->m_data.m_targetFlags & 0x40) {
++            const C3Vector dest = this->m_data.GetDestLocation();
++            destPos[0] = dest.x;
++            destPos[1] = dest.y;
++            destPos[2] = dest.z;
++        }
++        wxl::api::spellareahost::NoteSpellGo(caster.m_guid, static_cast<uint32_t>(this->m_data.m_spellId), this->m_data.m_castFlags,
++                                             this->m_data.m_targetFlags, (this->m_data.m_targetFlags & 0x40) ? destPos : nullptr,
++                                             this->m_data.m_objectTarget.m_guid);
++    }
++
+     CGUnit_C* unit = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(caster, TYPEMASK_UNIT, __FILE__, __LINE__));
+ 
+     if (!this->HasValidTransports()) {

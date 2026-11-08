@@ -19,7 +19,11 @@ namespace wxl::api::spellareahost
     void*    CreateTexture(const uint32_t*, uint32_t, const char*) { return nullptr; }
     void     Draw(const WxlSpellAreaDraw*) {}
     void     SetRenderer(WxlSpellAreaRenderFn, void*) {}
+    uint32_t CastEvents(uint64_t, WxlSpellAreaCastEvent*, uint32_t) { return 0; }
+    int      Triggers(uint32_t, WxlSpellAreaTriggers*) { return 0; }
+    uint32_t TriggerAuras(WxlSpellAreaAura*, uint32_t) { return 0; }
     void     Render(uint32_t, uint32_t) {}
+    void     NoteSpellGo(uint64_t, uint32_t, uint32_t, uint32_t, const float*, uint64_t, uint32_t) {}
 }
 
 #else
@@ -35,6 +39,7 @@ namespace wxl::api::spellareahost
 #include "Engine/Source/Tempest/CAaBox.h"
 #include "Engine/Source/Tempest/CImVector.h"
 #include "WoW/Source/DB/DBClient/DBClient.h"
+#include "WoW/Source/DB/Rec/SpellCastTimesRec.h"
 #include "WoW/Source/DB/Rec/SpellRadiusRec.h"
 #include "WoW/Source/DB/Rec/SpellRec.h"
 #include "WoW/Source/Game/GameClient/ProjectTex.h"
@@ -48,6 +53,7 @@ namespace wxl::api::spellareahost
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace wxl::api::spellareahost
@@ -87,6 +93,7 @@ namespace wxl::api::spellareahost
         {
             WOWGUID   player = {};
             CGUnit_C* playerUnit = nullptr;
+            WxlSpellAreaAura*      auras = nullptr;
             WxlSpellAreaDynObject* dyn = nullptr;
             WxlSpellAreaCaster*    casters = nullptr;
             uint32_t  max = 0;
@@ -148,6 +155,86 @@ namespace wxl::api::spellareahost
             return 1;
         }
 
+        // ------------------------------------------------------------------------------------ triggered spells
+        // The spell data never changes while the client runs: what a spell triggers is worked out once.
+        constexpr int32_t kAuraPeriodicTrigger = 23, kAuraPeriodicTriggerWithValue = 226;
+        constexpr int32_t kEffectTriggerMissile = 32, kEffectTriggerSpell = 64, kEffectTriggerSpellWithValue = 142, kEffectTriggerMissileWithValue = 145;
+
+        bool ReadTriggers(uint32_t spellId, WxlSpellAreaTriggers* out)
+        {
+            SpellRec spell;
+            if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return false;
+
+            WxlSpellAreaTriggers t = {};
+            t.speed = spell.m_speed > 0.0f ? spell.m_speed : 0.0f;
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                const int32_t triggered = spell.m_effectTriggerSpell[i];
+                if (triggered <= 0 || static_cast<uint32_t>(triggered) == spellId) continue;
+                SpellRec target;
+                if (!g_spellDB.GetRecord(triggered, &target)) continue;
+
+                uint32_t kind = 0;
+                const int32_t effect = spell.m_effect[i];
+                if (effect == kEffectTriggerMissile || effect == kEffectTriggerMissileWithValue) kind = WXL_SPELLAREA_TRIGGER_MISSILE;
+                else if (effect == kEffectTriggerSpell || effect == kEffectTriggerSpellWithValue) kind = WXL_SPELLAREA_TRIGGER_CAST;
+                else if (spell.m_effectAura[i] == kAuraPeriodicTrigger || spell.m_effectAura[i] == kAuraPeriodicTriggerWithValue) kind = WXL_SPELLAREA_TRIGGER_PERIODIC;
+                if (!kind) continue;
+
+                WxlSpellAreaTrigger& e = t.trigger[t.count++];
+                e.kind        = kind;
+                e.spellId     = static_cast<uint32_t>(triggered);
+                e.periodMs    = kind == WXL_SPELLAREA_TRIGGER_PERIODIC && spell.m_effectAuraPeriod[i] > 0 ? static_cast<uint32_t>(spell.m_effectAuraPeriod[i]) : 0;
+                e.effectIndex = i;
+            }
+            if (!t.count) return false;
+            *out = t;
+            return true;
+        }
+
+        // Whether an aura's spell casts another periodically (cached: the scan asks for every aura of every unit).
+        bool CastsPeriodically(int32_t spellId)
+        {
+            static std::unordered_map<int32_t, bool> cache;
+            auto it = cache.find(spellId);
+            if (it != cache.end()) return it->second;
+            WxlSpellAreaTriggers t;
+            bool yes = false;
+            if (ReadTriggers(static_cast<uint32_t>(spellId), &t))
+                for (uint32_t i = 0; i < t.count; ++i) if (t.trigger[i].kind == WXL_SPELLAREA_TRIGGER_PERIODIC) yes = true;
+            cache.emplace(spellId, yes);
+            return yes;
+        }
+
+        int32_t AuraCallback(WOWGUID guid, void* param)
+        {
+            auto* s = static_cast<Scan*>(param);
+            if (s->count >= s->max) return 1;
+
+            CGObject_C* obj = Object(guid);
+            if (!obj || !obj->m_obj) return 1;
+            if (!(static_cast<uint32_t>(obj->m_obj->m_type) & TYPEMASK_UNIT)) return 1;
+
+            CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
+            if (!unit->m_unit) return 1;
+            const uint32_t auraCount = unit->GetAuraCount();
+            for (uint32_t i = 0; i < auraCount && s->count < s->max; ++i)
+            {
+                AuraData* aura = unit->GetAura(i);
+                if (!aura || aura->m_spellId <= 0 || !CastsPeriodically(aura->m_spellId)) continue;
+
+                CGUnit_C* caster = aura->m_creator.m_guid ? Unit(aura->m_creator) : nullptr;
+                WxlSpellAreaAura& a = s->auras[s->count++];
+                a = {};
+                a.holderGuid     = guid.m_guid;
+                a.casterGuid     = aura->m_creator.m_guid;
+                a.spellId        = static_cast<uint32_t>(aura->m_spellId);
+                a.casterIsPlayer = aura->m_creator == s->player ? 1u : 0u;
+                a.casterHostile  = Hostile(caster, s->playerUnit) ? 1u : 0u;
+            }
+            return 1;
+        }
+
         // ------------------------------------------------------------------------------------- the textures
         struct TexEntry
         {
@@ -166,6 +253,20 @@ namespace wxl::api::spellareahost
         }
 
         template <class T> T Clamp(T v, T lo, T hi) { return std::max(lo, std::min(hi, v)); }
+
+        // ----------------------------------------------------------------------------------- the spell-go events
+        constexpr uint32_t kEventRing = 64;
+        WxlSpellAreaCastEvent g_events[kEventRing];
+        uint64_t              g_eventCount = 0;   // events ever noted: the newest has this sequence
+
+        // No cast time (no record, base and per-level 0) and not a channel (attributes ex 0x4 and 0x40).
+        bool IsInstant(const SpellRec& spell)
+        {
+            if (spell.m_attributesEx & 0x44) return false;
+            if (spell.m_castingTimeIndex == 0) return true;
+            SpellCastTimesRec* castTime = g_spellCastTimesDB.GetRecord(spell.m_castingTimeIndex);
+            return !castTime || (castTime->m_base <= 0 && castTime->m_perLevel <= 0);
+        }
     }
 
     uint32_t DynamicObjects(WxlSpellAreaDynObject* out, uint32_t max)
@@ -302,6 +403,60 @@ namespace wxl::api::spellareahost
         GxRsSet(GxRs_AlphaOp1, 0);
         ProjectTex::Render2d(box, color, rotate ? &rotation : nullptr, 0.5f, d->triFlags, d->projectFlags, 0.4f);
         g_theGxDevicePtr->RsPop();
+    }
+
+    int Triggers(uint32_t spellId, WxlSpellAreaTriggers* out)
+    {
+        return out && ReadTriggers(spellId, out) ? 1 : 0;
+    }
+
+    uint32_t TriggerAuras(WxlSpellAreaAura* out, uint32_t max)
+    {
+        if (!out || !max) return 0;
+        Scan s;
+        s.playerUnit = PlayerUnit(s.player);
+        if (!s.playerUnit) return 0;
+        s.auras = out;
+        s.max = max;
+        ClntObjMgrEnumVisibleObjects(AuraCallback, &s);
+        return s.count;
+    }
+
+    uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max)
+    {
+        if (!out || !max) return 0;
+        const uint64_t oldest = g_eventCount > kEventRing ? g_eventCount - kEventRing + 1 : 1;
+        uint64_t first = std::max(afterSequence + 1, oldest);
+        uint32_t count = 0;
+        for (uint64_t seq = first; seq <= g_eventCount && count < max; ++seq)
+            out[count++] = g_events[(seq - 1) % kEventRing];
+        return count;
+    }
+
+    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget, uint32_t delayMs)
+    {
+        SpellRec spell;
+        if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return;
+
+        WxlSpellAreaCastEvent e = {};
+        e.sequence     = g_eventCount + 1;
+        e.casterGuid   = caster;
+        e.objectTarget = objectTarget;
+        e.spellId      = spellId;
+        e.instant      = IsInstant(spell) ? 1u : 0u;
+        e.castFlags    = castFlags;
+        e.targetFlags  = targetFlags;
+        if (dest) { e.dest[0] = dest[0]; e.dest[1] = dest[1]; e.dest[2] = dest[2]; }
+        e.delayMs      = delayMs;
+        e.atMs         = OsGetAsyncTimeMs();
+
+        WOWGUID player;
+        CGUnit_C* playerUnit = PlayerUnit(player);
+        e.casterIsPlayer = caster && player.m_guid == caster ? 1u : 0u;
+        e.casterHostile  = Hostile(caster ? Unit(WOWGUID{ caster }) : nullptr, playerUnit) ? 1u : 0u;
+
+        g_events[g_eventCount % kEventRing] = e;
+        ++g_eventCount;
     }
 
     void SetRenderer(WxlSpellAreaRenderFn fn, void* user)

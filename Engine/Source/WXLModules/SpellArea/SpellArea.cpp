@@ -40,7 +40,11 @@ namespace wxl::spellarea
             bool  channel      = true;    // the area of a spell that is being channeled
             bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
             bool  cones        = true;
+            bool  triggered    = false;   // the areas of the spells that casts, missiles and auras trigger (opt-in)
+            bool  instant      = false;   // spells with no cast time: an area that shows where they hit and fades away
+            float instantFade  = 1.5f;    // seconds it takes to fade out
             float opacity      = 0.65f;
+            float outline      = 0.0f;    // yards; 0 = automatic: a twentieth of the shape's radius, as it always was
             float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
             bool  chain        = true;    // chain spells: the circle of the first jump around the target
             float chainRadius  = 12.5f;
@@ -48,12 +52,15 @@ namespace wxl::spellarea
             float helpful[3]   = { 0.235f, 1.0f, 0.353f };
             float neutral[3]   = { 1.0f, 0.784f, 0.235f };
             float coneAngle    = 90.0f;
+            bool  lines        = true;    // spells whose attributes make their cone a line
+            float lineWidth    = 4.0f;    // yards
             float minRadius    = 1.0f;
             float maxRadius    = 60.0f;
             int   maxAreas     = 16;
             std::string overrideFile = "SpellAreaOverride.csv";
             std::string jumpFile     = "WXL\\SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
             std::string coneFile     = "WXL\\SpellCone.csv";           // spell id, cone degrees; no header
+            std::string attrFile     = "WXL\\SpellsCustomAttribute.csv";   // spell id, custom attribute mask (cone back / line)
         };
 
         const char* const kSection = "SpellArea";
@@ -62,9 +69,10 @@ namespace wxl::spellarea
         OverrideTable     g_overrides;
         JumpDistanceTable g_jump;
         ConeAngleTable    g_cone;
+        CustomAttributeTable g_attrs;
         bool              g_loaded = false;
         uint32_t          g_lastPoll = 0;
-        uint64_t          g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0;
+        uint64_t          g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0, g_attrStamp = 0;
 
         const WxlApi* Api() { return wxl::module::Api(); }
 
@@ -76,7 +84,11 @@ namespace wxl::spellarea
             std::string dir = wxl::WorkingDirectory();
             if (dir.empty()) return false;
             if (dir.back() != '\\' && dir.back() != '/') dir += '\\';
-            return std::snprintf(path, cap, "%s%s", dir.c_str(), name.c_str()) > 0;
+            std::string full = dir + name;
+#ifndef _WIN32
+            for (char& c : full) if (c == '\\') c = '/';        // the ini names use backslashes; anywhere else they are not separators
+#endif
+            return std::snprintf(path, cap, "%s", full.c_str()) > 0;
         }
 
         uint64_t FileStamp(const char* path)
@@ -89,6 +101,19 @@ namespace wxl::spellarea
             std::ifstream f(path, std::ios::binary | std::ios::ate);   // no timestamp without the OS: size, so a change shows
             return f ? static_cast<uint64_t>(f.tellg()) + 1 : 0;
 #endif
+        }
+
+        // Where a configured file is: a full path as it is; a name with a folder in it (WXL\\Cones.csv) under the client's
+        // folder; a bare name (SpellsCone.csv) in <client folder>\\WXL first, where the module's files live, then in the
+        // client folder itself. When it is in neither the second path comes back (it is what gets logged as missing).
+        bool ResolvePath(const std::string& name, char* path, size_t cap)
+        {
+            const bool bare = name.find('\\') == std::string::npos && name.find('/') == std::string::npos && name.find(':') == std::string::npos;
+            if (bare)
+            {
+                if (FolderPath("WXL\\" + name, path, cap) && FileStamp(path) != 0) return true;
+            }
+            return FolderPath(name, path, cap);
         }
 
         int IniInt(const char* key, int def) { return Api()->iniGetInt(kSection, key, def); }
@@ -136,11 +161,19 @@ namespace wxl::spellarea
             c.channel     = IniInt("Channel", 1) != 0;
             c.persistent  = IniInt("Persistent", 1) != 0;
             c.cones       = IniInt("Cones", 1) != 0;
+            c.triggered   = IniInt("Triggered", 0) != 0;
+            c.instant     = IniInt("Instant", 0) != 0;
+            c.instantFade = Clamp(IniFloat("InstantFadeSeconds", c.instantFade), 0.05f, 30.0f);
             c.opacity     = Clamp(IniFloat("Opacity", c.opacity), 0.05f, 1.0f);
+            c.outline     = IniFloat("OutlineThickness", c.outline);
+            if (c.outline > 0.0f) c.outline = Clamp(c.outline, 0.05f, 5.0f);
+            else c.outline = 0.0f;
             c.maxOpacity  = Clamp(IniFloat("MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
             c.chain       = IniInt("Chain", 1) != 0;
             c.chainRadius = Clamp(IniFloat("ChainRadius", c.chainRadius), 1.0f, 60.0f);
             c.coneAngle   = Clamp(IniFloat("ConeAngle", c.coneAngle), 5.0f, 180.0f);
+            c.lines       = IniInt("Lines", 1) != 0;
+            c.lineWidth   = Clamp(IniFloat("LineWidth", c.lineWidth), 0.5f, 40.0f);
             c.minRadius   = Clamp(IniFloat("MinRadius", c.minRadius), 0.1f, 50.0f);
             c.maxRadius   = Clamp(IniFloat("MaxRadius", c.maxRadius), c.minRadius, 150.0f);
             c.maxAreas    = std::max(1, std::min(64, IniInt("MaxAreas", c.maxAreas)));
@@ -153,22 +186,28 @@ namespace wxl::spellarea
             if (!jump.empty()) c.jumpFile = jump;
             const std::string cone = IniStr("ConeFile");
             if (!cone.empty()) c.coneFile = cone;
+            const std::string attrs = IniStr("CustomAttributeFile");
+            if (!attrs.empty()) c.attrFile = attrs;
             const bool was = g_cfg.enabled;
             g_cfg = c;
             if (!g_loaded || was != c.enabled)
-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, opacity %.2f max %.2f)",
+                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, triggered %d, instant %d fading over %.2fs, opacity %.2f max %.2f, outline %.2f yd)",
                             c.enabled ? "on" : "off",
                             c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
-                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.opacity, c.maxOpacity);
+                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.triggered, c.instant, c.instantFade, c.opacity, c.maxOpacity, c.outline);
         }
 
         // One csv the module reads: its text, or false when the file is not there (they are all optional).
         bool ReadCsv(const std::string& name, uint64_t& stamp, std::string& text)
         {
             char path[1024] = {};
-            if (!FolderPath(name, path, sizeof(path))) return false;
+            if (!ResolvePath(name, path, sizeof(path))) return false;
             stamp = FileStamp(path);
-            if (!stamp) return false;
+            if (!stamp)
+            {
+                wxl::LogCat("AOE", "%s: not found (looked in the WXL folder and the client folder: %s)", name.c_str(), path);
+                return false;
+            }
             std::ifstream f(path, std::ios::binary);
             text.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             return true;
@@ -216,10 +255,21 @@ namespace wxl::spellarea
             LogProblems(g_cfg.coneFile, problems);
         }
 
+        void LoadCustomAttributes()
+        {
+            g_attrs = CustomAttributeTable{};
+            std::string text, problems;
+            if (!ReadCsv(g_cfg.attrFile, g_attrStamp, text)) return;
+            g_attrs.Parse(text, problems);
+            wxl::LogCat("AOE", "%s: %zu spell(s), %zu with a cone behind the caster, %zu with a cone that is a line", g_cfg.attrFile.c_str(),
+                        g_attrs.Rows(), g_attrs.CountWith(kAttrConeBack), g_attrs.CountWith(kAttrConeLine));
+            LogProblems(g_cfg.attrFile, problems);
+        }
+
         bool FileChanged(const std::string& name, uint64_t last)
         {
             char path[1024] = {};
-            return FolderPath(name, path, sizeof(path)) && FileStamp(path) != last;
+            return ResolvePath(name, path, sizeof(path)) && FileStamp(path) != last;
         }
 
         // Reads the ini (and the csv files) again whenever they are saved; looks once a second.
@@ -235,6 +285,7 @@ namespace wxl::spellarea
             if (iniChanged || FileChanged(g_cfg.overrideFile, g_csvStamp)) LoadOverrides();
             if (iniChanged || FileChanged(g_cfg.jumpFile, g_jumpStamp))    LoadJumpDistances();
             if (iniChanged || FileChanged(g_cfg.coneFile, g_coneStamp))    LoadConeAngles();
+            if (iniChanged || FileChanged(g_cfg.attrFile, g_attrStamp))    LoadCustomAttributes();
             g_loaded = true;
         }
 
@@ -247,17 +298,34 @@ namespace wxl::spellarea
             float    pos[3] = {};        // a fixed ground point, when !follow
             float    facing = 0;         // a fixed facing, when !follow
             float    strength = 1.0f;    // 0..1: how far the cast is (an area that is only being cast fades in)
+            float    alphaScale = 1.0f;  // 0..1: what is left of an instant spell's area as it fades out
         };
 
         std::vector<Area> g_areas;
         uint32_t          g_lastCollect = 0;
+
+        // The areas of spells that went off a moment ago (instant spells, the spells they trigger): where they hit, fading
+        // away. A missile's area shows from the launch (growing like a cast) to the landing, then fades.
+        struct Fading
+        {
+            Area     area;               // a fixed place and facing: it happened there
+            uint32_t startMs = 0;        // the spell went off
+            uint32_t landMs = 0;         // it takes effect (startMs for an instant spell, later for a missile)
+            uint32_t endMs = 0;          // gone
+            uint64_t caster = 0;
+            uint32_t spell = 0;
+        };
+        std::vector<Fading> g_fading;
+        uint64_t            g_eventSeq = 0;         // the last cast event looked at
+        bool                g_eventsPrimed = false; // the ones from before the indicator was switched on are skipped
 
         constexpr uint32_t kMaxScan = 128;   // dynamic objects / casting units asked of the core per collection
 
         // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
         size_t ShapesOf(uint32_t spellId, uint64_t casterGuid, Shape out[8])
         {
-            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius };
+            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius,
+                                    g_cfg.lines, g_cfg.lineWidth };
 
             bool none = false;
             std::vector<Shape> rows;
@@ -284,10 +352,34 @@ namespace wxl::spellarea
             if (g_jump.Find(spellId, jumpYards)) effects.chainRadius = jumpYards;   // the server's own jump distance first
             float coneDegrees = 0;
             if (g_cone.Find(spellId, coneDegrees)) effects.coneAngle = coneDegrees; // and its own cone angle
+            uint32_t attributes = 0;
+            if (g_attrs.Find(spellId, attributes)) effects.customAttributes = attributes;   // and which way the cone goes, and whether it is a line
             Shape derived[3];
             const size_t n = ShapesFromSpell(effects, rules, derived);
             for (size_t i = 0; i < n; ++i) out[i] = derived[i];
             return n;
+        }
+
+        bool SameShape(const Shape& a, const Shape& b)
+        {
+            return a.kind == b.kind && a.back == b.back && std::fabs(a.radius - b.radius) < 0.05f;
+        }
+
+        // What a spell triggers, asked of the core once per spell.
+        struct TriggerInfo
+        {
+            WxlSpellAreaTriggers t = {};
+            bool any = false;
+        };
+        std::map<uint32_t, TriggerInfo> g_triggerCache;
+
+        const TriggerInfo& TriggersOf(uint32_t spellId)
+        {
+            auto it = g_triggerCache.find(spellId);
+            if (it != g_triggerCache.end()) return it->second;
+            TriggerInfo info;
+            info.any = Api()->spellAreaTriggers(spellId, &info.t) != 0;
+            return g_triggerCache.emplace(spellId, info).first->second;
         }
 
         struct DynKey { uint64_t caster; uint32_t spell; };
@@ -315,6 +407,17 @@ namespace wxl::spellarea
             a.shape.intent = Intent::Neutral;
             Shape derived[8];
             if (ShapesOf(d.spellId, d.casterGuid, derived) > 0) a.shape.intent = derived[0].intent;
+            else
+            {
+                // a ground effect that works through a periodic trigger: the triggered spell says what it is
+                const TriggerInfo& info = TriggersOf(d.spellId);
+                for (uint32_t k = 0; info.any && k < info.t.count; ++k)
+                    if (info.t.trigger[k].kind == WXL_SPELLAREA_TRIGGER_PERIODIC && ShapesOf(info.t.trigger[k].spellId, d.casterGuid, derived) > 0)
+                    {
+                        a.shape.intent = derived[0].intent;
+                        break;
+                    }
+            }
             if (!own && hostile) a.shape.intent = Intent::Harmful;
             a.follow = true;
             a.guid = d.guid;
@@ -389,6 +492,38 @@ namespace wxl::spellarea
             }
         }
 
+        // An aura that casts a spell every few seconds (a periodic trigger): the area of that spell, for as long as the
+        // aura is there. Around the unit that carries the aura, or around whoever put it there when the spell is an area
+        // of its caster (a cone, a self-centered circle). Only what the client is told of is here: an aura the server keeps
+        // hidden is not.
+        void AddTriggerAura(const WxlSpellAreaAura& aura)
+        {
+            const bool own = aura.casterIsPlayer != 0;
+            if (own ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || aura.casterHostile))) return;
+
+            const TriggerInfo& info = TriggersOf(aura.spellId);
+            for (uint32_t k = 0; info.any && k < info.t.count; ++k)
+            {
+                if (info.t.trigger[k].kind != WXL_SPELLAREA_TRIGGER_PERIODIC) continue;
+                Shape shapes[8];
+                const size_t n = ShapesOf(info.t.trigger[k].spellId, aura.casterGuid, shapes);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    Area a;
+                    a.shape = shapes[i];
+                    if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
+                    const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
+                    a.follow = true;
+                    a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
+
+                    bool duplicate = false;   // the same aura on several units, all drawn around its caster: one is enough
+                    for (const Area& other : g_areas)
+                        if (other.follow && other.guid == a.guid && SameShape(other.shape, a.shape)) { duplicate = true; break; }
+                    if (!duplicate) AddArea(a);
+                }
+            }
+        }
+
         void Collect(uint32_t now)
         {
             g_areas.clear();
@@ -400,6 +535,14 @@ namespace wxl::spellarea
             const uint32_t dynCount = Api()->spellAreaDynamicObjects(dynBuf, kMaxScan);
             for (uint32_t i = 0; i < dynCount; ++i) AddDynamicObject(dynBuf[i], dyn);
 
+            // a ground effect that now exists draws the real area: the fading circle of the same cast goes
+            g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [&dyn](const Fading& f)
+            {
+                if (f.area.shape.kind != ShapeKind::Circle) return false;
+                for (const DynKey& d : dyn) if (d.caster == f.caster && d.spell == f.spell) return true;
+                return false;
+            }), g_fading.end());
+
             const uint32_t casterCount = Api()->spellAreaCasters(casterBuf, kMaxScan);   // the player first
             for (uint32_t i = 0; i < casterCount; ++i)
             {
@@ -407,6 +550,153 @@ namespace wxl::spellarea
                 if (c.isPlayer ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || c.hostile))) continue;
                 AddCasts(c, dyn, now);
             }
+
+            if (g_cfg.triggered)
+            {
+                static WxlSpellAreaAura auraBuf[kMaxScan];
+                const uint32_t auraCount = Api()->spellAreaTriggerAuras(auraBuf, kMaxScan);
+                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i]);
+            }
+        }
+
+        // ------------------------------------------------------------------- spells that went off: instants, triggers
+        // The core reports each spell that goes off. One with no cast time never shows up as a cast in progress, and the
+        // spells a cast or a missile triggers (grenades) are cast by the server, not by the client's own cast: both get an
+        // area at the place that is hit, which starts at full strength and fades out.
+        bool EventWanted(const WxlSpellAreaCastEvent& e)
+        {
+            return e.casterIsPlayer ? OwnOn() : (OthersOn() && (!g_cfg.enemiesOnly || e.casterHostile));
+        }
+
+        uint32_t FadeMs() { return static_cast<uint32_t>(g_cfg.instantFade * 1000.0f + 0.5f); }
+
+        // Where one shape of an event goes: around or in front of the caster, on the ground point it was aimed at, or
+        // around its target. A missile's circle is where the missile lands, never on the caster unless that is all there is.
+        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, float pos[3], float* facing)
+        {
+            const bool onCaster = s.kind != ShapeKind::Circle || s.anchor == Anchor::Caster;
+            bool placed = false;
+            if (onCaster && !(missile && s.kind == ShapeKind::Circle))
+                placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;      // around or in front of the caster
+            else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
+            {
+                std::memcpy(pos, e.dest, 3 * sizeof(float));                               // the ground point it was aimed at
+                *facing = 0;
+                placed = true;
+            }
+            else if (e.objectTarget)
+                placed = Api()->spellAreaObjectPose(e.objectTarget, pos, facing) != 0;    // around its target
+            if (!placed && missile && s.kind == ShapeKind::Circle)
+                placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;
+            return placed;
+        }
+
+        void PushFading(const Shape& shape, const float pos[3], float facing, uint32_t startMs, uint32_t landMs, uint32_t endMs, uint64_t caster, uint32_t spell)
+        {
+            Fading f;
+            f.area.shape = shape;
+            std::memcpy(f.area.pos, pos, 3 * sizeof(float));
+            f.area.facing = facing;
+            f.startMs = startMs;
+            f.landMs = landMs;
+            f.endMs = endMs;
+            f.caster = caster;
+            f.spell = spell;
+            if (static_cast<int>(g_fading.size()) >= g_cfg.maxAreas) g_fading.erase(g_fading.begin());
+            g_fading.push_back(f);
+        }
+
+        // The spell itself had no cast time.
+        void AddInstantShapes(const WxlSpellAreaCastEvent& e, uint32_t now)
+        {
+            const uint32_t durationMs = FadeMs();
+            if (now - e.atMs >= durationMs) return;                       // it is over before it is seen
+
+            Shape shapes[8];
+            const size_t n = ShapesOf(e.spellId, e.casterGuid, shapes);
+            for (size_t i = 0; i < n; ++i)
+            {
+                float pos[3] = {}, facing = 0;
+                if (PlaceEventShape(e, shapes[i], false, pos, &facing))
+                    PushFading(shapes[i], pos, facing, e.atMs, e.atMs, e.atMs + durationMs, e.casterGuid, e.spellId);
+            }
+        }
+
+        // The spells this one triggers when it goes off: a missile's (a grenade's) goes off where the missile lands, a
+        // trigger spell's where its own targets are.
+        void AddTriggeredShapes(const WxlSpellAreaCastEvent& e, uint32_t now)
+        {
+            const TriggerInfo& info = TriggersOf(e.spellId);
+            if (!info.any) return;
+
+            Shape own[8];   // what the spell draws itself as an instant spell: the triggered spell must not repeat it
+            const size_t ownCount = e.instant && g_cfg.instant ? ShapesOf(e.spellId, e.casterGuid, own) : 0;
+
+            float casterPos[3] = {}, casterFacing = 0;
+            const bool haveCaster = Api()->spellAreaObjectPose(e.casterGuid, casterPos, &casterFacing) != 0;
+
+            for (uint32_t k = 0; k < info.t.count; ++k)
+            {
+                const WxlSpellAreaTrigger& trigger = info.t.trigger[k];
+                if (trigger.kind != WXL_SPELLAREA_TRIGGER_MISSILE && trigger.kind != WXL_SPELLAREA_TRIGGER_CAST) continue;
+                const bool missile = trigger.kind == WXL_SPELLAREA_TRIGGER_MISSILE;
+
+                Shape shapes[8];
+                const size_t n = ShapesOf(trigger.spellId, e.casterGuid, shapes);
+                for (size_t i = 0; i < n; ++i)
+                {
+                    bool duplicate = false;
+                    for (size_t o = 0; o < ownCount; ++o) if (SameShape(own[o], shapes[i])) duplicate = true;
+                    if (duplicate) continue;
+
+                    float pos[3] = {}, facing = 0;
+                    if (!PlaceEventShape(e, shapes[i], missile, pos, &facing)) continue;
+
+                    // how long until it lands: the packet's own number, else the distance over the missile speed
+                    float flightMs = 0;
+                    if (missile && e.delayMs > 0) flightMs = static_cast<float>(e.delayMs);
+                    else if (info.t.speed > 0.0f && haveCaster)
+                    {
+                        const float dx = pos[0] - casterPos[0], dy = pos[1] - casterPos[1], dz = pos[2] - casterPos[2];
+                        flightMs = std::sqrt(dx * dx + dy * dy + dz * dz) / info.t.speed * 1000.0f;
+                    }
+                    const uint32_t flight = static_cast<uint32_t>(Clamp(flightMs, 0.0f, 15000.0f));
+
+                    const uint32_t land = e.atMs + flight;
+                    const uint32_t end = land + FadeMs();
+                    if (static_cast<int32_t>(now - end) >= 0) continue;     // all over already
+                    PushFading(shapes[i], pos, facing, e.atMs, land, end, e.casterGuid, trigger.spellId);
+                }
+            }
+        }
+
+        void AddEvent(const WxlSpellAreaCastEvent& e, uint32_t now)
+        {
+            if (!EventWanted(e)) return;
+            if (e.instant && g_cfg.instant) AddInstantShapes(e, now);
+            if (g_cfg.triggered) AddTriggeredShapes(e, now);
+        }
+
+        void UpdateInstant(uint32_t now)
+        {
+            if (!g_cfg.instant && !g_cfg.triggered)
+            {
+                g_fading.clear();
+                g_eventsPrimed = false;
+                return;
+            }
+
+            static WxlSpellAreaCastEvent events[64];
+            const uint32_t count = Api()->spellAreaCastEvents(g_eventSeq, events, 64);
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                g_eventSeq = std::max(g_eventSeq, events[i].sequence);
+                if (g_eventsPrimed) AddEvent(events[i], now);
+            }
+            g_eventsPrimed = true;
+
+            g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [now](const Fading& f)
+                { return static_cast<int32_t>(now - f.endMs) >= 0; }), g_fading.end());
         }
 
         // ------------------------------------------------------------------------------------------- the textures
@@ -414,18 +704,21 @@ namespace wxl::spellarea
 
         std::map<uint64_t, void*> g_textures;   // shape kind + parameter -> the core's texture handle
 
-        void* TextureFor(ShapeKind kind, uint32_t param)
+        // `outlineQ` is the outline's thickness in 512ths of the texture's width, 0 for the default: shapes of nearly the
+        // same size share a texture.
+        void* TextureFor(ShapeKind kind, uint32_t param, uint32_t outlineQ)
         {
-            const uint64_t key = (static_cast<uint64_t>(kind) << 32) | param;
+            const uint64_t key = (static_cast<uint64_t>(outlineQ) << 40) | (static_cast<uint64_t>(kind) << 32) | param;
+            const float outline = static_cast<float>(outlineQ) / 512.0f;
             auto it = g_textures.find(key);
             if (it != g_textures.end()) return it->second;
 
             std::vector<uint32_t> pixels;
             switch (kind)
             {
-            case ShapeKind::Circle: RenderCircleTexture(pixels, kTexSize); break;
-            case ShapeKind::Cone:   RenderConeTexture(pixels, kTexSize, static_cast<float>(param)); break;
-            case ShapeKind::Line:   RenderLineTexture(pixels, kTexSize, static_cast<float>(param) / 256.0f); break;
+            case ShapeKind::Circle: RenderCircleTexture(pixels, kTexSize, outline); break;
+            case ShapeKind::Cone:   RenderConeTexture(pixels, kTexSize, static_cast<float>(param), outline); break;
+            case ShapeKind::Line:   RenderLineTexture(pixels, kTexSize, static_cast<float>(param) / 256.0f, outline); break;
             }
             void* tex = Api()->spellAreaCreateTexture(pixels.data(), kTexSize, "WxlSpellArea");
             g_textures.emplace(key, tex);
@@ -450,11 +743,19 @@ namespace wxl::spellarea
             }
             }
 
-            void* texture = TextureFor(s.kind, param);
+            // the outline is a thickness in yards on a texture that spans twice the radius
+            uint32_t outlineQ = 0;
+            if (g_cfg.outline > 0.0f && half > 0.0f)
+                outlineQ = static_cast<uint32_t>(Clamp(std::floor(g_cfg.outline / (2.0f * half) * 512.0f + 0.5f), 1.0f, 100.0f));
+
+            void* texture = TextureFor(s.kind, param, outlineQ);
             if (!texture || !(half > 0.0f)) return;
 
             const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
-            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
+            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity) * a.alphaScale;
+
+            const float kPi = 3.14159265358979f;
+            if (s.back) facing += kPi;                                       // a cone or line behind the caster
 
             WxlSpellAreaDraw d = {};
             d.structSize   = sizeof(d);
@@ -486,6 +787,17 @@ namespace wxl::spellarea
                 g_lastCollect = now ? now : 1;
             }
 
+            UpdateInstant(now);
+            for (const Fading& f : g_fading)
+            {
+                Area a = f.area;
+                if (static_cast<int32_t>(now - f.landMs) < 0)       // a missile in the air: the area fills in like a cast
+                    a.strength = Clamp(static_cast<float>(now - f.startMs) / static_cast<float>(f.landMs - f.startMs), 0.0f, 1.0f);
+                else                                                  // it has taken effect: fading out
+                    a.alphaScale = 1.0f - static_cast<float>(now - f.landMs) / static_cast<float>(f.endMs - f.landMs);
+                if (a.alphaScale > 0.0f) DrawArea(a, a.pos, a.facing, triFlags, projectFlags);
+            }
+
             for (const Area& a : g_areas)
             {
                 float pos[3] = { a.pos[0], a.pos[1], a.pos[2] };
@@ -507,6 +819,8 @@ namespace wxl::spellarea
         const WxlApi* api = Api();
         if (api && WXL_API_HAS(api, setSpellAreaRenderer)) api->setSpellAreaRenderer(nullptr, nullptr);
         g_areas.clear();
+        g_fading.clear();
+        g_triggerCache.clear();
         g_textures.clear();
     }
 }

@@ -27,7 +27,12 @@ namespace wxl::spellarea
         float     radius = 0;   // circle radius, cone radius, line length (yards)
         float     param  = 0;   // cone angle in degrees, line width in yards
         Intent    intent = Intent::Neutral;
+        bool      back   = false;   // a cone or line that points behind the caster (the server's CONE_BACK attribute)
     };
+
+    // ---- the server's custom spell attributes (acore SpellInfo::AttributesCu) that change the shape of a cone ----
+    constexpr uint32_t kAttrConeBack = 0x00000002;   // SPELL_ATTR0_CU_CONE_BACK: the cone is behind the caster (a tail sweep)
+    constexpr uint32_t kAttrConeLine = 0x00000004;   // SPELL_ATTR0_CU_CONE_LINE: the "cone" is a line in front of the caster
 
     /// The part of a spell record this needs: its three effects, the target types of each (Spell.dbc
     /// ImplicitTargetA / B), and each effect's radius in yards (already worked out from SpellRadius.dbc and the
@@ -41,6 +46,7 @@ namespace wxl::spellarea
         int32_t chainTargets[3] = {};   // Spell.dbc EffectChainTargets: how many targets the effect reaches by jumping
         float   chainRadius = 0;        // the spell's jump distance from the server's table, yards; 0 = not known
         float   coneAngle = 0;          // the spell's cone angle from SpellCone.csv, degrees; 0 = not listed
+        uint32_t customAttributes = 0;  // the spell's custom attribute mask from SpellsCustomAttribute.csv; 0 = none / not listed
     };
 
     struct ShapeRules
@@ -51,6 +57,8 @@ namespace wxl::spellarea
         bool  cones     = true;
         bool  chain     = true;     // chain spells get the circle of their first jump around the target
         float chainRadius = 12.5f;  // yards, for a chain effect that has no radius of its own
+        bool  lines     = true;     // the spells whose attributes say their "cone" is a line
+        float lineWidth = 4.0f;     // yards, the width of such a line
     };
 
     // ---- target type classes (3.3.5 Spell.dbc implicit target ids) ----
@@ -66,7 +74,11 @@ namespace wxl::spellarea
     /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
     /// of its first jump, around the target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
     /// cone: its cone target types use that angle instead of the default, and its areas around the caster become cones
-    /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle. Its radius, in order: the spell's jump distance from the server's table
+    /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle.
+    /// The custom attributes (SpellEffects::customAttributes, from SpellsCustomAttribute.csv) pick the cone's direction
+    /// and shape: kAttrConeBack puts it behind the caster (Shape::back), kAttrConeLine makes it a line of
+    /// ShapeRules::lineWidth yards instead of a cone, as long as the radius (or behind, with both). Like a listed
+    /// cone angle, they turn the effect's area around the caster into that shape. Its radius, in order: the spell's jump distance from the server's table
     /// (SpellEffects::chainRadius), the effect's own radius, ShapeRules::chainRadius. Lines cannot be told from the
     /// DBC: they come from the override file.
     size_t ShapesFromSpell(const SpellEffects& spell, const ShapeRules& rules, Shape out[3]);
@@ -109,6 +121,24 @@ namespace wxl::spellarea
         std::vector<Row> m_rows;   // sorted by spell id
     };
 
+    // ---- custom attributes ----
+    /// SpellsCustomAttribute.csv: `spellId,attributes`, one spell per line, the attributes a decimal (or 0x hex) bit mask
+    /// like the server's spell custom attribute column. Comma, semicolon or tab separated; `#` starts a comment (the
+    /// usual `#spell_id,attributes` header line is one); a first line that is not numbers is skipped as a header.
+    class CustomAttributeTable
+    {
+    public:
+        void Parse(const std::string& text, std::string& problems);
+        bool Find(uint32_t spellId, uint32_t& attributes) const;
+        /// how many spells have every bit of `mask` set
+        size_t CountWith(uint32_t mask) const;
+        size_t Rows() const { return m_rows.size(); }
+
+    private:
+        struct Row { uint32_t spell; uint32_t attributes; };
+        std::vector<Row> m_rows;   // sorted by spell id
+    };
+
     // ---- cone angles ----
     /// SpellCone.csv: one line per spell, no header: `spellId,degrees` (comma, semicolon or tab; `#` starts a comment; a
     /// first line that is not numbers is taken for a header and skipped). Degrees are above 0 and up to 360.
@@ -128,9 +158,11 @@ namespace wxl::spellarea
     bool ParseColorHex(const char* text, float rgb[3]);
 
     // ---- textures: ARGB8888 (0xAARRGGBB), white with the shape in the alpha channel, row 0 = the shape's front ----
-    void RenderCircleTexture(std::vector<uint32_t>& argb, int size);
+    /// `outline`: how thick the bright edge is, as a fraction of the texture's width (the shape is drawn on a square of
+    /// twice its radius, so 0.05 on a 10 yard shape is one yard); 0 or less for the default, 0.025.
+    void RenderCircleTexture(std::vector<uint32_t>& argb, int size, float outline = 0.0f);
     /// a cone with its apex at the center of the texture, opening toward row 0, `angleDeg` wide (1 .. 359)
-    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg);
+    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg, float outline = 0.0f);
     /// a strip from the center of the texture to row 0, `widthFraction` of the texture wide (0..1)
-    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction);
+    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction, float outline = 0.0f);
 }

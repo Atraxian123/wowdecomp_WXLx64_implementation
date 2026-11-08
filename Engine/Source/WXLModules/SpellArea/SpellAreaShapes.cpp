@@ -47,14 +47,18 @@ namespace wxl::spellarea
             return true;
         }
 
+        constexpr float kDefaultOutline = 0.025f;
+
         float Smooth(float x) { x = std::max(0.0f, std::min(1.0f, x)); return x * x * (3.0f - 2.0f * x); }
 
         // alpha of a shape drawn as a translucent fill with a bright outline, from the signed distance to its border
         // (positive inside, in texture units)
-        float ShapeAlpha(float signedDist, float pixel)
+        // `outline` is the outline's thickness as a fraction of the texture's width (<= 0: the default, 2.5%); it is never
+        // thinner than about a pixel and a half, which is as fine as a texture this size can draw.
+        float ShapeAlpha(float signedDist, float pixel, float outline)
         {
             const float fill = 0.24f * Smooth(0.5f + signedDist / pixel);
-            const float ringHalf = 0.0125f;
+            const float ringHalf = std::max(pixel * 0.75f, (outline > 0.0f ? outline : kDefaultOutline) * 0.5f);
             const float ring = 1.0f - Smooth((std::fabs(signedDist) - ringHalf) / pixel + 0.5f);
             return std::max(fill, ring);
         }
@@ -85,6 +89,8 @@ namespace wxl::spellarea
 
             const int32_t a = spell.targetA[i], b = spell.targetB[i], eff = spell.effect[i];
             bool cone = IsConeTarget(a) || IsConeTarget(b);
+            const bool attrBack = (spell.customAttributes & kAttrConeBack) != 0;
+            const bool attrLine = (spell.customAttributes & kAttrConeLine) != 0;
             bool casterArea = IsCasterAreaTarget(a) || IsCasterAreaTarget(b);
             bool destArea = IsDestAreaTarget(a) || IsDestAreaTarget(b);
             if (!cone && !casterArea && !destArea)
@@ -92,7 +98,11 @@ namespace wxl::spellarea
                 if (In(eff, kAreaAuraCaster)) casterArea = true;
                 else if (eff == 27) destArea = true;       // persistent area aura: the area is at the destination
             }
-            if (spell.coneAngle > 0.0f && !cone && casterArea) { cone = true; casterArea = false; }   // a listed spell: its area is a cone
+            if ((attrBack || attrLine || spell.coneAngle > 0.0f) && !cone && casterArea)
+            {
+                cone = true;                                        // a listed spell: the server cones its area around the caster
+                casterArea = false;
+            }
             if (!cone && !casterArea && !destArea && rules.chain && spell.chainTargets[i] > 1)
             {
                 destArea = true;                                  // the first jump: around the target
@@ -100,7 +110,7 @@ namespace wxl::spellarea
                 else if (!(r >= rules.minRadius)) r = rules.chainRadius;
             }
             if (!cone && !casterArea && !destArea) continue;
-            if (cone && !rules.cones) continue;
+            if (cone && (attrLine ? !rules.lines : !rules.cones)) continue;
             if (!(r >= rules.minRadius)) continue;
             r = std::min(r, rules.maxRadius);
 
@@ -110,8 +120,9 @@ namespace wxl::spellarea
             {
                 const float angle = spell.coneAngle > 0.0f ? spell.coneAngle : rules.coneAngle;
                 s.anchor = Anchor::Caster;
-                if (angle >= 360.0f) s.kind = ShapeKind::Circle;                 // all around: just the circle
-                else { s.kind = ShapeKind::Cone; s.param = angle; }
+                if (attrLine) { s.kind = ShapeKind::Line; s.param = rules.lineWidth; s.back = attrBack; }   // radius = the line's length
+                else if (angle >= 360.0f) s.kind = ShapeKind::Circle;                                     // all around: just the circle
+                else { s.kind = ShapeKind::Cone; s.param = angle; s.back = attrBack; }
             }
             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
             else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
@@ -122,7 +133,7 @@ namespace wxl::spellarea
 
             bool dup = false;
             for (size_t k = 0; k < n; ++k)
-                if (out[k].kind == s.kind && out[k].anchor == s.anchor && std::fabs(out[k].radius - s.radius) < 0.01f)
+                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && std::fabs(out[k].radius - s.radius) < 0.01f)
                 {
                     // a damaging effect and a helpful one on the same spot: the damage is what to be careful about
                     if (s.intent == Intent::Harmful) out[k].intent = Intent::Harmful;
@@ -220,6 +231,82 @@ namespace wxl::spellarea
         }
         if (none) shapes.clear();
         return found;
+    }
+
+    void CustomAttributeTable::Parse(const std::string& text, std::string& problems)
+    {
+        m_rows.clear();
+        size_t pos = 0;
+        int lineNo = 0;
+        bool first = true;
+        while (pos <= text.size())
+        {
+            size_t eol = text.find('\n', pos);
+            if (eol == std::string::npos) eol = text.size();
+            std::string line = text.substr(pos, eol - pos);
+            pos = eol + 1;
+            ++lineNo;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            line = Trim(line);
+            if (line.empty() || line[0] == '#') continue;
+
+            const char sep = line.find('\t') != std::string::npos ? '\t' : line.find(';') != std::string::npos ? ';' : ',';
+            std::vector<std::string> cells;
+            size_t a = 0;
+            for (;;)
+            {
+                const size_t b = line.find(sep, a);
+                std::string cell = Trim(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                while (!cell.empty() && (cell.front() == '"' || cell.front() == '`')) cell.erase(cell.begin());
+                while (!cell.empty() && (cell.back() == '"' || cell.back() == '`')) cell.pop_back();
+                cells.push_back(cell);
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+
+            char* end = nullptr;
+            const unsigned long spell = std::strtoul(cells[0].c_str(), &end, 10);
+            const bool numeric = !cells[0].empty() && *end == '\0';
+            if (!numeric && first) { first = false; continue; }       // a header line
+            first = false;
+
+            unsigned long long mask = 0;
+            bool maskOk = false;
+            if (numeric && spell <= 0xFFFFFFFFul && cells.size() >= 2 && !cells[1].empty())
+            {
+                const std::string& m = cells[1];
+                const bool hex = m.size() > 2 && m[0] == '0' && (m[1] == 'x' || m[1] == 'X');
+                char* e2 = nullptr;
+                mask = std::strtoull(m.c_str() + (hex ? 2 : 0), &e2, hex ? 16 : 10);
+                maskOk = *e2 == '\0' && mask <= 0xFFFFFFFFull;
+            }
+            if (!maskOk)
+            {
+                problems += "line " + std::to_string(lineNo) + ": expected a spell id and an attribute mask (whole numbers up to 4294967295); skipped\n";
+                continue;
+            }
+            bool found = false;
+            for (Row& r : m_rows)
+                if (r.spell == spell) { r.attributes = static_cast<uint32_t>(mask); found = true; break; }   // the last line of a spell counts
+            if (!found) m_rows.push_back(Row{ static_cast<uint32_t>(spell), static_cast<uint32_t>(mask) });
+        }
+        std::sort(m_rows.begin(), m_rows.end(), [](const Row& x, const Row& y) { return x.spell < y.spell; });
+    }
+
+    bool CustomAttributeTable::Find(uint32_t spellId, uint32_t& attributes) const
+    {
+        auto it = std::lower_bound(m_rows.begin(), m_rows.end(), spellId, [](const Row& r, uint32_t id) { return r.spell < id; });
+        if (it == m_rows.end() || it->spell != spellId) return false;
+        attributes = it->attributes;
+        return true;
+    }
+
+    size_t CustomAttributeTable::CountWith(uint32_t mask) const
+    {
+        size_t n = 0;
+        for (const Row& r : m_rows)
+            if ((r.attributes & mask) == mask) ++n;
+        return n;
     }
 
     void ConeAngleTable::Parse(const std::string& text, std::string& problems)
@@ -393,7 +480,7 @@ namespace wxl::spellarea
         return true;
     }
 
-    void RenderCircleTexture(std::vector<uint32_t>& argb, int size)
+    void RenderCircleTexture(std::vector<uint32_t>& argb, int size, float outline)
     {
         argb.assign(static_cast<size_t>(size) * size, 0);
         const float pixel = 1.0f / static_cast<float>(size);
@@ -402,11 +489,11 @@ namespace wxl::spellarea
             for (int col = 0; col < size; ++col)
             {
                 const float x = (col + 0.5f) * pixel - 0.5f, y = 0.5f - (row + 0.5f) * pixel;
-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(R - std::sqrt(x * x + y * y), pixel));
+                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(R - std::sqrt(x * x + y * y), pixel, outline));
             }
     }
 
-    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg)
+    void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg, float outline)
     {
         argb.assign(static_cast<size_t>(size) * size, 0);
         const float pixel = 1.0f / static_cast<float>(size);
@@ -430,11 +517,11 @@ namespace wxl::spellarea
                 if (half <= kPi * 0.5f) edge = wedge(r, theta, half);
                 else edge = -wedge(r, kPi - theta, kPi - half);       // wider than a half circle: the circle minus the wedge behind
                 const float d = std::min(R - r, edge);
-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel));
+                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel, outline));
             }
     }
 
-    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction)
+    void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction, float outline)
     {
         argb.assign(static_cast<size_t>(size) * size, 0);
         const float pixel = 1.0f / static_cast<float>(size);
@@ -446,7 +533,7 @@ namespace wxl::spellarea
                 const float x = (col + 0.5f) * pixel - 0.5f, y = 0.5f - (row + 0.5f) * pixel;
                 const float dx = halfW - std::fabs(x);
                 const float dy = std::min(y, top - y);
-                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(std::min(dx, dy), pixel));
+                argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(std::min(dx, dy), pixel, outline));
             }
     }
 }

@@ -1,0 +1,805 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 921a9e9..cbd9e03 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -388,8 +388,40 @@ typedef struct WxlSpellAreaCastEvent
+     uint32_t atMs;              /* the client's millisecond clock when the packet was handled */
+     uint32_t casterIsPlayer;
+     uint32_t casterHostile;
++    uint32_t delayMs;           /* the missile's flight time from the packet, 0 when it carried none */
++    uint32_t reserved;
+ } WxlSpellAreaCastEvent;
+ 
++/* The spells a spell triggers (Spell.dbc EffectTriggerSpell), by how they are triggered. */
++#define WXL_SPELLAREA_TRIGGER_MISSILE  1u   /* TRIGGER_MISSILE (grenades): the spell goes off where the missile lands */
++#define WXL_SPELLAREA_TRIGGER_PERIODIC 2u   /* an aura that casts the spell every `periodMs` (PERIODIC_TRIGGER_SPELL) */
++#define WXL_SPELLAREA_TRIGGER_CAST     3u   /* TRIGGER_SPELL: the spell goes off together with this one */
++typedef struct WxlSpellAreaTrigger
++{
++    uint32_t kind;              /* WXL_SPELLAREA_TRIGGER_* */
++    uint32_t spellId;           /* the triggered spell (it exists in Spell.dbc) */
++    uint32_t periodMs;          /* periodic only: milliseconds between casts, 0 when the record has none */
++    uint32_t effectIndex;       /* 0..2: the effect of the triggering spell */
++} WxlSpellAreaTrigger;
++
++typedef struct WxlSpellAreaTriggers
++{
++    float               speed;      /* the triggering spell's missile speed in yards per second, 0 for none */
++    uint32_t            count;      /* entries used in trigger[] */
++    WxlSpellAreaTrigger trigger[3];
++} WxlSpellAreaTriggers;
++
++/* An aura on a visible unit that casts a spell periodically. */
++typedef struct WxlSpellAreaAura
++{
++    uint64_t holderGuid;        /* the unit that carries it */
++    uint64_t casterGuid;        /* who put it there, 0 when not known */
++    uint32_t spellId;           /* the aura's spell */
++    uint32_t casterIsPlayer;
++    uint32_t casterHostile;
++    uint32_t reserved;
++} WxlSpellAreaAura;
++
+ /* Called from the world render, beside the client's own spell cursor shadow: once after the opaque pass with
+  * (0x200122, 5) and once after the transparent ones with (0x20000, 4) (the second leaves the doodads out so nothing is
+  * drawn twice). Draw from it with spellAreaDraw, nowhere else. */
+@@ -593,6 +625,11 @@ typedef struct WxlApi
+     /* The spells that went off after `afterSequence` (0 for all that are kept), oldest first, up to `max`; returns the
+      * count. The core keeps the last 64. Check WXL_API_HAS(api, spellAreaCastEvents) once. */
+     uint32_t (*spellAreaCastEvents)(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
++    /* The spells `spellId` triggers. 1 when it triggers any (and `out` says which), 0 otherwise. */
++    int      (*spellAreaTriggers)(uint32_t spellId, WxlSpellAreaTriggers* out);
++    /* The auras of the visible units whose spell casts another periodically, up to `max`, returned as the count.
++     * Check WXL_API_HAS(api, spellAreaTriggerAuras) once. */
++    uint32_t (*spellAreaTriggerAuras)(WxlSpellAreaAura* out, uint32_t max);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+index 2e2520c..7260885 100644
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -253,6 +253,8 @@ namespace wxl::api
+             &wxl::api::spellareahost::Draw,
+             &wxl::api::spellareahost::SetRenderer,
+             &wxl::api::spellareahost::CastEvents,
++            &wxl::api::spellareahost::Triggers,
++            &wxl::api::spellareahost::TriggerAuras,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.cpp b/Engine/Source/WXLApi/SpellAreaHost.cpp
+index d6c16a9..7c48431 100644
+--- a/Engine/Source/WXLApi/SpellAreaHost.cpp
++++ b/Engine/Source/WXLApi/SpellAreaHost.cpp
+@@ -20,8 +20,10 @@ namespace wxl::api::spellareahost
+     void     Draw(const WxlSpellAreaDraw*) {}
+     void     SetRenderer(WxlSpellAreaRenderFn, void*) {}
+     uint32_t CastEvents(uint64_t, WxlSpellAreaCastEvent*, uint32_t) { return 0; }
++    int      Triggers(uint32_t, WxlSpellAreaTriggers*) { return 0; }
++    uint32_t TriggerAuras(WxlSpellAreaAura*, uint32_t) { return 0; }
+     void     Render(uint32_t, uint32_t) {}
+-    void     NoteSpellGo(uint64_t, uint32_t, uint32_t, uint32_t, const float*, uint64_t) {}
++    void     NoteSpellGo(uint64_t, uint32_t, uint32_t, uint32_t, const float*, uint64_t, uint32_t) {}
+ }
+ 
+ #else
+@@ -51,6 +53,7 @@ namespace wxl::api::spellareahost
+ #include <algorithm>
+ #include <cstring>
+ #include <memory>
++#include <unordered_map>
+ #include <vector>
+ 
+ namespace wxl::api::spellareahost
+@@ -90,6 +93,7 @@ namespace wxl::api::spellareahost
+         {
+             WOWGUID   player = {};
+             CGUnit_C* playerUnit = nullptr;
++            WxlSpellAreaAura*      auras = nullptr;
+             WxlSpellAreaDynObject* dyn = nullptr;
+             WxlSpellAreaCaster*    casters = nullptr;
+             uint32_t  max = 0;
+@@ -151,6 +155,86 @@ namespace wxl::api::spellareahost
+             return 1;
+         }
+ 
++        // ------------------------------------------------------------------------------------ triggered spells
++        // The spell data never changes while the client runs: what a spell triggers is worked out once.
++        constexpr int32_t kAuraPeriodicTrigger = 23, kAuraPeriodicTriggerWithValue = 226;
++        constexpr int32_t kEffectTriggerMissile = 32, kEffectTriggerSpell = 64, kEffectTriggerSpellWithValue = 142, kEffectTriggerMissileWithValue = 145;
++
++        bool ReadTriggers(uint32_t spellId, WxlSpellAreaTriggers* out)
++        {
++            SpellRec spell;
++            if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return false;
++
++            WxlSpellAreaTriggers t = {};
++            t.speed = spell.m_speed > 0.0f ? spell.m_speed : 0.0f;
++            for (uint32_t i = 0; i < 3; ++i)
++            {
++                const int32_t triggered = spell.m_effectTriggerSpell[i];
++                if (triggered <= 0 || static_cast<uint32_t>(triggered) == spellId) continue;
++                SpellRec target;
++                if (!g_spellDB.GetRecord(triggered, &target)) continue;
++
++                uint32_t kind = 0;
++                const int32_t effect = spell.m_effect[i];
++                if (effect == kEffectTriggerMissile || effect == kEffectTriggerMissileWithValue) kind = WXL_SPELLAREA_TRIGGER_MISSILE;
++                else if (effect == kEffectTriggerSpell || effect == kEffectTriggerSpellWithValue) kind = WXL_SPELLAREA_TRIGGER_CAST;
++                else if (spell.m_effectAura[i] == kAuraPeriodicTrigger || spell.m_effectAura[i] == kAuraPeriodicTriggerWithValue) kind = WXL_SPELLAREA_TRIGGER_PERIODIC;
++                if (!kind) continue;
++
++                WxlSpellAreaTrigger& e = t.trigger[t.count++];
++                e.kind        = kind;
++                e.spellId     = static_cast<uint32_t>(triggered);
++                e.periodMs    = kind == WXL_SPELLAREA_TRIGGER_PERIODIC && spell.m_effectAuraPeriod[i] > 0 ? static_cast<uint32_t>(spell.m_effectAuraPeriod[i]) : 0;
++                e.effectIndex = i;
++            }
++            if (!t.count) return false;
++            *out = t;
++            return true;
++        }
++
++        // Whether an aura's spell casts another periodically (cached: the scan asks for every aura of every unit).
++        bool CastsPeriodically(int32_t spellId)
++        {
++            static std::unordered_map<int32_t, bool> cache;
++            auto it = cache.find(spellId);
++            if (it != cache.end()) return it->second;
++            WxlSpellAreaTriggers t;
++            bool yes = false;
++            if (ReadTriggers(static_cast<uint32_t>(spellId), &t))
++                for (uint32_t i = 0; i < t.count; ++i) if (t.trigger[i].kind == WXL_SPELLAREA_TRIGGER_PERIODIC) yes = true;
++            cache.emplace(spellId, yes);
++            return yes;
++        }
++
++        int32_t AuraCallback(WOWGUID guid, void* param)
++        {
++            auto* s = static_cast<Scan*>(param);
++            if (s->count >= s->max) return 1;
++
++            CGObject_C* obj = Object(guid);
++            if (!obj || !obj->m_obj) return 1;
++            if (!(static_cast<uint32_t>(obj->m_obj->m_type) & TYPEMASK_UNIT)) return 1;
++
++            CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
++            if (!unit->m_unit) return 1;
++            const uint32_t auraCount = unit->GetAuraCount();
++            for (uint32_t i = 0; i < auraCount && s->count < s->max; ++i)
++            {
++                AuraData* aura = unit->GetAura(i);
++                if (!aura || aura->m_spellId <= 0 || !CastsPeriodically(aura->m_spellId)) continue;
++
++                CGUnit_C* caster = aura->m_creator.m_guid ? Unit(aura->m_creator) : nullptr;
++                WxlSpellAreaAura& a = s->auras[s->count++];
++                a = {};
++                a.holderGuid     = guid.m_guid;
++                a.casterGuid     = aura->m_creator.m_guid;
++                a.spellId        = static_cast<uint32_t>(aura->m_spellId);
++                a.casterIsPlayer = aura->m_creator == s->player ? 1u : 0u;
++                a.casterHostile  = Hostile(caster, s->playerUnit) ? 1u : 0u;
++            }
++            return 1;
++        }
++
+         // ------------------------------------------------------------------------------------- the textures
+         struct TexEntry
+         {
+@@ -321,6 +405,23 @@ namespace wxl::api::spellareahost
+         g_theGxDevicePtr->RsPop();
+     }
+ 
++    int Triggers(uint32_t spellId, WxlSpellAreaTriggers* out)
++    {
++        return out && ReadTriggers(spellId, out) ? 1 : 0;
++    }
++
++    uint32_t TriggerAuras(WxlSpellAreaAura* out, uint32_t max)
++    {
++        if (!out || !max) return 0;
++        Scan s;
++        s.playerUnit = PlayerUnit(s.player);
++        if (!s.playerUnit) return 0;
++        s.auras = out;
++        s.max = max;
++        ClntObjMgrEnumVisibleObjects(AuraCallback, &s);
++        return s.count;
++    }
++
+     uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max)
+     {
+         if (!out || !max) return 0;
+@@ -332,7 +433,7 @@ namespace wxl::api::spellareahost
+         return count;
+     }
+ 
+-    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget)
++    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget, uint32_t delayMs)
+     {
+         SpellRec spell;
+         if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return;
+@@ -346,6 +447,7 @@ namespace wxl::api::spellareahost
+         e.castFlags    = castFlags;
+         e.targetFlags  = targetFlags;
+         if (dest) { e.dest[0] = dest[0]; e.dest[1] = dest[1]; e.dest[2] = dest[2]; }
++        e.delayMs      = delayMs;
+         e.atMs         = OsGetAsyncTimeMs();
+ 
+         WOWGUID player;
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.h b/Engine/Source/WXLApi/SpellAreaHost.h
+index b0ad4df..ed6723f 100644
+--- a/Engine/Source/WXLApi/SpellAreaHost.h
++++ b/Engine/Source/WXLApi/SpellAreaHost.h
+@@ -23,4 +23,6 @@ namespace wxl::api::spellareahost
+     void     Draw(const WxlSpellAreaDraw* draw);
+     void     SetRenderer(WxlSpellAreaRenderFn fn, void* user);
+     uint32_t CastEvents(uint64_t afterSequence, WxlSpellAreaCastEvent* out, uint32_t max);
++    int      Triggers(uint32_t spellId, WxlSpellAreaTriggers* out);
++    uint32_t TriggerAuras(WxlSpellAreaAura* out, uint32_t max);
+ }
+diff --git a/Engine/Source/WXLApi/SpellAreaRender.h b/Engine/Source/WXLApi/SpellAreaRender.h
+index 17cb68a..8048c38 100644
+--- a/Engine/Source/WXLApi/SpellAreaRender.h
++++ b/Engine/Source/WXLApi/SpellAreaRender.h
+@@ -17,6 +17,6 @@ namespace wxl::api::spellareahost
+ 
+     /// Called when a spell-go packet has been read (PendingSpellCast::OnSpellGo): the caster, the spell, its cast flags
+     /// and what it was aimed at. `dest` is the ground point (three floats) or null. Kept for the spell area module's
+-    /// instant-cast indicator; costs a few stores when nobody asks.
+-    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget);
++    /// instant-cast indicator and the triggered spells (`delayMs` is the missile's flight time when the packet had one); costs a few stores when nobody asks.
++    void NoteSpellGo(uint64_t caster, uint32_t spellId, uint32_t castFlags, uint32_t targetFlags, const float* dest, uint64_t objectTarget, uint32_t delayMs);
+ }
+diff --git a/Engine/Source/WXLModules/SpellArea/Module.cpp b/Engine/Source/WXLModules/SpellArea/Module.cpp
+index 691df82..ed0d368 100644
+--- a/Engine/Source/WXLModules/SpellArea/Module.cpp
++++ b/Engine/Source/WXLModules/SpellArea/Module.cpp
+@@ -15,9 +15,9 @@ WXL_DEFINE_MODULE_ABI()
+ 
+ WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
+ {
+-    // spellAreaCastEvents is the last member of the engine access added for this module: its presence means all of
++    // spellAreaTriggerAuras is the last member of the engine access added for this module: its presence means all of
+     // them are.
+-    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, spellAreaCastEvents)) return 1;
++    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, spellAreaTriggerAuras)) return 1;
+     wxl::module::Bind(api);
+     if (info)
+     {
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index bde01a4..f2b24ba 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -40,6 +40,7 @@ namespace wxl::spellarea
+             bool  channel      = true;    // the area of a spell that is being channeled
+             bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
+             bool  cones        = true;
++            bool  triggered    = false;   // the areas of the spells that casts, missiles and auras trigger (opt-in)
+             bool  instant      = false;   // spells with no cast time: an area that shows where they hit and fades away
+             float instantFade  = 1.5f;    // seconds it takes to fade out
+             float opacity      = 0.65f;
+@@ -147,6 +148,7 @@ namespace wxl::spellarea
+             c.channel     = IniInt("Channel", 1) != 0;
+             c.persistent  = IniInt("Persistent", 1) != 0;
+             c.cones       = IniInt("Cones", 1) != 0;
++            c.triggered   = IniInt("Triggered", 0) != 0;
+             c.instant     = IniInt("Instant", 0) != 0;
+             c.instantFade = Clamp(IniFloat("InstantFadeSeconds", c.instantFade), 0.05f, 30.0f);
+             c.opacity     = Clamp(IniFloat("Opacity", c.opacity), 0.05f, 1.0f);
+@@ -176,10 +178,10 @@ namespace wxl::spellarea
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, instant %d fading over %.2fs, opacity %.2f max %.2f, outline %.2f yd)",
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, triggered %d, instant %d fading over %.2fs, opacity %.2f max %.2f, outline %.2f yd)",
+                             c.enabled ? "on" : "off",
+                             c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
+-                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.instant, c.instantFade, c.opacity, c.maxOpacity, c.outline);
++                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.triggered, c.instant, c.instantFade, c.opacity, c.maxOpacity, c.outline);
+         }
+ 
+         // One csv the module reads: its text, or false when the file is not there (they are all optional).
+@@ -285,12 +287,14 @@ namespace wxl::spellarea
+         std::vector<Area> g_areas;
+         uint32_t          g_lastCollect = 0;
+ 
+-        // The areas of instant spells that went off a moment ago: where they hit, fading away.
++        // The areas of spells that went off a moment ago (instant spells, the spells they trigger): where they hit, fading
++        // away. A missile's area shows from the launch (growing like a cast) to the landing, then fades.
+         struct Fading
+         {
+             Area     area;               // a fixed place and facing: it happened there
+-            uint32_t startMs = 0;
+-            uint32_t durationMs = 0;
++            uint32_t startMs = 0;        // the spell went off
++            uint32_t landMs = 0;         // it takes effect (startMs for an instant spell, later for a missile)
++            uint32_t endMs = 0;          // gone
+             uint64_t caster = 0;
+             uint32_t spell = 0;
+         };
+@@ -339,6 +343,28 @@ namespace wxl::spellarea
+             return n;
+         }
+ 
++        bool SameShape(const Shape& a, const Shape& b)
++        {
++            return a.kind == b.kind && a.back == b.back && std::fabs(a.radius - b.radius) < 0.05f;
++        }
++
++        // What a spell triggers, asked of the core once per spell.
++        struct TriggerInfo
++        {
++            WxlSpellAreaTriggers t = {};
++            bool any = false;
++        };
++        std::map<uint32_t, TriggerInfo> g_triggerCache;
++
++        const TriggerInfo& TriggersOf(uint32_t spellId)
++        {
++            auto it = g_triggerCache.find(spellId);
++            if (it != g_triggerCache.end()) return it->second;
++            TriggerInfo info;
++            info.any = Api()->spellAreaTriggers(spellId, &info.t) != 0;
++            return g_triggerCache.emplace(spellId, info).first->second;
++        }
++
+         struct DynKey { uint64_t caster; uint32_t spell; };
+ 
+         void AddArea(const Area& a)
+@@ -364,6 +390,17 @@ namespace wxl::spellarea
+             a.shape.intent = Intent::Neutral;
+             Shape derived[8];
+             if (ShapesOf(d.spellId, d.casterGuid, derived) > 0) a.shape.intent = derived[0].intent;
++            else
++            {
++                // a ground effect that works through a periodic trigger: the triggered spell says what it is
++                const TriggerInfo& info = TriggersOf(d.spellId);
++                for (uint32_t k = 0; info.any && k < info.t.count; ++k)
++                    if (info.t.trigger[k].kind == WXL_SPELLAREA_TRIGGER_PERIODIC && ShapesOf(info.t.trigger[k].spellId, d.casterGuid, derived) > 0)
++                    {
++                        a.shape.intent = derived[0].intent;
++                        break;
++                    }
++            }
+             if (!own && hostile) a.shape.intent = Intent::Harmful;
+             a.follow = true;
+             a.guid = d.guid;
+@@ -438,6 +475,38 @@ namespace wxl::spellarea
+             }
+         }
+ 
++        // An aura that casts a spell every few seconds (a periodic trigger): the area of that spell, for as long as the
++        // aura is there. Around the unit that carries the aura, or around whoever put it there when the spell is an area
++        // of its caster (a cone, a self-centered circle). Only what the client is told of is here: an aura the server keeps
++        // hidden is not.
++        void AddTriggerAura(const WxlSpellAreaAura& aura)
++        {
++            const bool own = aura.casterIsPlayer != 0;
++            if (own ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || aura.casterHostile))) return;
++
++            const TriggerInfo& info = TriggersOf(aura.spellId);
++            for (uint32_t k = 0; info.any && k < info.t.count; ++k)
++            {
++                if (info.t.trigger[k].kind != WXL_SPELLAREA_TRIGGER_PERIODIC) continue;
++                Shape shapes[8];
++                const size_t n = ShapesOf(info.t.trigger[k].spellId, aura.casterGuid, shapes);
++                for (size_t i = 0; i < n; ++i)
++                {
++                    Area a;
++                    a.shape = shapes[i];
++                    if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
++                    const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
++                    a.follow = true;
++                    a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
++
++                    bool duplicate = false;   // the same aura on several units, all drawn around its caster: one is enough
++                    for (const Area& other : g_areas)
++                        if (other.follow && other.guid == a.guid && SameShape(other.shape, a.shape)) { duplicate = true; break; }
++                    if (!duplicate) AddArea(a);
++                }
++            }
++        }
++
+         void Collect(uint32_t now)
+         {
+             g_areas.clear();
+@@ -464,50 +533,136 @@ namespace wxl::spellarea
+                 if (c.isPlayer ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || c.hostile))) continue;
+                 AddCasts(c, dyn, now);
+             }
++
++            if (g_cfg.triggered)
++            {
++                static WxlSpellAreaAura auraBuf[kMaxScan];
++                const uint32_t auraCount = Api()->spellAreaTriggerAuras(auraBuf, kMaxScan);
++                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i]);
++            }
+         }
+ 
+-        // ----------------------------------------------------------------------------------------- instant spells
+-        // A spell with no cast time never shows up as a cast in progress: the core reports each spell that goes off, and
+-        // the ones without a cast time or channel get an area that starts at full strength and fades out.
+-        void AddInstant(const WxlSpellAreaCastEvent& e, uint32_t now)
++        // ------------------------------------------------------------------- spells that went off: instants, triggers
++        // The core reports each spell that goes off. One with no cast time never shows up as a cast in progress, and the
++        // spells a cast or a missile triggers (grenades) are cast by the server, not by the client's own cast: both get an
++        // area at the place that is hit, which starts at full strength and fades out.
++        bool EventWanted(const WxlSpellAreaCastEvent& e)
+         {
+-            if (!e.instant) return;
+-            if (e.casterIsPlayer ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || e.casterHostile))) return;
++            return e.casterIsPlayer ? OwnOn() : (OthersOn() && (!g_cfg.enemiesOnly || e.casterHostile));
++        }
++
++        uint32_t FadeMs() { return static_cast<uint32_t>(g_cfg.instantFade * 1000.0f + 0.5f); }
+ 
+-            const uint32_t durationMs = static_cast<uint32_t>(g_cfg.instantFade * 1000.0f + 0.5f);
++        // Where one shape of an event goes: around or in front of the caster, on the ground point it was aimed at, or
++        // around its target. A missile's circle is where the missile lands, never on the caster unless that is all there is.
++        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, float pos[3], float* facing)
++        {
++            const bool onCaster = s.kind != ShapeKind::Circle || s.anchor == Anchor::Caster;
++            bool placed = false;
++            if (onCaster && !(missile && s.kind == ShapeKind::Circle))
++                placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;      // around or in front of the caster
++            else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
++            {
++                std::memcpy(pos, e.dest, 3 * sizeof(float));                               // the ground point it was aimed at
++                *facing = 0;
++                placed = true;
++            }
++            else if (e.objectTarget)
++                placed = Api()->spellAreaObjectPose(e.objectTarget, pos, facing) != 0;    // around its target
++            if (!placed && missile && s.kind == ShapeKind::Circle)
++                placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;
++            return placed;
++        }
++
++        void PushFading(const Shape& shape, const float pos[3], float facing, uint32_t startMs, uint32_t landMs, uint32_t endMs, uint64_t caster, uint32_t spell)
++        {
++            Fading f;
++            f.area.shape = shape;
++            std::memcpy(f.area.pos, pos, 3 * sizeof(float));
++            f.area.facing = facing;
++            f.startMs = startMs;
++            f.landMs = landMs;
++            f.endMs = endMs;
++            f.caster = caster;
++            f.spell = spell;
++            if (static_cast<int>(g_fading.size()) >= g_cfg.maxAreas) g_fading.erase(g_fading.begin());
++            g_fading.push_back(f);
++        }
++
++        // The spell itself had no cast time.
++        void AddInstantShapes(const WxlSpellAreaCastEvent& e, uint32_t now)
++        {
++            const uint32_t durationMs = FadeMs();
+             if (now - e.atMs >= durationMs) return;                       // it is over before it is seen
+ 
+             Shape shapes[8];
+             const size_t n = ShapesOf(e.spellId, e.casterGuid, shapes);
+             for (size_t i = 0; i < n; ++i)
+             {
+-                Fading f;
+-                f.area.shape = shapes[i];
+-                f.startMs = e.atMs;
+-                f.durationMs = durationMs;
+-                f.caster = e.casterGuid;
+-                f.spell = e.spellId;
+-
+                 float pos[3] = {}, facing = 0;
+-                bool placed = false;
+-                if (shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster)
+-                    placed = Api()->spellAreaObjectPose(e.casterGuid, pos, &facing) != 0;      // around or in front of the caster
+-                else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
+-                    { std::memcpy(pos, e.dest, sizeof(pos)); placed = true; }                  // the ground point it was aimed at
+-                else if (e.objectTarget)
+-                    placed = Api()->spellAreaObjectPose(e.objectTarget, pos, &facing) != 0;    // around its target
+-                if (!placed) continue;
+-
+-                std::memcpy(f.area.pos, pos, sizeof(pos));
+-                f.area.facing = facing;
+-                if (static_cast<int>(g_fading.size()) >= g_cfg.maxAreas) g_fading.erase(g_fading.begin());
+-                g_fading.push_back(f);
++                if (PlaceEventShape(e, shapes[i], false, pos, &facing))
++                    PushFading(shapes[i], pos, facing, e.atMs, e.atMs, e.atMs + durationMs, e.casterGuid, e.spellId);
++            }
++        }
++
++        // The spells this one triggers when it goes off: a missile's (a grenade's) goes off where the missile lands, a
++        // trigger spell's where its own targets are.
++        void AddTriggeredShapes(const WxlSpellAreaCastEvent& e, uint32_t now)
++        {
++            const TriggerInfo& info = TriggersOf(e.spellId);
++            if (!info.any) return;
++
++            Shape own[8];   // what the spell draws itself as an instant spell: the triggered spell must not repeat it
++            const size_t ownCount = e.instant && g_cfg.instant ? ShapesOf(e.spellId, e.casterGuid, own) : 0;
++
++            float casterPos[3] = {}, casterFacing = 0;
++            const bool haveCaster = Api()->spellAreaObjectPose(e.casterGuid, casterPos, &casterFacing) != 0;
++
++            for (uint32_t k = 0; k < info.t.count; ++k)
++            {
++                const WxlSpellAreaTrigger& trigger = info.t.trigger[k];
++                if (trigger.kind != WXL_SPELLAREA_TRIGGER_MISSILE && trigger.kind != WXL_SPELLAREA_TRIGGER_CAST) continue;
++                const bool missile = trigger.kind == WXL_SPELLAREA_TRIGGER_MISSILE;
++
++                Shape shapes[8];
++                const size_t n = ShapesOf(trigger.spellId, e.casterGuid, shapes);
++                for (size_t i = 0; i < n; ++i)
++                {
++                    bool duplicate = false;
++                    for (size_t o = 0; o < ownCount; ++o) if (SameShape(own[o], shapes[i])) duplicate = true;
++                    if (duplicate) continue;
++
++                    float pos[3] = {}, facing = 0;
++                    if (!PlaceEventShape(e, shapes[i], missile, pos, &facing)) continue;
++
++                    // how long until it lands: the packet's own number, else the distance over the missile speed
++                    float flightMs = 0;
++                    if (missile && e.delayMs > 0) flightMs = static_cast<float>(e.delayMs);
++                    else if (info.t.speed > 0.0f && haveCaster)
++                    {
++                        const float dx = pos[0] - casterPos[0], dy = pos[1] - casterPos[1], dz = pos[2] - casterPos[2];
++                        flightMs = std::sqrt(dx * dx + dy * dy + dz * dz) / info.t.speed * 1000.0f;
++                    }
++                    const uint32_t flight = static_cast<uint32_t>(Clamp(flightMs, 0.0f, 15000.0f));
++
++                    const uint32_t land = e.atMs + flight;
++                    const uint32_t end = land + FadeMs();
++                    if (static_cast<int32_t>(now - end) >= 0) continue;     // all over already
++                    PushFading(shapes[i], pos, facing, e.atMs, land, end, e.casterGuid, trigger.spellId);
++                }
+             }
+         }
+ 
++        void AddEvent(const WxlSpellAreaCastEvent& e, uint32_t now)
++        {
++            if (!EventWanted(e)) return;
++            if (e.instant && g_cfg.instant) AddInstantShapes(e, now);
++            if (g_cfg.triggered) AddTriggeredShapes(e, now);
++        }
++
+         void UpdateInstant(uint32_t now)
+         {
+-            if (!g_cfg.instant)
++            if (!g_cfg.instant && !g_cfg.triggered)
+             {
+                 g_fading.clear();
+                 g_eventsPrimed = false;
+@@ -519,12 +674,12 @@ namespace wxl::spellarea
+             for (uint32_t i = 0; i < count; ++i)
+             {
+                 g_eventSeq = std::max(g_eventSeq, events[i].sequence);
+-                if (g_eventsPrimed) AddInstant(events[i], now);
++                if (g_eventsPrimed) AddEvent(events[i], now);
+             }
+             g_eventsPrimed = true;
+ 
+             g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [now](const Fading& f)
+-                { return now - f.startMs >= f.durationMs; }), g_fading.end());
++                { return static_cast<int32_t>(now - f.endMs) >= 0; }), g_fading.end());
+         }
+ 
+         // ------------------------------------------------------------------------------------------- the textures
+@@ -619,7 +774,10 @@ namespace wxl::spellarea
+             for (const Fading& f : g_fading)
+             {
+                 Area a = f.area;
+-                a.alphaScale = 1.0f - static_cast<float>(now - f.startMs) / static_cast<float>(f.durationMs);
++                if (static_cast<int32_t>(now - f.landMs) < 0)       // a missile in the air: the area fills in like a cast
++                    a.strength = Clamp(static_cast<float>(now - f.startMs) / static_cast<float>(f.landMs - f.startMs), 0.0f, 1.0f);
++                else                                                  // it has taken effect: fading out
++                    a.alphaScale = 1.0f - static_cast<float>(now - f.landMs) / static_cast<float>(f.endMs - f.landMs);
+                 if (a.alphaScale > 0.0f) DrawArea(a, a.pos, a.facing, triFlags, projectFlags);
+             }
+ 
+@@ -645,6 +803,7 @@ namespace wxl::spellarea
+         if (api && WXL_API_HAS(api, setSpellAreaRenderer)) api->setSpellAreaRenderer(nullptr, nullptr);
+         g_areas.clear();
+         g_fading.clear();
++        g_triggerCache.clear();
+         g_textures.clear();
+     }
+ }
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index 1f30371..dcdfd7e 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -30,8 +30,9 @@ EnemiesOnly=0           ; 1 = ONLY what hostile units cast: your own and friendl
+ Precast=1               ; the area of a spell being cast
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
+ OutlineThickness=0     ; thickness of the bright edge of every shape, in yards: 0.05 to 5; 0 = automatic (a twentieth of the radius, as before)
++Triggered=0             ; the areas of the spells that an aura, a missile or a cast triggers (grenades, periodic auras ...)
+ Instant=0               ; spells with no cast time (Thunder Clap, Arcane Explosion, Cone of Cold ...): an area where they hit, fading away
+-InstantFadeSeconds=1.5  ; how long that area takes to fade out: 0.05 to 30, fractions allowed (0.4, 2.5 ...)
++InstantFadeSeconds=1.5  ; how long the area of an instant or triggered spell takes to fade out once it has gone off: 0.05 to 30, fractions allowed (0.4, 2.5 ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+ Cones=1                 ; cone spells
+ Lines=1                 ; spells whose "cone" is a line (CONE_LINE in the custom attributes file)
+@@ -66,6 +67,8 @@ OverrideFile=SpellAreaOverride.csv
+ | a cone spell the custom attributes mark CONE_BACK (a tail sweep) | the same cone, **behind** the caster | the caster, turning with it |
+ | a cone spell the custom attributes mark CONE_LINE | a **line** as long as the spell's radius, `LineWidth` wide, in front | the caster, turning with it |
+ | an instant spell that has just gone off, with `Instant=1` (Thunder Clap, Arcane Explosion, Cone of Cold, Fan of Knives ...) | the spell's usual shape (circle, cone or line) at **full** strength that fades out linearly over `InstantFadeSeconds` | where it went off: around or in front of the caster, on the ground point it was aimed at, or around its target; it stays there, it does not follow |
++| an aura that casts a spell every few seconds, with `Triggered=1` (periodic trigger auras) | the **triggered** spell's shape | the unit that carries the aura, or its caster for a cone or a circle around the caster, following it for as long as the aura lasts |
++| a missile that triggers a spell (grenades, thrown bombs), with `Triggered=1` | the **triggered** spell's circle, filling in like a cast while the missile flies, then at full strength and fading over `InstantFadeSeconds` | where the missile lands: the ground point or the target it was aimed at |
+ | anything lying on the ground (Blizzard, Consecration, Death and Decay, Rain of Fire, Volley, ground effects of bosses) | circle of its real radius | the game's dynamic object, for as long as it exists |
+ 
+ The size is the spell's own radius from the client data, worked out for the caster's level, and for **your** spells
+@@ -187,6 +190,30 @@ shape's radius, which is thin on small shapes and thick on big ones, as it has a
+ * It is hot-reloaded with the ini. Shapes of nearly the same size share a texture, so a few dozen small textures are made
+   for the sizes seen; none are made while the value is 0.
+ 
++## Triggered spells
++
++Many effects do not hurt anyone themselves: they cast another spell. With `Triggered=1` (it is **off** by default, like `Instant`) the indicator looks
++those spells up in Spell.dbc (`EffectTriggerSpell`), and when the **triggered** spell has an area (it goes through the same
++rules as any other spell: target types, radius, the override and cone files) that area is drawn where it will hit.
++
++| triggered by | the area appears | and goes |
++|---|---|---|
++| a **periodic trigger aura** (aura types 23 and 226) on a visible unit | while the aura is on the unit, around the unit (around its caster for a cone, a line or a circle centered on the caster) | when the aura is gone |
++| a **missile** (effects 32 and 145: grenades, bombs) | when the spell goes off, at the landing point, filling in like a cast while the missile flies | fading over `InstantFadeSeconds` after it lands |
++| a **trigger spell** effect (64 and 142) | when the spell goes off, where the triggered spell's own targets are | fading over `InstantFadeSeconds` |
++
++* **Flight time** of a missile is the number the server put in the packet; without one it is the distance to the landing
++  point over the spell's `Speed`; without that it lands at once.
++* **Whose** areas show is decided by `Own`, `Others` and `EnemiesOnly` against whoever cast the spell (for an aura: who put
++  it there). An enemy's triggered area is red whatever the spell's own colour says.
++* A triggered spell is shown once: the same shape the triggering spell already draws as an instant spell is not repeated,
++  an aura on several units that all draw around its caster draws one, and a fading circle gives way to the ground effect
++  when the spell leaves one (Consecration style).
++* Only **one level** of triggers is followed: what the triggered spell triggers in turn is not.
++* The client only knows the auras the server tells it about. An aura the server keeps hidden (many boss mechanics are) never
++  reaches the client, so its area cannot be drawn; a ground effect (dynamic object) is always known.
++* A ground effect whose spell works through a periodic trigger takes its colour from the triggered spell.
++
+ ## Instant spells
+ 
+ A spell with no cast time never shows up as a cast in progress, so the other indicators never see it. With `Instant=1` the
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index 1de376e..c626c8c 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -23,6 +23,11 @@ static float g_fadeSeconds = 2.0f;
+ static uint32_t g_eventAt = 0;
+ static uint64_t g_eventsMade = 0;
+ static int g_lastAlpha = -1, g_instantDraws = 0;
++static uint32_t g_eventSpell = 40, g_eventDelay = 0, g_eventTargetFlags = 0;
++static int g_eventInstant = 1, g_auraOn = 0, g_triggeredOn = 0;
++static float g_eventDest[3] = {};
++static int g_periodicDraws = 0, g_missileDraws = 0, g_missileAlpha = -1, g_periodicRed = 0;
++static float g_periodicPos[3] = {}, g_missilePos[3] = {};
+ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
+ static std::string g_dir;
+ 
+@@ -39,19 +44,20 @@ int main()
+     api.abiVersion = WXL_ABI_VERSION;
+     api.structSize = sizeof(api);
+     api.log = [](const char*, const char*) {};
+-    api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : !std::strcmp(k, "Instant") ? g_instantOn : d; };
++    api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : !std::strcmp(k, "Instant") ? g_instantOn : !std::strcmp(k, "Triggered") ? g_triggeredOn : d; };
+     api.iniGetString = [](const char*, const char* k, char* out, size_t cap) -> int
+     {
+         if (std::strcmp(k, "InstantFadeSeconds") != 0) return 0;
+         std::snprintf(out, cap, "%.2f", g_fadeSeconds);
+         return 1;
+     };
+-    api.iniStamp = []() -> uint64_t { return 1 + g_instantOn + static_cast<uint64_t>(g_fadeSeconds * 100.0f); };   // saving the ini changes the stamp
++    api.iniStamp = []() -> uint64_t { return 1 + g_instantOn + 1000 * g_triggeredOn + static_cast<uint64_t>(g_fadeSeconds * 100.0f); };   // saving the ini changes the stamp
+     api.spellAreaCastEvents = [](uint64_t after, WxlSpellAreaCastEvent* out, uint32_t) -> uint32_t
+     {
+         if (!g_eventsMade || g_eventsMade <= after) return 0;
+-        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = 1; out[0].spellId = 40; out[0].instant = 1;
+-        out[0].casterIsPlayer = 1; out[0].atMs = g_eventAt;
++        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = 1; out[0].spellId = g_eventSpell; out[0].instant = g_eventInstant;
++        out[0].casterIsPlayer = 1; out[0].atMs = g_eventAt; out[0].delayMs = g_eventDelay; out[0].targetFlags = g_eventTargetFlags;
++        std::memcpy(out[0].dest, g_eventDest, sizeof(g_eventDest));
+         return 1;
+     };
+     api.workingDirectory = []() -> const char* { return g_dir.c_str(); };
+@@ -69,16 +75,35 @@ int main()
+     api.spellAreaEffects = [](uint32_t sp, uint64_t, WxlSpellAreaEffects* o) -> int
+     {
+         *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = sp == 40 ? 6.0f : 10.0f;   // around the caster
++        if (sp == 61) { o->targetA[0] = 16; o->radius[0] = 7.0f; }   // the periodic aura's spell: an area at the target
++        if (sp == 71) { o->targetA[0] = 16; o->radius[0] = 5.0f; }   // the grenade's spell: an area at its destination
++        if (sp == 60 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
+         return 1;
+     };
+     api.spellAreaPendingCast = [](uint64_t, uint32_t, WxlSpellAreaPending*) -> int { return 0; };
+-    api.spellAreaObjectPose = [](uint64_t, float* p, float* f) -> int { p[0] = p[1] = p[2] = 0; *f = 0; return 1; };
++    api.spellAreaObjectPose = [](uint64_t g, float* p, float* f) -> int { p[0] = p[1] = p[2] = 0; if (g == 50) { p[0] = 10; p[1] = 20; } *f = 0; return 1; };
++    api.spellAreaTriggers = [](uint32_t sp, WxlSpellAreaTriggers* o) -> int
++    {
++        *o = {};
++        if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
++        if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
++        if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
++        return 0;
++    };
++    api.spellAreaTriggerAuras = [](WxlSpellAreaAura* o, uint32_t) -> uint32_t
++    {
++        if (!g_auraOn) return 0;
++        o[0] = {}; o[0].holderGuid = 50; o[0].casterGuid = 9; o[0].spellId = 60; o[0].casterHostile = 1;
++        return 1;
++    };
+     api.spellAreaCreateTexture = [](const uint32_t* px, uint32_t size, const char*) -> void* { ++g_textures; return px && size == 256 ? &g_textures : nullptr; };
+     api.spellAreaDraw = [](const WxlSpellAreaDraw* d)
+     {
+         ++g_draws;
+         if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
+         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
++        if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
++        if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
+         if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; }     // the instant spell's area (spell 40)
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing) < 0.001f) ++g_frontLine;               // spell 30: in front
+@@ -135,7 +160,50 @@ int main()
+     g_fn(g_user, 0x200122, 5, 40600);
+     Check(g_instantDraws == 0, "and is over after it");
+ 
+-    std::printf("5. shutdown\n");
++    std::printf("5. an aura that casts a spell periodically (off until Triggered=1)\n");
++    g_auraOn = 1;
++    g_fn(g_user, 0x200122, 5, 44000);
++    Check(g_periodicDraws == 0, "nothing with Triggered=0");
++    g_triggeredOn = 1;
++    g_fn(g_user, 0x200122, 5, 45000);
++    Check(g_periodicDraws == 1, "the triggered spell's area is drawn for the aura");
++    Check(g_periodicPos[0] == 10.0f && g_periodicPos[1] == 20.0f, "around the unit that carries the aura");
++    Check(g_periodicRed == 1, "an enemy's aura: red");
++    g_auraOn = 0; g_periodicDraws = 0;
++    g_fn(g_user, 0x200122, 5, 46000);
++    Check(g_periodicDraws == 0, "gone with the aura");
++
++    std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
++    g_instantOn = 0;                                   // only the triggered spell is wanted
++    g_fn(g_user, 0x200122, 5, 47000);
++    g_eventInstant = 0; g_eventSpell = 70; g_eventDelay = 1000; g_eventTargetFlags = WXL_SPELLAREA_TARGET_DEST;
++    g_eventDest[0] = 30; g_eventDest[1] = 40; g_eventDest[2] = 5;
++    g_eventsMade = 10; g_eventAt = 50000;
++    g_missileDraws = 0; g_missileAlpha = -1;
++    g_fn(g_user, 0x200122, 5, 50000);
++    Check(g_missileDraws == 1, "the area shows from the launch");
++    Check(g_missilePos[0] == 30.0f && g_missilePos[1] == 40.0f, "where the missile will land");
++    Check(g_missileAlpha == 75, "faint at the launch");
++    g_fn(g_user, 0x200122, 5, 50500);
++    Check(g_missileAlpha == 120, "stronger half way");
++    g_fn(g_user, 0x200122, 5, 51000);
++    Check(g_missileAlpha == 166, "full when it lands");
++    g_fn(g_user, 0x200122, 5, 51250);
++    Check(g_missileAlpha == 83, "then fading (0.5 s): half way");
++    g_missileDraws = 0;
++    g_fn(g_user, 0x200122, 5, 51600);
++    Check(g_missileDraws == 0, "gone");
++
++    std::printf("7. a missile whose flight time is its distance over the spell's speed\n");
++    g_eventSpell = 80; g_eventDelay = 0; g_eventDest[0] = 40; g_eventDest[1] = 0; g_eventDest[2] = 0;
++    g_eventsMade = 11; g_eventAt = 60000;
++    g_missileAlpha = -1;
++    g_fn(g_user, 0x200122, 5, 61000);
++    Check(g_missileAlpha == 120, "40 yards at 20 yards per second: half way after a second");
++    g_fn(g_user, 0x200122, 5, 62000);
++    Check(g_missileAlpha == 166, "full after two");
++
++    std::printf("8. shutdown\n");
+     WxlModuleShutdown();
+     Check(g_fn == nullptr, "renderer unregistered");
+ 
+diff --git a/WoW/Source/Magic/MagicClient/Spell_C.cpp b/WoW/Source/Magic/MagicClient/Spell_C.cpp
+index 9c348fa..acefea8 100644
+--- a/WoW/Source/Magic/MagicClient/Spell_C.cpp
++++ b/WoW/Source/Magic/MagicClient/Spell_C.cpp
+@@ -1903,7 +1903,7 @@ void PendingSpellCast::OnSpellGo(CDataStore* msg) {
+         }
+         wxl::api::spellareahost::NoteSpellGo(caster.m_guid, static_cast<uint32_t>(this->m_data.m_spellId), this->m_data.m_castFlags,
+                                              this->m_data.m_targetFlags, (this->m_data.m_targetFlags & 0x40) ? destPos : nullptr,
+-                                             this->m_data.m_objectTarget.m_guid);
++                                             this->m_data.m_objectTarget.m_guid, (castFlags & 0x20000) ? delay : 0);
+     }
+ 
+     CGUnit_C* unit = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(caster, TYPEMASK_UNIT, __FILE__, __LINE__));

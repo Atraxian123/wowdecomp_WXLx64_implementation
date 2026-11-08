@@ -252,6 +252,9 @@ namespace wxl::api
             &wxl::api::spellareahost::CreateTexture,
             &wxl::api::spellareahost::Draw,
             &wxl::api::spellareahost::SetRenderer,
+            &wxl::api::spellareahost::CastEvents,
+            &wxl::api::spellareahost::Triggers,
+            &wxl::api::spellareahost::TriggerAuras,
         };
     }
 
