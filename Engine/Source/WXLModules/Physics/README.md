@@ -65,7 +65,7 @@ python Tools/m2_extract_phys.py Dagger.phys             -> Dagger.phy2
 
 ## Switching it on
 
-`WXLExtendedEquipment.ini`, beside the game executable:
+`WXL\WXLSetup.ini`, in the WXL folder beside the game executable:
 
 ```ini
 [Physics]
@@ -116,7 +116,7 @@ UnstickReach=300
 TeleportYards=6
 ```
 
-Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLExtendedEquipment.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
+Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLSetup.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
 `stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
 `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
 and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
@@ -126,7 +126,7 @@ these, and the model named in the log is the one to look at.
 
 # Tuning the physics from the ini (global multipliers)
 
-`WXLExtendedEquipment.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
+`WXLSetup.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
 model at once, so the movement can be tuned without editing the files. `1.0` = as the file has it; a key that is
 missing or blank is `1.0`. Decimals can be written `1.25` or `1,25`. A value outside a key's range is clamped to it
 and a value that is not a number is ignored; both are logged (category `PHYS`).

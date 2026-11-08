@@ -7,7 +7,7 @@ Off by default.
 
 ## Switching it on
 
-`WXLExtendedEquipment.ini`, beside the client executable:
+`WXL\WXLSetup.ini`, in the WXL folder beside the client executable:
 
 ```ini
 [Water]

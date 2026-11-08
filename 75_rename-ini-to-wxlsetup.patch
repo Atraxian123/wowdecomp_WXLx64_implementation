@@ -1,0 +1,569 @@
+diff --git a/Engine/Source/WXL/CastAnim.cpp b/Engine/Source/WXL/CastAnim.cpp
+index 2ada7b5..eeb7742 100644
+--- a/Engine/Source/WXL/CastAnim.cpp
++++ b/Engine/Source/WXL/CastAnim.cpp
+@@ -18,7 +18,7 @@ namespace wxl::castanim
+ {
+     namespace
+     {
+-        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable. This module lives in WXLCore, which
++        // WXLSetup.ini sits in the WXL folder beside the client executable. This module lives in WXLCore, which
+         // cannot call the equip modules' helper, so the lookup is repeated, as Log.cpp and Culling.cpp do.
+         // Missing file, section or key: the default.
+         bool IniPath(char* path, size_t cap)
+@@ -27,7 +27,7 @@ namespace wxl::castanim
+             const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
+             if (n == 0 || n >= cap) return false;
+             char* slash = std::strrchr(path, '\\');
+-            const char* name = "WXLExtendedEquipment.ini";
++            const char* name = "WXLSetup.ini";
+             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
+             std::strcpy(slash + 1, name);
+             // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+diff --git a/Engine/Source/WXL/CastAnim.h b/Engine/Source/WXL/CastAnim.h
+index 3b33ad1..1febb79 100644
+--- a/Engine/Source/WXL/CastAnim.h
++++ b/Engine/Source/WXL/CastAnim.h
+@@ -3,7 +3,7 @@
+ //
+ // OPT-IN. The stock client plays the precast (wind-up) sequence at its authored speed, whatever the cast time.
+ // With the switch below on, CGUnit_C::PlayBaseAnimation plays it at sequenceDuration / castTime, so the
+-// wind-up finishes when the cast bar does. Everything else is stock. In WXLExtendedEquipment.ini (beside the
++// wind-up finishes when the cast bar does. Everything else is stock. In WXLSetup.ini (beside the
+ // client executable):
+ //
+ //     [Animation]
+diff --git a/Engine/Source/WXL/Culling.cpp b/Engine/Source/WXL/Culling.cpp
+index c553c17..944ac4b 100644
+--- a/Engine/Source/WXL/Culling.cpp
++++ b/Engine/Source/WXL/Culling.cpp
+@@ -22,7 +22,7 @@ namespace wxl::culling
+ {
+     namespace
+     {
+-        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable (the file the equip modules and the log
++        // WXLSetup.ini sits in the WXL folder beside the client executable (the file the equip modules and the log
+         // read; this module lives in WXLCore, which cannot call their helper, so the lookup is repeated, as
+         // Log.cpp does). Missing file, section or key: the default.
+         bool IniPath(char* path, size_t cap)
+@@ -31,7 +31,7 @@ namespace wxl::culling
+             const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
+             if (n == 0 || n >= cap) return false;
+             char* slash = std::strrchr(path, '\\');
+-            const char* name = "WXLExtendedEquipment.ini";
++            const char* name = "WXLSetup.ini";
+             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
+             std::strcpy(slash + 1, name);
+             // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+@@ -111,7 +111,7 @@ namespace wxl::culling
+                                 master ? 1 : 0, viewerWmo ? 1 : 0, wmoOccluders ? 1 : 0, volumes ? 1 : 0, horizon ? 1 : 0,
+                                 wmoFrustum ? 1 : 0, sceneBox ? 1 : 0, portals ? 1 : 0);
+                 else
+-                    wxl::LogCat("CULL", "culling: stock behaviour (WXLExtendedEquipment.ini [Culling] switches are all 0 or absent)");
++                    wxl::LogCat("CULL", "culling: stock behaviour (WXLSetup.ini [Culling] switches are all 0 or absent)");
+                 if (!traceWmo.empty())
+                     wxl::LogCat("CULL", "trace: TraceWmo='%s'", traceWmo.c_str());
+             }
+diff --git a/Engine/Source/WXL/Culling.h b/Engine/Source/WXL/Culling.h
+index ca502cb..b198a45 100644
+--- a/Engine/Source/WXL/Culling.h
++++ b/Engine/Source/WXL/Culling.h
+@@ -1,7 +1,7 @@
+-// WXL culling switches: lets WXLExtendedEquipment.ini turn off the ways a WMO can hide other objects.
++// WXL culling switches: lets WXLSetup.ini turn off the ways a WMO can hide other objects.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
+ //
+-// All keys live in WXLExtendedEquipment.ini (in the WXL folder beside the client executable), section [Culling]. Every key
++// All keys live in WXLSetup.ini (in the WXL folder beside the client executable), section [Culling]. Every key
+ // defaults to 0, which is the stock client's behaviour; nothing changes unless you set one.
+ //
+ //     [Culling]
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+index 5cc03f9..93d9dad 100644
+--- a/Engine/Source/WXL/Log.cpp
++++ b/Engine/Source/WXL/Log.cpp
+@@ -57,7 +57,7 @@ namespace wxl
+             return t;
+         }
+ 
+-        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable (the same file the equip modules read;
++        // WXLSetup.ini sits in the WXL folder beside the client executable (the same file the equip modules read;
+         // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
+         // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
+         bool IniLogFlag(const char* key, bool fallback)
+@@ -67,7 +67,7 @@ namespace wxl
+             const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
+             if (n == 0 || n >= sizeof(path)) return fallback;
+             char* slash = std::strrchr(path, '\\');
+-            const char* name = "WXLExtendedEquipment.ini";
++            const char* name = "WXLSetup.ini";
+             if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
+             std::strcpy(slash + 1, name);
+             // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+@@ -168,7 +168,7 @@ namespace wxl
+             {
+                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
+                 if (!sink.file) { sink.capped = true; return; }
+-                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
++                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLSetup.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
+             }
+ 
+             const Timestamp t = Now();
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+index 0374c3c..f3fc8b8 100644
+--- a/Engine/Source/WXL/Log.h
++++ b/Engine/Source/WXL/Log.h
+@@ -6,7 +6,7 @@
+ // the client crashes.
+ //
+ // Logging is OPT-IN: nothing is written, and WXL.log is not even created, unless it is switched on in
+-// WXLExtendedEquipment.ini (in the WXL folder beside the client executable):
++// WXLSetup.ini (in the WXL folder beside the client executable):
+ //
+ //     [Log]
+ //     Enabled=1
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+index 4f3cc17..c73a6c8 100644
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -66,7 +66,7 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
+ |---|---|
+ | Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`; with it on, `ModernM2`, `Equip`, `Physics`, `Creature` and `Weapon` in the same section, each defaulting to 1, switch one module's lines off) |
+ | Events | `subscribe` (by name). Args structs for `OnBuildBonePalette`, `OnUpdate`, `OnWorldEnter/Leave` are in the header |
+-| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXL\WXLExtendedEquipment.ini) |
++| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXL\WXLSetup.ini) |
+ | Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |
+ | Model instances | `readInstance`, `readBones`, `writePalette` |
+ | Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index cdf7c00..49c963c 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -392,7 +392,7 @@ typedef struct WxlApi
+     /* events: 0 on success, nonzero for an unknown event name */
+     int  (*subscribe)(const char* eventName, WxlEventHandler handler, void* user);
+ 
+-    /* WXLExtendedEquipment.ini, in the WXL folder beside the client executable. iniGetString returns 1 when the key exists. */
++    /* WXLSetup.ini, in the WXL folder beside the client executable. iniGetString returns 1 when the key exists. */
+     int      (*iniGetString)(const char* section, const char* key, char* out, size_t cap);
+     int      (*iniGetInt)(const char* section, const char* key, int defaultValue);
+     int      (*iniGetBool)(const char* section, const char* key, int defaultValue);
+diff --git a/Engine/Source/WXLApi/ApiHost.h b/Engine/Source/WXLApi/ApiHost.h
+index 1b93c39..1efdac5 100644
+--- a/Engine/Source/WXLApi/ApiHost.h
++++ b/Engine/Source/WXLApi/ApiHost.h
+@@ -20,7 +20,7 @@ namespace wxl::api
+      * and a module that wants to see the palette after the built-in extensions have changed it must subscribe
+      * after them. DLLs load in file-name order (prefix a name with 10_, 20_ ... to order them).
+      *
+-     * [Modules] in WXLExtendedEquipment.ini:  Enabled=1 (default), Disable=a.dll;b.dll
++     * [Modules] in WXLSetup.ini:  Enabled=1 (default), Disable=a.dll;b.dll
+      * A DLL that is not a 64-bit module, has the wrong ABI, or refuses to initialize is skipped and logged.
+      */
+     void LoadModules();
+diff --git a/Engine/Source/WXLApi/ModuleLoader.cpp b/Engine/Source/WXLApi/ModuleLoader.cpp
+index eeb9dec..06c625e 100644
+--- a/Engine/Source/WXLApi/ModuleLoader.cpp
++++ b/Engine/Source/WXLApi/ModuleLoader.cpp
+@@ -214,7 +214,7 @@ namespace wxl::api
+ 
+         if (!eq::WxlIniGetBool("Modules", "Enabled", true))
+         {
+-            wxl::LogCat("MODULE", "modules are switched off ([Modules] Enabled=0 in WXLExtendedEquipment.ini)");
++            wxl::LogCat("MODULE", "modules are switched off ([Modules] Enabled=0 in WXLSetup.ini)");
+             return;
+         }
+ 
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index 85f8059..e1949b3 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -127,7 +127,7 @@ namespace wxl::scripts::equipextension
+             if (git != poolIt->second.groups.end()) git->second.tick = ++g_evictTickCounter;
+         }
+ 
+-        // "Max<Pool>CacheMB" from WXLExtendedEquipment.ini's [Memory] section, cached per pool name
++        // "Max<Pool>CacheMB" from WXLSetup.ini's [Memory] section, cached per pool name
+         // after its first read (the ini isn't expected to change mid-session). <= 0 (including
+         // "missing" -- the default below) means no cap is enforced for that pool: entries are still
+         // tracked and touched, they're just never actually evicted. Default chosen generously; tune
+@@ -1911,7 +1911,7 @@ namespace wxl::scripts::equipextension
+         bool ResolveIniPath(char* outIniPath, size_t outIniPathSz)
+         {
+             // In-tree there is no WarcraftXL.dll: the ini sits beside the client executable.
+-            const char* kIniName = "WXLExtendedEquipment.ini";
++            const char* kIniName = "WXLSetup.ini";
+ #ifdef _WIN32
+             char exePath[MAX_PATH] = {};
+             const DWORD n = GetModuleFileNameA(nullptr, exePath, sizeof(exePath));
+diff --git a/Engine/Source/WXLEquip/VirtualPath.hpp b/Engine/Source/WXLEquip/VirtualPath.hpp
+index d257318..526e3a2 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.hpp
++++ b/Engine/Source/WXLEquip/VirtualPath.hpp
+@@ -130,7 +130,7 @@ namespace wxl::scripts::equipextension
+      *                           every section as-is
+      * @param geoCount           number of entries in geoIds
+      * @param evictable          if true, this bake is registered as reclaimable: once the combined
+-     *                           size of all evictable entries exceeds WXLExtendedEquipment.ini's
++     *                           size of all evictable entries exceeds WXLSetup.ini's
+      *                           [Memory] MaxCreatureCacheMB budget, the least-recently-served
+      *                           evictable entries are erased from the table (freeing their memory)
+      *                           to make room, on a first-come basis as new evictable bakes come in --
+@@ -151,7 +151,7 @@ namespace wxl::scripts::equipextension
+      * @param evictionPool       which independent eviction budget this evictable=true bake counts
+      *                           against, e.g. "Creature" or "Weapon". Each distinct pool name gets
+      *                           its own LRU group table, its own running byte total, and its own
+-     *                           budget read from WXLExtendedEquipment.ini's [Memory] section under
++     *                           budget read from WXLSetup.ini's [Memory] section under
+      *                           the key "Max<Pool>CacheMB" (e.g. "MaxCreatureCacheMB",
+      *                           "MaxWeaponCacheMB") -- see GetEvictableByteBudget in
+      *                           VirtualPath.cpp. Pools never evict each other: a burst of weapon
+@@ -286,7 +286,7 @@ namespace wxl::scripts::equipextension
+     bool VPathIsVirtualKey(const char* name);
+ 
+     /**
+-     * @brief Reads a boolean value out of WXLExtendedEquipment.ini, sitting beside WarcraftXL.dll
++     * @brief Reads a boolean value out of WXLSetup.ini, sitting beside WarcraftXL.dll
+      *        itself -- this module is built into WarcraftXL.dll (there is no separate
+      *        WXLExtendedEquipment.dll), so in practice that means the game's own root folder.
+      *
+diff --git a/Engine/Source/WXLModules/Creature/CreatureExtension.cpp b/Engine/Source/WXLModules/Creature/CreatureExtension.cpp
+index 4f3f231..cc8044b 100644
+--- a/Engine/Source/WXLModules/Creature/CreatureExtension.cpp
++++ b/Engine/Source/WXLModules/Creature/CreatureExtension.cpp
+@@ -510,7 +510,7 @@ namespace wxl::scripts::creatureextension
+     // every spawn/transform/relog, so this only needs to run once, sometime before the first such
+     // request -- it doesn't matter which creature asks first.
+     //
+-    // Gated behind WXLExtendedEquipment.ini's [EagerPreload] Creatures key (default true) -- see its
++    // Gated behind WXLSetup.ini's [EagerPreload] Creatures key (default true) -- see its
+     // call site's comment for why turning it off, unlike weapons, needs CreatureLazyResolve alongside
+     // it. Deliberately sidecar-only either way: only displayIds with an explicit WXLCreatureModels.csv
+     // row are ever eligible, eager or lazy.
+diff --git a/Engine/Source/WXLModules/Creature/CreatureExtension.hpp b/Engine/Source/WXLModules/Creature/CreatureExtension.hpp
+index 8bac485..20c48ae 100644
+--- a/Engine/Source/WXLModules/Creature/CreatureExtension.hpp
++++ b/Engine/Source/WXLModules/Creature/CreatureExtension.hpp
+@@ -40,7 +40,7 @@ namespace wxl::scripts::creatureextension
+         // fires reliably regardless of gear, unlike OnItemSlotChange before it.
+         //
+         // This is now CreatureExtension's ONLY job: kick off sidecar loading, which itself decides
+-        // (via WXLExtendedEquipment.ini's [EagerPreload] Creatures key) whether to also eagerly bake
++        // (via WXLSetup.ini's [EagerPreload] Creatures key) whether to also eagerly bake
+         // every sidecar-known displayId's virtual .m2 bytes into the process-lifetime override table
+         // ahead of time. Either way, VirtualPath.cpp's VirtualProvide falls back to a lazy resolver
+         // (CreatureLazyResolve, registered once from this class's constructor) on any displayId that
+diff --git a/Engine/Source/WXLModules/Equip/EquipExtension.cpp b/Engine/Source/WXLModules/Equip/EquipExtension.cpp
+index e63d2c8..b049193 100644
+--- a/Engine/Source/WXLModules/Equip/EquipExtension.cpp
++++ b/Engine/Source/WXLModules/Equip/EquipExtension.cpp
+@@ -653,7 +653,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         (void)charRc;
+     }
+ 
+-    /// [Bones] CrcPrimary in WXLExtendedEquipment.ini (default 0). Read once, outside the SEH-guarded matcher.
++    /// [Bones] CrcPrimary in WXLSetup.ini (default 0). Read once, outside the SEH-guarded matcher.
+     static bool CrcPrimaryBones() noexcept
+     {
+         static const bool s_value = WxlIniGetBool("Bones", "CrcPrimary", false);
+@@ -722,7 +722,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+             if (!collBase) return r;
+             r.count = static_cast<uint16_t>(collN);
+ 
+-            // [Bones] CrcPrimary=1 in WXLExtendedEquipment.ini makes the bone-name CRC match final: a CRC match is
++            // [Bones] CrcPrimary=1 in WXLSetup.ini makes the bone-name CRC match final: a CRC match is
+             // never overwritten by the key-bone-id pass below. The default (0) keeps this module's own order,
+             // in which the key-bone-id pass runs second and overwrites a CRC match for the same bone.
+             const bool s_crcPrimary = CrcPrimaryBones();
+diff --git a/Engine/Source/WXLModules/Listfile/Module.cpp b/Engine/Source/WXLModules/Listfile/Module.cpp
+index 3b80703..91c9c8f 100644
+--- a/Engine/Source/WXLModules/Listfile/Module.cpp
++++ b/Engine/Source/WXLModules/Listfile/Module.cpp
+@@ -1,7 +1,7 @@
+ // The listfile module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h and wxl_listfile_api.h.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+-//   WXLExtendedEquipment.ini
++//   WXLSetup.ini
+ //     [Listfile]
+ //     Eager=1                       1 = read listfile.csv once, at load, into a lookup table (default)
+ //                                   0 = leave it on disk: each lookup reads the file (answers are cached)
+diff --git a/Engine/Source/WXLModules/Listfile/README.md b/Engine/Source/WXLModules/Listfile/README.md
+index c1c0b78..9811521 100644
+--- a/Engine/Source/WXLModules/Listfile/README.md
++++ b/Engine/Source/WXLModules/Listfile/README.md
+@@ -23,7 +23,7 @@ One entry per line: `<id>;<path>`. Read as the community listfiles write it:
+ * a UTF-8 BOM is skipped; ids go up to 4294967295
+ * the same id twice: **the first entry wins**; a line that is not `<id>;<path>` is skipped and counted in the log
+ 
+-## Switching it on: `WXLExtendedEquipment.ini`
++## Switching it on: `WXLSetup.ini`
+ 
+ ```ini
+ [Listfile]
+diff --git a/Engine/Source/WXLModules/ModernM2/README.md b/Engine/Source/WXLModules/ModernM2/README.md
+index 35faed7..55e9185 100644
+--- a/Engine/Source/WXLModules/ModernM2/README.md
++++ b/Engine/Source/WXLModules/ModernM2/README.md
+@@ -54,7 +54,7 @@ placeholder and one line says so.
+ 
+ ## Log
+ 
+-Category `M2` (switch: `[Log] ModernM2=0` in `WXLExtendedEquipment.ini`, with `[Log] Enabled=1`): one line per modern
++Category `M2` (switch: `[Log] ModernM2=0` in `WXLSetup.ini`, with `[Log] Enabled=1`): one line per modern
+ model read, with the version, the `TXID` count, which source-only chunks were skipped, and which records were
+ normalized; one line per refusal with the reason.
+ 
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+index 83e7c5e..a5297d9 100644
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -42,9 +42,9 @@ namespace wxl::outline
+         // survives it.
+         constexpr unsigned kBlurDivisor = 2;
+ 
+-        // ---- WXLExtendedEquipment.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
++        // ---- WXLSetup.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
+         // CastAnim.cpp do: WXLCore keeps no shared helper and this module links only WXLCore.
+-        // [Outline] keys of WXLExtendedEquipment.ini, through the module API.
++        // [Outline] keys of WXLSetup.ini, through the module API.
+         int IniInt(const char* section, const char* key, int def)
+         {
+             const WxlApi* api = wxl::module::Api();
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+index 6bed8ee..f6a3a56 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.cpp
+@@ -583,7 +583,7 @@ namespace wxl::equip::physics
+         g_inited = true;
+ 
+         g_enabled = host::IniGetBool("Physics", "Enabled", false);
+-        wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
++        wxl::LogCat("PHYS", "physics: %s (WXLSetup.ini [Physics] Enabled); per-model .phy2 beside each model",
+                     g_enabled ? "on" : "off");
+         g_carryAnchors = host::IniGetBool("Physics", "CarryAnchors", true);
+         g_guardCfg.enabled = host::IniGetBool("Physics", "Unstick", true);
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsLive.hpp b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+index 2198a26..838dad4 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsLive.hpp
+@@ -16,7 +16,7 @@
+ // path was made from. A model with no .phy2 is left alone. The .phy2 files come from
+ // Tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
+ //
+-// Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
++// Switched on by WXLSetup.ini:   [Physics]  Enabled=1
+ //
+ // Stuck items (PhysicsGuard.hpp). Two more keys, both on by default:
+ //     CarryAnchors=1       a model with several kinematic anchors and no root body: every anchor carries
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp b/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+index 8cdba1d..8e15947 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsOverrides.hpp
+@@ -1,7 +1,7 @@
+ // Per-display physics parameters: PhysicsOverride.csv.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+-// The [Physics] keys of WXLExtendedEquipment.ini (PhysicsTuning.hpp) tune every model at once.
++// The [Physics] keys of WXLSetup.ini (PhysicsTuning.hpp) tune every model at once.
+ // PhysicsOverride.csv gives the same set of parameters for ONE item display or ONE creature display, and they
+ // REPLACE the ini's values for it (nothing is multiplied with the ini), so two ItemDisplayInfo (or
+ // CreatureDisplayInfo) rows that share a model file can move differently: one with dangling bits, the other
+diff --git a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+index 10a25b1..e972a2d 100644
+--- a/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
++++ b/Engine/Source/WXLModules/Physics/PhysicsTuning.hpp
+@@ -1,4 +1,4 @@
+-// Global multipliers for the physics of every model, from WXLExtendedEquipment.ini.
++// Global multipliers for the physics of every model, from WXLSetup.ini.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+ //
+ // A .phy2 holds one set of numbers per model (gravity, damping, joint limits, ...). These multipliers scale
+diff --git a/Engine/Source/WXLModules/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+index d080d61..894baa6 100644
+--- a/Engine/Source/WXLModules/Physics/README.md
++++ b/Engine/Source/WXLModules/Physics/README.md
+@@ -65,7 +65,7 @@ python Tools/m2_extract_phys.py Dagger.phys             -> Dagger.phy2
+ 
+ ## Switching it on
+ 
+-`WXL\WXLExtendedEquipment.ini`, in the WXL folder beside the game executable:
++`WXL\WXLSetup.ini`, in the WXL folder beside the game executable:
+ 
+ ```ini
+ [Physics]
+@@ -116,7 +116,7 @@ UnstickReach=300
+ TeleportYards=6
+ ```
+ 
+-Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLExtendedEquipment.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
++Log lines (category `PHYS`, written only when `[Log] Enabled=1` is set in `WXLSetup.ini`): `has several anchors and no root body: N anchor(s) now carry their followers`,
+ `stuck '<model>': ... re-seeding (bone N at X% of its limit)`, `teleport '<model>': ...`, and
+ `re-seeded 4 times ...: physics off for it for 10 s`. `GetStats()` counts `unstuck`, `teleports`, `disabled`
+ and `modelsCarried`. If the unstick line never appears and an item still looks stuck, the cause is not one of
+@@ -126,7 +126,7 @@ these, and the model named in the log is the one to look at.
+ 
+ # Tuning the physics from the ini (global multipliers)
+ 
+-`WXLExtendedEquipment.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
++`WXLSetup.ini`, section `[Physics]`. Every key is a multiplier on what the `.phy2` says, applied to every
+ model at once, so the movement can be tuned without editing the files. `1.0` = as the file has it; a key that is
+ missing or blank is `1.0`. Decimals can be written `1.25` or `1,25`. A value outside a key's range is clamped to it
+ and a value that is not a number is ignored; both are logged (category `PHYS`).
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index 00cceb3..e7709f6 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -5,7 +5,7 @@
+ // terrain-hugging circles, cones and lines, with the client's own projected texture pass (the one that draws the spell
+ // targeting circle under the cursor). The core answers what the object manager and the spell data know and does the
+ // drawing (spellAreaDraw); everything else, the ini, the csv files, the shapes and their textures, lives here.
+-// Off unless [SpellArea] Enabled=1 in WXLExtendedEquipment.ini.
++// Off unless [SpellArea] Enabled=1 in WXLSetup.ini.
+ 
+ #include "SpellAreaShapes.h"
+ #include "wxl_module.hpp"
+diff --git a/Engine/Source/WXLModules/Water/CMakeLists.txt b/Engine/Source/WXLModules/Water/CMakeLists.txt
+index 1b8ee27..5ddf005 100644
+--- a/Engine/Source/WXLModules/Water/CMakeLists.txt
++++ b/Engine/Source/WXLModules/Water/CMakeLists.txt
+@@ -3,7 +3,7 @@
+ # (wxl_api.h, wxl_water_api.h, wxl_module.hpp) and its own folder only: the client's state reaches it through the
+ # "wxl.water.v1" service the core registers (Engine/Source/WXLApi/WaterHost.cpp).
+ #
+-# Opt-in at runtime: the DLL refuses to load unless WXLExtendedEquipment.ini has [Water] Enabled=1. Its settings,
++# Opt-in at runtime: the DLL refuses to load unless WXLSetup.ini has [Water] Enabled=1. Its settings,
+ # waterdata.bin and log live in WXL\Modules\wxl_water\ (the build copies the first two there).
+ #
+ # The pixel shaders are compiled with fxc at build time into headers the sources include, as the standalone module
+diff --git a/Engine/Source/WXLModules/Water/README.md b/Engine/Source/WXLModules/Water/README.md
+index 0f42a6f..18b4d81 100644
+--- a/Engine/Source/WXLModules/Water/README.md
++++ b/Engine/Source/WXLModules/Water/README.md
+@@ -7,7 +7,7 @@ Off by default.
+ 
+ ## Switching it on
+ 
+-`WXL\WXLExtendedEquipment.ini`, in the WXL folder beside the client executable:
++`WXL\WXLSetup.ini`, in the WXL folder beside the client executable:
+ 
+ ```ini
+ [Water]
+diff --git a/Engine/Source/WXLModules/Water/water_driver.h b/Engine/Source/WXLModules/Water/water_driver.h
+index 0fc0d8c..08a5fcb 100644
+--- a/Engine/Source/WXLModules/Water/water_driver.h
++++ b/Engine/Source/WXLModules/Water/water_driver.h
+@@ -6,7 +6,7 @@
+ //     [Water]
+ //     Enabled=1
+ //
+-// in WXLExtendedEquipment.ini (beside the client executable). Its own settings, waterdata.bin and log are in
++// in WXLSetup.ini (beside the client executable). Its own settings, waterdata.bin and log are in
+ // WXL\Modules\wxl_water\ . This file is the standalone module's hooks.cpp, water half, without the byte patching:
+ // the core calls the moments registered through the water service at the same points the module used to detour.
+ #pragma once
+diff --git a/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp b/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
+index 32f94bf..91d8d61 100644
+--- a/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
++++ b/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
+@@ -652,7 +652,7 @@ namespace wxl::scripts::weaponextension
+         // .skin bytes of every submesh whose skinSectionId isn't in it, same as
+         // VPathPopulate/BakeCreatureDisplay's own geoset filtering -- see ParseWeaponGeosetSpec's
+         // doc comment for the column's exact syntax. evictionPool="Weapon" gives weapon bakes their
+-        // own budget (WXLExtendedEquipment.ini's [Memory] MaxWeaponCacheMB, default 512 if unset),
++        // own budget (WXLSetup.ini's [Memory] MaxWeaponCacheMB, default 512 if unset),
+         // tracked and enforced completely independently of CreatureExtension's MaxCreatureCacheMB
+         // pool -- a burst of newly-equipped weapons can't evict a creature's baked model, or vice
+         // versa.
+@@ -960,7 +960,7 @@ namespace wxl::scripts::weaponextension
+     // native loader always asks for that virtual name directly, on every equip/relog/char-select
+     // preview, so this only needs to run once, sometime before the first such request.
+     //
+-    // Gated behind WXLExtendedEquipment.ini's [EagerPreload] Weapons key (default true) -- see its
++    // Gated behind WXLSetup.ini's [EagerPreload] Weapons key (default true) -- see its
+     // call site's comment in LoadWeaponSidecar. Deliberately sidecar-only either way: only
+     // displayIds with an explicit WXLWeaponModels.csv row are ever eligible, eager or lazy.
+     static void PreregisterSidecarWeapons()
+diff --git a/Engine/Source/WXLModules/Weapon/WeaponExtension.hpp b/Engine/Source/WXLModules/Weapon/WeaponExtension.hpp
+index fdebfac..17ed6ec 100644
+--- a/Engine/Source/WXLModules/Weapon/WeaponExtension.hpp
++++ b/Engine/Source/WXLModules/Weapon/WeaponExtension.hpp
+@@ -37,7 +37,7 @@ namespace wxl::scripts::weaponextension
+         // can all render there, well before the client ever enters the actual game world.
+         //
+         // This is WeaponExtension's ONLY job: kick off sidecar loading, which itself decides (via
+-        // WXLExtendedEquipment.ini's [EagerPreload] Weapons key) whether to also eagerly bake every
++        // WXLSetup.ini's [EagerPreload] Weapons key) whether to also eagerly bake every
+         // sidecar-known displayId's Model1/Model2 virtual .m2 bytes into the process-lifetime
+         // override table ahead of time. Either way, VirtualPath.cpp's VirtualProvide falls back to a
+         // lazy resolver (WeaponLazyResolve, registered once from this class's constructor) on any
+@@ -56,7 +56,7 @@ namespace wxl::scripts::weaponextension
+         //
+         // Bakes are registered evictable, in their own "Weapon" pool -- see VPathPopulateGlobal's
+         // evictionPool parameter in VirtualPath.hpp. Budgeted independently from
+-        // CreatureExtension's pool via WXLExtendedEquipment.ini's [Memory] MaxWeaponCacheMB (default
++        // CreatureExtension's pool via WXLSetup.ini's [Memory] MaxWeaponCacheMB (default
+         // 512 MB if unset; <= 0 means uncapped). A weapon evicted for being over budget isn't gone
+         // for good: the next load of it simply misses and WeaponLazyResolve rebakes it on the spot.
+         void OnModelLoadPre(const wxl::events::ModelLoadArgs& a);
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 553ba57..149e09d 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -4489,7 +4489,7 @@ void CGUnit_C::PlayBaseAnimation(uint32_t animId, int32_t flags) {
+         }
+     }
+ 
+-    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLExtendedEquipment.ini). The spell precast (wind-up)
++    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLSetup.ini). The spell precast (wind-up)
+     // sequence plays at the speed that makes it last the spell's casting time, so it ends with the cast bar.
+     // GetSpellCastingTime already includes haste, and the speed is fixed here, once, when the sequence starts:
+     // the cast time of a spell in progress does not change. Channels (they loop their own animation) and instant
+diff --git a/WoW/Source/WorldClient/CWorldOcclusion.cpp b/WoW/Source/WorldClient/CWorldOcclusion.cpp
+index 07be503..535e864 100644
+--- a/WoW/Source/WorldClient/CWorldOcclusion.cpp
++++ b/WoW/Source/WorldClient/CWorldOcclusion.cpp
+@@ -484,7 +484,7 @@ void CWorldOcclusion::UpdateBuffer(const C3Vector* points, int32_t count, uint32
+ // VERIFY: a0f63ed4 manual
+ // OFFSET: 0x0078FC40
+ uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint8_t flags) {
+-    // WXLExtendedEquipment.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
++    // WXLSetup.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
+     if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
+         return 0;
+     }
+@@ -857,7 +857,7 @@ void CWorldScene::CreateOcclusionVolumes(const C3Vector* eye, const C3Vector* co
+     CWorldOcclusion::planeArray.SetCount(0);
+     CWorldOcclusion::clipVolumeArray.SetCount(0);
+ 
+-    // WXLExtendedEquipment.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
++    // WXLSetup.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
+     // QueryVolumes finds none and nothing is hidden behind them.
+     if (wxl::culling::DisableOcclusionVolumes()) {
+         return;
+diff --git a/WoW/Source/WorldClient/CWorldSceneRender.cpp b/WoW/Source/WorldClient/CWorldSceneRender.cpp
+index ed726fa..902a516 100644
+--- a/WoW/Source/WorldClient/CWorldSceneRender.cpp
++++ b/WoW/Source/WorldClient/CWorldSceneRender.cpp
+@@ -132,7 +132,7 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
+         // Stock behaviour: the camera is inside a WMO. If none of its portals reach the outside
+         // (m_maxViewDepth < 0) the whole exterior sort table (outdoor WMO groups, terrain chunks, liquid,
+         // M2 entities and doodads) is emptied; otherwise the exterior is culled through the portal view.
+-        // WXLExtendedEquipment.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
++        // WXLSetup.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
+         // is when the camera stands outdoors (the branch below). Interiors still render through their
+         // portals either way (RenderWithCallback above).
+         const bool noWayOut = CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f;
+diff --git a/WoW/Source/WorldClient/Map.cpp b/WoW/Source/WorldClient/Map.cpp
+index 3f86347..52e5289 100644
+--- a/WoW/Source/WorldClient/Map.cpp
++++ b/WoW/Source/WorldClient/Map.cpp
+@@ -2299,7 +2299,7 @@ void CMap::PrepareMapObjDefs(bool addToScene) {
+                 wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::OutsideSceneBox);
+             }
+ 
+-            // WXLExtendedEquipment.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
++            // WXLSetup.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
+             if (!wxl::culling::DisableWmoOccluders()) {
+                 for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
+                     C3Vector a = occluder->m_start * mapObjDef->m_mat;

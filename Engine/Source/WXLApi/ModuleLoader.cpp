@@ -214,7 +214,7 @@ namespace wxl::api
 
         if (!eq::WxlIniGetBool("Modules", "Enabled", true))
         {
-            wxl::LogCat("MODULE", "modules are switched off ([Modules] Enabled=0 in WXLExtendedEquipment.ini)");
+            wxl::LogCat("MODULE", "modules are switched off ([Modules] Enabled=0 in WXLSetup.ini)");
             return;
         }
 

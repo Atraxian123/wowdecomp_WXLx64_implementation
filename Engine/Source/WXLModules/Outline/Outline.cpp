@@ -42,9 +42,9 @@ namespace wxl::outline
         // survives it.
         constexpr unsigned kBlurDivisor = 2;
 
-        // ---- WXLExtendedEquipment.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
+        // ---- WXLSetup.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
         // CastAnim.cpp do: WXLCore keeps no shared helper and this module links only WXLCore.
-        // [Outline] keys of WXLExtendedEquipment.ini, through the module API.
+        // [Outline] keys of WXLSetup.ini, through the module API.
         int IniInt(const char* section, const char* key, int def)
         {
             const WxlApi* api = wxl::module::Api();

@@ -521,6 +521,9 @@ namespace wxl::scripts::weaponextension
         if (g_sidecarLoaded) return;
         g_sidecarLoaded = true;
 
+        // <root>\WXL first (where the files live now), then the old places
+        LoadWeaponModelSidecarFile("WXL\\WXLWeaponModels.csv");
+        LoadWeaponTextureSidecarFile("WXL\\WXLWeaponTextures.csv");
         LoadWeaponModelSidecarFile("WXLWeaponModels.csv");
         LoadWeaponModelSidecarFile("DBFilesClient\\WXLWeaponModels.csv");
         LoadWeaponTextureSidecarFile("WXLWeaponTextures.csv");
@@ -649,7 +652,7 @@ namespace wxl::scripts::weaponextension
         // .skin bytes of every submesh whose skinSectionId isn't in it, same as
         // VPathPopulate/BakeCreatureDisplay's own geoset filtering -- see ParseWeaponGeosetSpec's
         // doc comment for the column's exact syntax. evictionPool="Weapon" gives weapon bakes their
-        // own budget (WXLExtendedEquipment.ini's [Memory] MaxWeaponCacheMB, default 512 if unset),
+        // own budget (WXLSetup.ini's [Memory] MaxWeaponCacheMB, default 512 if unset),
         // tracked and enforced completely independently of CreatureExtension's MaxCreatureCacheMB
         // pool -- a burst of newly-equipped weapons can't evict a creature's baked model, or vice
         // versa.
@@ -957,7 +960,7 @@ namespace wxl::scripts::weaponextension
     // native loader always asks for that virtual name directly, on every equip/relog/char-select
     // preview, so this only needs to run once, sometime before the first such request.
     //
-    // Gated behind WXLExtendedEquipment.ini's [EagerPreload] Weapons key (default true) -- see its
+    // Gated behind WXLSetup.ini's [EagerPreload] Weapons key (default true) -- see its
     // call site's comment in LoadWeaponSidecar. Deliberately sidecar-only either way: only
     // displayIds with an explicit WXLWeaponModels.csv row are ever eligible, eager or lazy.
     static void PreregisterSidecarWeapons()

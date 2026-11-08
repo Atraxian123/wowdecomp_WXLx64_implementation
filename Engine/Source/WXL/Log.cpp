@@ -57,7 +57,7 @@ namespace wxl
             return t;
         }
 
-        // WXLExtendedEquipment.ini sits beside the client executable (the same file the equip modules read;
+        // WXLSetup.ini sits in the WXL folder beside the client executable (the same file the equip modules read;
         // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
         // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
         bool IniLogFlag(const char* key, bool fallback)
@@ -67,9 +67,16 @@ namespace wxl
             const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
             if (n == 0 || n >= sizeof(path)) return fallback;
             char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLExtendedEquipment.ini";
+            const char* name = "WXLSetup.ini";
             if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
             std::strcpy(slash + 1, name);
+            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+            char inWxl[MAX_PATH] = {};
+            if ((slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
+            {
+                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
+                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, inWxl) != 0;
+            }
             return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, path) != 0;
 #else
             (void)key;
@@ -161,7 +168,7 @@ namespace wxl
             {
                 sink.file = std::fopen("WXL.log", "wb"); // truncate: one session per file
                 if (!sink.file) { sink.capped = true; return; }
-                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLExtendedEquipment.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
+                std::fprintf(sink.file, "==== WXL log opened ([Log] Enabled=1 in WXLSetup.ini, or env WXL_LOG=1; ModernM2, Equip, Physics, Creature and Weapon = 0 there silence one module) ====\n");
             }
 
             const Timestamp t = Now();

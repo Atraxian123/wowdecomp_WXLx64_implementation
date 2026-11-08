@@ -23,7 +23,7 @@ One entry per line: `<id>;<path>`. Read as the community listfiles write it:
 * a UTF-8 BOM is skipped; ids go up to 4294967295
 * the same id twice: **the first entry wins**; a line that is not `<id>;<path>` is skipped and counted in the log
 
-## Switching it on: `WXLExtendedEquipment.ini`
+## Switching it on: `WXLSetup.ini`
 
 ```ini
 [Listfile]

@@ -4489,7 +4489,7 @@ void CGUnit_C::PlayBaseAnimation(uint32_t animId, int32_t flags) {
         }
     }
 
-    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLExtendedEquipment.ini). The spell precast (wind-up)
+    // WXL: opt-in ([Animation] ScalePrecastToCastTime in WXLSetup.ini). The spell precast (wind-up)
     // sequence plays at the speed that makes it last the spell's casting time, so it ends with the cast bar.
     // GetSpellCastingTime already includes haste, and the speed is fixed here, once, when the sequence starts:
     // the cast time of a spell in progress does not change. Channels (they loop their own animation) and instant

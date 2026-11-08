@@ -130,7 +130,7 @@ namespace wxl::scripts::equipextension
      *                           every section as-is
      * @param geoCount           number of entries in geoIds
      * @param evictable          if true, this bake is registered as reclaimable: once the combined
-     *                           size of all evictable entries exceeds WXLExtendedEquipment.ini's
+     *                           size of all evictable entries exceeds WXLSetup.ini's
      *                           [Memory] MaxCreatureCacheMB budget, the least-recently-served
      *                           evictable entries are erased from the table (freeing their memory)
      *                           to make room, on a first-come basis as new evictable bakes come in --
@@ -151,7 +151,7 @@ namespace wxl::scripts::equipextension
      * @param evictionPool       which independent eviction budget this evictable=true bake counts
      *                           against, e.g. "Creature" or "Weapon". Each distinct pool name gets
      *                           its own LRU group table, its own running byte total, and its own
-     *                           budget read from WXLExtendedEquipment.ini's [Memory] section under
+     *                           budget read from WXLSetup.ini's [Memory] section under
      *                           the key "Max<Pool>CacheMB" (e.g. "MaxCreatureCacheMB",
      *                           "MaxWeaponCacheMB") -- see GetEvictableByteBudget in
      *                           VirtualPath.cpp. Pools never evict each other: a burst of weapon
@@ -286,7 +286,7 @@ namespace wxl::scripts::equipextension
     bool VPathIsVirtualKey(const char* name);
 
     /**
-     * @brief Reads a boolean value out of WXLExtendedEquipment.ini, sitting beside WarcraftXL.dll
+     * @brief Reads a boolean value out of WXLSetup.ini, sitting beside WarcraftXL.dll
      *        itself -- this module is built into WarcraftXL.dll (there is no separate
      *        WXLExtendedEquipment.dll), so in practice that means the game's own root folder.
      *

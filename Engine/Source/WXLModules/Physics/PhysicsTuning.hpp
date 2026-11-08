@@ -1,4 +1,4 @@
-// Global multipliers for the physics of every model, from WXLExtendedEquipment.ini.
+// Global multipliers for the physics of every model, from WXLSetup.ini.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
 // A .phy2 holds one set of numbers per model (gravity, damping, joint limits, ...). These multipliers scale

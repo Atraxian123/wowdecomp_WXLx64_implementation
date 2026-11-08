@@ -510,7 +510,7 @@ namespace wxl::scripts::creatureextension
     // every spawn/transform/relog, so this only needs to run once, sometime before the first such
     // request -- it doesn't matter which creature asks first.
     //
-    // Gated behind WXLExtendedEquipment.ini's [EagerPreload] Creatures key (default true) -- see its
+    // Gated behind WXLSetup.ini's [EagerPreload] Creatures key (default true) -- see its
     // call site's comment for why turning it off, unlike weapons, needs CreatureLazyResolve alongside
     // it. Deliberately sidecar-only either way: only displayIds with an explicit WXLCreatureModels.csv
     // row are ever eligible, eager or lazy.

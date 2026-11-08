@@ -132,7 +132,7 @@ void CWorldScene::Render(const C3Vector& cameraPos, float time) {
         // Stock behaviour: the camera is inside a WMO. If none of its portals reach the outside
         // (m_maxViewDepth < 0) the whole exterior sort table (outdoor WMO groups, terrain chunks, liquid,
         // M2 entities and doodads) is emptied; otherwise the exterior is culled through the portal view.
-        // WXLExtendedEquipment.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
+        // WXLSetup.ini [Culling] DisableViewerWmoCull=1 keeps the exterior, culled exactly as it
         // is when the camera stands outdoors (the branch below). Interiors still render through their
         // portals either way (RenderWithCallback above).
         const bool noWayOut = CWorldScene::frustumPortalView.m_maxViewDepth < 0.0f;

@@ -484,7 +484,7 @@ void CWorldOcclusion::UpdateBuffer(const C3Vector* points, int32_t count, uint32
 // VERIFY: a0f63ed4 manual
 // OFFSET: 0x0078FC40
 uint32_t CWorldOcclusion::QueryBuffer(const C3Vector& center, float radius, uint8_t flags) {
-    // WXLExtendedEquipment.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
+    // WXLSetup.ini [Culling] DisableHorizonBuffer=1 (or DisableWmoCulling=1): never occluded.
     if (wxl::culling::DisableHorizonBuffer() || !(CWorld::enables & Enable_Culling) || fabs(radius) < 2.3841858e-07f || CWorldScene::camVec.z < -0.89999998f || CWorldScene::camVec.z > 0.89999998f) {
         return 0;
     }
@@ -857,7 +857,7 @@ void CWorldScene::CreateOcclusionVolumes(const C3Vector* eye, const C3Vector* co
     CWorldOcclusion::planeArray.SetCount(0);
     CWorldOcclusion::clipVolumeArray.SetCount(0);
 
-    // WXLExtendedEquipment.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
+    // WXLSetup.ini [Culling] DisableOcclusionVolumes=1: no hardcoded volume is built, so
     // QueryVolumes finds none and nothing is hidden behind them.
     if (wxl::culling::DisableOcclusionVolumes()) {
         return;

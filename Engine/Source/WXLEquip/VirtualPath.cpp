@@ -127,7 +127,7 @@ namespace wxl::scripts::equipextension
             if (git != poolIt->second.groups.end()) git->second.tick = ++g_evictTickCounter;
         }
 
-        // "Max<Pool>CacheMB" from WXLExtendedEquipment.ini's [Memory] section, cached per pool name
+        // "Max<Pool>CacheMB" from WXLSetup.ini's [Memory] section, cached per pool name
         // after its first read (the ini isn't expected to change mid-session). <= 0 (including
         // "missing" -- the default below) means no cap is enforced for that pool: entries are still
         // tracked and touched, they're just never actually evicted. Default chosen generously; tune
@@ -1064,7 +1064,19 @@ namespace wxl::scripts::equipextension
         if (g_modelOffsetsLoaded) return;
         g_modelOffsetsLoaded = true;
         std::vector<uint8_t> bytes;
-        if (ReadGameFile("DBFilesClient\\WXLHelmOffsets.csv", bytes) && !bytes.empty())
+        if (FILE* f = std::fopen("WXL\\WXLHelmOffsets.csv", "rb"))   // <root>\WXL first, then the game files
+        {
+            uint8_t chunk[4096];
+            size_t got;
+            while ((got = std::fread(chunk, 1, sizeof(chunk), f)) > 0) bytes.insert(bytes.end(), chunk, chunk + got);
+            std::fclose(f);
+            if (!bytes.empty())
+            {
+                LoadModelOffsetsText("WXL\\WXLHelmOffsets.csv", std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+                bytes.clear();
+            }
+        }
+        if (g_modelOffsetRules.empty() && ReadGameFile("DBFilesClient\\WXLHelmOffsets.csv", bytes) && !bytes.empty())
             LoadModelOffsetsText("DBFilesClient\\WXLHelmOffsets.csv",
                 std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
         if (!g_modelOffsetRules.empty())
@@ -1899,7 +1911,7 @@ namespace wxl::scripts::equipextension
         bool ResolveIniPath(char* outIniPath, size_t outIniPathSz)
         {
             // In-tree there is no WarcraftXL.dll: the ini sits beside the client executable.
-            const char* kIniName = "WXLExtendedEquipment.ini";
+            const char* kIniName = "WXLSetup.ini";
 #ifdef _WIN32
             char exePath[MAX_PATH] = {};
             const DWORD n = GetModuleFileNameA(nullptr, exePath, sizeof(exePath));
@@ -1912,6 +1924,15 @@ namespace wxl::scripts::equipextension
                 if (dirLen + std::strlen(kIniName) >= outIniPathSz) return false;
                 std::memcpy(outIniPath, exePath, dirLen);
                 std::strcpy(outIniPath + dirLen, kIniName);
+                // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+                char inWxl[MAX_PATH] = {};
+                if (dirLen + 4 + std::strlen(kIniName) < sizeof(inWxl) && dirLen + 4 + std::strlen(kIniName) < outIniPathSz)
+                {
+                    std::memcpy(inWxl, exePath, dirLen);
+                    std::strcpy(inWxl + dirLen, "WXL\\");
+                    std::strcat(inWxl, kIniName);
+                    if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(outIniPath, inWxl);
+                }
                 return true;
             }
 #endif

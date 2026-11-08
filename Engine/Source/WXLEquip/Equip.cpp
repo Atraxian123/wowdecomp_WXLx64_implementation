@@ -82,9 +82,11 @@ namespace wxl::equip
                 char path[512];
                 std::snprintf(path, sizeof(path), "%s", name);
                 bool found = false;
-                for (int pass = 0; pass < 2 && !found; ++pass)
+                for (int pass = 0; pass < 3 && !found; ++pass)
                 {
-                    if (pass == 1) std::snprintf(path, sizeof(path), "DBFilesClient\\%s", name);
+                    if (pass == 0) std::snprintf(path, sizeof(path), "WXL\\%s", name);   // where they live now
+                    else if (pass == 1) std::snprintf(path, sizeof(path), "%s", name);
+                    else std::snprintf(path, sizeof(path), "DBFilesClient\\%s", name);
                     if (FILE* f = std::fopen(path, "rb"))
                     {
                         std::fseek(f, 0, SEEK_END);
@@ -95,7 +97,7 @@ namespace wxl::equip
                     }
                 }
                 if (!found)
-                    wxl::LogCat("SIDECAR", "  %-34s not in the working directory (it may still be inside a game archive or a Data\\*.MPQ folder: see the per-file lines at first model load)", name);
+                    wxl::LogCat("SIDECAR", "  %-34s not in WXL\\ or the working directory (it may still be inside a game archive or a Data\\*.MPQ folder: see the per-file lines at first model load)", name);
             }
         }
     }

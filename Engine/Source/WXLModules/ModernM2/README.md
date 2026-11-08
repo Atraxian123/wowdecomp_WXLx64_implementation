@@ -54,7 +54,7 @@ placeholder and one line says so.
 
 ## Log
 
-Category `M2` (switch: `[Log] ModernM2=0` in `WXLExtendedEquipment.ini`, with `[Log] Enabled=1`): one line per modern
+Category `M2` (switch: `[Log] ModernM2=0` in `WXLSetup.ini`, with `[Log] Enabled=1`): one line per modern
 model read, with the version, the `TXID` count, which source-only chunks were skipped, and which records were
 normalized; one line per refusal with the reason.
 

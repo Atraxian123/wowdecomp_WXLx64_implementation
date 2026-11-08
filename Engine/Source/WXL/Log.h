@@ -6,7 +6,7 @@
 // the client crashes.
 //
 // Logging is OPT-IN: nothing is written, and WXL.log is not even created, unless it is switched on in
-// WXLExtendedEquipment.ini (beside the client executable):
+// WXLSetup.ini (in the WXL folder beside the client executable):
 //
 //     [Log]
 //     Enabled=1

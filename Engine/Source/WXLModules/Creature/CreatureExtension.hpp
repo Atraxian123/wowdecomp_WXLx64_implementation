@@ -40,7 +40,7 @@ namespace wxl::scripts::creatureextension
         // fires reliably regardless of gear, unlike OnItemSlotChange before it.
         //
         // This is now CreatureExtension's ONLY job: kick off sidecar loading, which itself decides
-        // (via WXLExtendedEquipment.ini's [EagerPreload] Creatures key) whether to also eagerly bake
+        // (via WXLSetup.ini's [EagerPreload] Creatures key) whether to also eagerly bake
         // every sidecar-known displayId's virtual .m2 bytes into the process-lifetime override table
         // ahead of time. Either way, VirtualPath.cpp's VirtualProvide falls back to a lazy resolver
         // (CreatureLazyResolve, registered once from this class's constructor) on any displayId that

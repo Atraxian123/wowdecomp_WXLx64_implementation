@@ -66,7 +66,7 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
 |---|---|
 | Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`; with it on, `ModernM2`, `Equip`, `Physics`, `Creature` and `Weapon` in the same section, each defaulting to 1, switch one module's lines off) |
 | Events | `subscribe` (by name). Args structs for `OnBuildBonePalette`, `OnUpdate`, `OnWorldEnter/Leave` are in the header |
-| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXLExtendedEquipment.ini) |
+| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXL\WXLSetup.ini) |
 | Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |
 | Model instances | `readInstance`, `readBones`, `writePalette` |
 | Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |

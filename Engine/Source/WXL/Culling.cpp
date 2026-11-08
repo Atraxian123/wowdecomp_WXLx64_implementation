@@ -22,7 +22,7 @@ namespace wxl::culling
 {
     namespace
     {
-        // WXLExtendedEquipment.ini sits beside the client executable (the file the equip modules and the log
+        // WXLSetup.ini sits in the WXL folder beside the client executable (the file the equip modules and the log
         // read; this module lives in WXLCore, which cannot call their helper, so the lookup is repeated, as
         // Log.cpp does). Missing file, section or key: the default.
         bool IniPath(char* path, size_t cap)
@@ -31,9 +31,16 @@ namespace wxl::culling
             const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
             if (n == 0 || n >= cap) return false;
             char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLExtendedEquipment.ini";
+            const char* name = "WXLSetup.ini";
             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
             std::strcpy(slash + 1, name);
+            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+            char inWxl[MAX_PATH] = {};
+            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
+            {
+                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
+                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
+            }
             return true;
 #else
             (void)path; (void)cap;
@@ -104,7 +111,7 @@ namespace wxl::culling
                                 master ? 1 : 0, viewerWmo ? 1 : 0, wmoOccluders ? 1 : 0, volumes ? 1 : 0, horizon ? 1 : 0,
                                 wmoFrustum ? 1 : 0, sceneBox ? 1 : 0, portals ? 1 : 0);
                 else
-                    wxl::LogCat("CULL", "culling: stock behaviour (WXLExtendedEquipment.ini [Culling] switches are all 0 or absent)");
+                    wxl::LogCat("CULL", "culling: stock behaviour (WXLSetup.ini [Culling] switches are all 0 or absent)");
                 if (!traceWmo.empty())
                     wxl::LogCat("CULL", "trace: TraceWmo='%s'", traceWmo.c_str());
             }

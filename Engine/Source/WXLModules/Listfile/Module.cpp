@@ -1,7 +1,7 @@
 // The listfile module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h and wxl_listfile_api.h.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
-//   WXLExtendedEquipment.ini
+//   WXLSetup.ini
 //     [Listfile]
 //     Eager=1                       1 = read listfile.csv once, at load, into a lookup table (default)
 //                                   0 = leave it on disk: each lookup reads the file (answers are cached)

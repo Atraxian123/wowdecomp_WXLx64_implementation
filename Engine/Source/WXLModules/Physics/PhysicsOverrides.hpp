@@ -1,7 +1,7 @@
 // Per-display physics parameters: PhysicsOverride.csv.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
 //
-// The [Physics] keys of WXLExtendedEquipment.ini (PhysicsTuning.hpp) tune every model at once.
+// The [Physics] keys of WXLSetup.ini (PhysicsTuning.hpp) tune every model at once.
 // PhysicsOverride.csv gives the same set of parameters for ONE item display or ONE creature display, and they
 // REPLACE the ini's values for it (nothing is multiplied with the ini), so two ItemDisplayInfo (or
 // CreatureDisplayInfo) rows that share a model file can move differently: one with dangling bits, the other

@@ -37,7 +37,7 @@ namespace wxl::scripts::weaponextension
         // can all render there, well before the client ever enters the actual game world.
         //
         // This is WeaponExtension's ONLY job: kick off sidecar loading, which itself decides (via
-        // WXLExtendedEquipment.ini's [EagerPreload] Weapons key) whether to also eagerly bake every
+        // WXLSetup.ini's [EagerPreload] Weapons key) whether to also eagerly bake every
         // sidecar-known displayId's Model1/Model2 virtual .m2 bytes into the process-lifetime
         // override table ahead of time. Either way, VirtualPath.cpp's VirtualProvide falls back to a
         // lazy resolver (WeaponLazyResolve, registered once from this class's constructor) on any
@@ -56,7 +56,7 @@ namespace wxl::scripts::weaponextension
         //
         // Bakes are registered evictable, in their own "Weapon" pool -- see VPathPopulateGlobal's
         // evictionPool parameter in VirtualPath.hpp. Budgeted independently from
-        // CreatureExtension's pool via WXLExtendedEquipment.ini's [Memory] MaxWeaponCacheMB (default
+        // CreatureExtension's pool via WXLSetup.ini's [Memory] MaxWeaponCacheMB (default
         // 512 MB if unset; <= 0 means uncapped). A weapon evicted for being over budget isn't gone
         // for good: the next load of it simply misses and WeaponLazyResolve rebakes it on the spot.
         void OnModelLoadPre(const wxl::events::ModelLoadArgs& a);

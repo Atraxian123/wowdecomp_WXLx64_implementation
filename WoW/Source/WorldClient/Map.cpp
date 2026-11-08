@@ -2299,7 +2299,7 @@ void CMap::PrepareMapObjDefs(bool addToScene) {
                 wxl::culling::TraceGroup(defGroup, mapObj->m_wmoName, defGroup->m_groupNum, group->m_groupName, wxl::culling::GroupVerdict::OutsideSceneBox);
             }
 
-            // WXLExtendedEquipment.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
+            // WXLSetup.ini [Culling] DisableWmoOccluders=1: WMO groups no longer hide what is behind them.
             if (!wxl::culling::DisableWmoOccluders()) {
                 for (CMapObjOccluder* occluder = group->m_occluderList.Head(); occluder; occluder = group->m_occluderList.Next(occluder)) {
                     C3Vector a = occluder->m_start * mapObjDef->m_mat;

@@ -3,7 +3,7 @@
 # (wxl_api.h, wxl_water_api.h, wxl_module.hpp) and its own folder only: the client's state reaches it through the
 # "wxl.water.v1" service the core registers (Engine/Source/WXLApi/WaterHost.cpp).
 #
-# Opt-in at runtime: the DLL refuses to load unless WXLExtendedEquipment.ini has [Water] Enabled=1. Its settings,
+# Opt-in at runtime: the DLL refuses to load unless WXLSetup.ini has [Water] Enabled=1. Its settings,
 # waterdata.bin and log live in WXL\Modules\wxl_water\ (the build copies the first two there).
 #
 # The pixel shaders are compiled with fxc at build time into headers the sources include, as the standalone module

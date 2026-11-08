@@ -1,7 +1,7 @@
-// WXL culling switches: lets WXLExtendedEquipment.ini turn off the ways a WMO can hide other objects.
+// WXL culling switches: lets WXLSetup.ini turn off the ways a WMO can hide other objects.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
 //
-// All keys live in WXLExtendedEquipment.ini (beside the client executable), section [Culling]. Every key
+// All keys live in WXLSetup.ini (in the WXL folder beside the client executable), section [Culling]. Every key
 // defaults to 0, which is the stock client's behaviour; nothing changes unless you set one.
 //
 //     [Culling]

@@ -18,7 +18,7 @@ namespace wxl::castanim
 {
     namespace
     {
-        // WXLExtendedEquipment.ini sits beside the client executable. This module lives in WXLCore, which
+        // WXLSetup.ini sits in the WXL folder beside the client executable. This module lives in WXLCore, which
         // cannot call the equip modules' helper, so the lookup is repeated, as Log.cpp and Culling.cpp do.
         // Missing file, section or key: the default.
         bool IniPath(char* path, size_t cap)
@@ -27,9 +27,16 @@ namespace wxl::castanim
             const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
             if (n == 0 || n >= cap) return false;
             char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLExtendedEquipment.ini";
+            const char* name = "WXLSetup.ini";
             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
             std::strcpy(slash + 1, name);
+            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
+            char inWxl[MAX_PATH] = {};
+            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
+            {
+                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
+                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
+            }
             return true;
 #else
             (void)path; (void)cap;

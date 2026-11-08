@@ -20,7 +20,7 @@ namespace wxl::api
      * and a module that wants to see the palette after the built-in extensions have changed it must subscribe
      * after them. DLLs load in file-name order (prefix a name with 10_, 20_ ... to order them).
      *
-     * [Modules] in WXLExtendedEquipment.ini:  Enabled=1 (default), Disable=a.dll;b.dll
+     * [Modules] in WXLSetup.ini:  Enabled=1 (default), Disable=a.dll;b.dll
      * A DLL that is not a 64-bit module, has the wrong ABI, or refuses to initialize is skipped and logged.
      */
     void LoadModules();

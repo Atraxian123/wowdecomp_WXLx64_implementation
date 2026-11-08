@@ -1,0 +1,273 @@
+diff --git a/Engine/Source/WXL/CastAnim.cpp b/Engine/Source/WXL/CastAnim.cpp
+index 56f5f9d..2ada7b5 100644
+--- a/Engine/Source/WXL/CastAnim.cpp
++++ b/Engine/Source/WXL/CastAnim.cpp
+@@ -18,7 +18,7 @@ namespace wxl::castanim
+ {
+     namespace
+     {
+-        // WXLExtendedEquipment.ini sits beside the client executable. This module lives in WXLCore, which
++        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable. This module lives in WXLCore, which
+         // cannot call the equip modules' helper, so the lookup is repeated, as Log.cpp and Culling.cpp do.
+         // Missing file, section or key: the default.
+         bool IniPath(char* path, size_t cap)
+@@ -30,6 +30,13 @@ namespace wxl::castanim
+             const char* name = "WXLExtendedEquipment.ini";
+             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
+             std::strcpy(slash + 1, name);
++            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
++            char inWxl[MAX_PATH] = {};
++            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
++            {
++                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
++                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
++            }
+             return true;
+ #else
+             (void)path; (void)cap;
+diff --git a/Engine/Source/WXL/Culling.cpp b/Engine/Source/WXL/Culling.cpp
+index 6bd23dc..c553c17 100644
+--- a/Engine/Source/WXL/Culling.cpp
++++ b/Engine/Source/WXL/Culling.cpp
+@@ -22,7 +22,7 @@ namespace wxl::culling
+ {
+     namespace
+     {
+-        // WXLExtendedEquipment.ini sits beside the client executable (the file the equip modules and the log
++        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable (the file the equip modules and the log
+         // read; this module lives in WXLCore, which cannot call their helper, so the lookup is repeated, as
+         // Log.cpp does). Missing file, section or key: the default.
+         bool IniPath(char* path, size_t cap)
+@@ -34,6 +34,13 @@ namespace wxl::culling
+             const char* name = "WXLExtendedEquipment.ini";
+             if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
+             std::strcpy(slash + 1, name);
++            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
++            char inWxl[MAX_PATH] = {};
++            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
++            {
++                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
++                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
++            }
+             return true;
+ #else
+             (void)path; (void)cap;
+diff --git a/Engine/Source/WXL/Culling.h b/Engine/Source/WXL/Culling.h
+index 77d702a..ca502cb 100644
+--- a/Engine/Source/WXL/Culling.h
++++ b/Engine/Source/WXL/Culling.h
+@@ -1,7 +1,7 @@
+ // WXL culling switches: lets WXLExtendedEquipment.ini turn off the ways a WMO can hide other objects.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
+ //
+-// All keys live in WXLExtendedEquipment.ini (beside the client executable), section [Culling]. Every key
++// All keys live in WXLExtendedEquipment.ini (in the WXL folder beside the client executable), section [Culling]. Every key
+ // defaults to 0, which is the stock client's behaviour; nothing changes unless you set one.
+ //
+ //     [Culling]
+diff --git a/Engine/Source/WXL/Log.cpp b/Engine/Source/WXL/Log.cpp
+index 47b8aa9..5cc03f9 100644
+--- a/Engine/Source/WXL/Log.cpp
++++ b/Engine/Source/WXL/Log.cpp
+@@ -57,7 +57,7 @@ namespace wxl
+             return t;
+         }
+ 
+-        // WXLExtendedEquipment.ini sits beside the client executable (the same file the equip modules read;
++        // WXLExtendedEquipment.ini sits in the WXL folder beside the client executable (the same file the equip modules read;
+         // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
+         // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
+         bool IniLogFlag(const char* key, bool fallback)
+@@ -70,6 +70,13 @@ namespace wxl
+             const char* name = "WXLExtendedEquipment.ini";
+             if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
+             std::strcpy(slash + 1, name);
++            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
++            char inWxl[MAX_PATH] = {};
++            if ((slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
++            {
++                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
++                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, inWxl) != 0;
++            }
+             return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, path) != 0;
+ #else
+             (void)key;
+diff --git a/Engine/Source/WXL/Log.h b/Engine/Source/WXL/Log.h
+index 240018c..0374c3c 100644
+--- a/Engine/Source/WXL/Log.h
++++ b/Engine/Source/WXL/Log.h
+@@ -6,7 +6,7 @@
+ // the client crashes.
+ //
+ // Logging is OPT-IN: nothing is written, and WXL.log is not even created, unless it is switched on in
+-// WXLExtendedEquipment.ini (beside the client executable):
++// WXLExtendedEquipment.ini (in the WXL folder beside the client executable):
+ //
+ //     [Log]
+ //     Enabled=1
+diff --git a/Engine/Source/WXL/Sdk/README.md b/Engine/Source/WXL/Sdk/README.md
+index 848ba74..4f3cc17 100644
+--- a/Engine/Source/WXL/Sdk/README.md
++++ b/Engine/Source/WXL/Sdk/README.md
+@@ -66,7 +66,7 @@ folder only, output to `bin/Win/WXL/Modules`, built only when `WOWDECOMP_ARCH_64
+ |---|---|
+ | Log | `log`, `logThrottle` (lines go to WXL.log, which is itself opt-in: `[Log] Enabled=1`; with it on, `ModernM2`, `Equip`, `Physics`, `Creature` and `Weapon` in the same section, each defaulting to 1, switch one module's lines off) |
+ | Events | `subscribe` (by name). Args structs for `OnBuildBonePalette`, `OnUpdate`, `OnWorldEnter/Leave` are in the header |
+-| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXLExtendedEquipment.ini) |
++| Ini | `iniGetString/Int/Bool`, `iniStamp` (WXL\WXLExtendedEquipment.ini) |
+ | Files | `readFile`/`freeBuffer` (archives, then loose files under `Data\`, quiet on a miss), `isVirtualKey` |
+ | Model instances | `readInstance`, `readBones`, `writePalette` |
+ | Virtual paths | `vpathPopulateGlobal`, `vpathPopulateGlobalSharedKey`, `vpathPopulate`, `vpathEvictCmo`, `vpathRegisterLazyResolver`, `vpathDecodeGlobalVirtualKey`: the core's table of models patched in memory and served under a minted path (geosets kept, textures replaced, mirrored...) |
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index a5165d7..cdf7c00 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -392,7 +392,7 @@ typedef struct WxlApi
+     /* events: 0 on success, nonzero for an unknown event name */
+     int  (*subscribe)(const char* eventName, WxlEventHandler handler, void* user);
+ 
+-    /* WXLExtendedEquipment.ini, next to the client. iniGetString returns 1 when the key exists. */
++    /* WXLExtendedEquipment.ini, in the WXL folder beside the client executable. iniGetString returns 1 when the key exists. */
+     int      (*iniGetString)(const char* section, const char* key, char* out, size_t cap);
+     int      (*iniGetInt)(const char* section, const char* key, int defaultValue);
+     int      (*iniGetBool)(const char* section, const char* key, int defaultValue);
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index 8172b4c..7770b02 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -82,9 +82,11 @@ namespace wxl::equip
+                 char path[512];
+                 std::snprintf(path, sizeof(path), "%s", name);
+                 bool found = false;
+-                for (int pass = 0; pass < 2 && !found; ++pass)
++                for (int pass = 0; pass < 3 && !found; ++pass)
+                 {
+-                    if (pass == 1) std::snprintf(path, sizeof(path), "DBFilesClient\\%s", name);
++                    if (pass == 0) std::snprintf(path, sizeof(path), "WXL\\%s", name);   // where they live now
++                    else if (pass == 1) std::snprintf(path, sizeof(path), "%s", name);
++                    else std::snprintf(path, sizeof(path), "DBFilesClient\\%s", name);
+                     if (FILE* f = std::fopen(path, "rb"))
+                     {
+                         std::fseek(f, 0, SEEK_END);
+@@ -95,7 +97,7 @@ namespace wxl::equip
+                     }
+                 }
+                 if (!found)
+-                    wxl::LogCat("SIDECAR", "  %-34s not in the working directory (it may still be inside a game archive or a Data\\*.MPQ folder: see the per-file lines at first model load)", name);
++                    wxl::LogCat("SIDECAR", "  %-34s not in WXL\\ or the working directory (it may still be inside a game archive or a Data\\*.MPQ folder: see the per-file lines at first model load)", name);
+             }
+         }
+     }
+diff --git a/Engine/Source/WXLEquip/VirtualPath.cpp b/Engine/Source/WXLEquip/VirtualPath.cpp
+index fb10543..85f8059 100644
+--- a/Engine/Source/WXLEquip/VirtualPath.cpp
++++ b/Engine/Source/WXLEquip/VirtualPath.cpp
+@@ -1064,7 +1064,19 @@ namespace wxl::scripts::equipextension
+         if (g_modelOffsetsLoaded) return;
+         g_modelOffsetsLoaded = true;
+         std::vector<uint8_t> bytes;
+-        if (ReadGameFile("DBFilesClient\\WXLHelmOffsets.csv", bytes) && !bytes.empty())
++        if (FILE* f = std::fopen("WXL\\WXLHelmOffsets.csv", "rb"))   // <root>\WXL first, then the game files
++        {
++            uint8_t chunk[4096];
++            size_t got;
++            while ((got = std::fread(chunk, 1, sizeof(chunk), f)) > 0) bytes.insert(bytes.end(), chunk, chunk + got);
++            std::fclose(f);
++            if (!bytes.empty())
++            {
++                LoadModelOffsetsText("WXL\\WXLHelmOffsets.csv", std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
++                bytes.clear();
++            }
++        }
++        if (g_modelOffsetRules.empty() && ReadGameFile("DBFilesClient\\WXLHelmOffsets.csv", bytes) && !bytes.empty())
+             LoadModelOffsetsText("DBFilesClient\\WXLHelmOffsets.csv",
+                 std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+         if (!g_modelOffsetRules.empty())
+@@ -1912,6 +1924,15 @@ namespace wxl::scripts::equipextension
+                 if (dirLen + std::strlen(kIniName) >= outIniPathSz) return false;
+                 std::memcpy(outIniPath, exePath, dirLen);
+                 std::strcpy(outIniPath + dirLen, kIniName);
++                // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
++                char inWxl[MAX_PATH] = {};
++                if (dirLen + 4 + std::strlen(kIniName) < sizeof(inWxl) && dirLen + 4 + std::strlen(kIniName) < outIniPathSz)
++                {
++                    std::memcpy(inWxl, exePath, dirLen);
++                    std::strcpy(inWxl + dirLen, "WXL\\");
++                    std::strcat(inWxl, kIniName);
++                    if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(outIniPath, inWxl);
++                }
+                 return true;
+             }
+ #endif
+diff --git a/Engine/Source/WXLModules/Equip/EquipExtension.cpp b/Engine/Source/WXLModules/Equip/EquipExtension.cpp
+index 8e30185..e63d2c8 100644
+--- a/Engine/Source/WXLModules/Equip/EquipExtension.cpp
++++ b/Engine/Source/WXLModules/Equip/EquipExtension.cpp
+@@ -356,7 +356,16 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         g_equipAnimCsvLoaded = true;
+ 
+         std::vector<uint8_t> raw;
+-        if (!wxl::storage::ReadNative("DBFilesClient\\WXLEquipAnimations.csv", raw) || raw.empty())
++        bool haveCsv = false;
++        if (FILE* f = std::fopen("WXL\\WXLEquipAnimations.csv", "rb"))   // <root>\WXL first, then the game files
++        {
++            uint8_t chunk[4096];
++            size_t got;
++            while ((got = std::fread(chunk, 1, sizeof(chunk), f)) > 0) raw.insert(raw.end(), chunk, chunk + got);
++            std::fclose(f);
++            haveCsv = !raw.empty();
++        }
++        if (!haveCsv && (!wxl::storage::ReadNative("DBFilesClient\\WXLEquipAnimations.csv", raw) || raw.empty()))
+         {
+             EquipLog("  WXLEquipAnimations: no CSV present, animation sync stays off for all items");
+             return;
+@@ -1606,6 +1615,9 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
+         if (g_sidecarLoaded) return;
+         g_sidecarLoaded = true;
+ 
++        // <root>\WXL first (where the files live now), then the old places
++        LoadSidecarFile("WXL\\WXLItemDisplayModels.csv");
++        LoadMaterialSidecarFile("WXL\\WXLItemDisplayModelMaterials.csv");
+         LoadSidecarFile("WXLItemDisplayModels.csv");
+         LoadSidecarFile("DBFilesClient\\WXLItemDisplayModels.csv");
+         LoadMaterialSidecarFile("WXLItemDisplayModelMaterials.csv");
+diff --git a/Engine/Source/WXLModules/Physics/README.md b/Engine/Source/WXLModules/Physics/README.md
+index 239c037..d080d61 100644
+--- a/Engine/Source/WXLModules/Physics/README.md
++++ b/Engine/Source/WXLModules/Physics/README.md
+@@ -65,7 +65,7 @@ python Tools/m2_extract_phys.py Dagger.phys             -> Dagger.phy2
+ 
+ ## Switching it on
+ 
+-`WXLExtendedEquipment.ini`, beside the game executable:
++`WXL\WXLExtendedEquipment.ini`, in the WXL folder beside the game executable:
+ 
+ ```ini
+ [Physics]
+diff --git a/Engine/Source/WXLModules/Water/README.md b/Engine/Source/WXLModules/Water/README.md
+index b37cc5c..0f42a6f 100644
+--- a/Engine/Source/WXLModules/Water/README.md
++++ b/Engine/Source/WXLModules/Water/README.md
+@@ -7,7 +7,7 @@ Off by default.
+ 
+ ## Switching it on
+ 
+-`WXLExtendedEquipment.ini`, beside the client executable:
++`WXL\WXLExtendedEquipment.ini`, in the WXL folder beside the client executable:
+ 
+ ```ini
+ [Water]
+diff --git a/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp b/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
+index c26a7d6..32f94bf 100644
+--- a/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
++++ b/Engine/Source/WXLModules/Weapon/WeaponExtension.cpp
+@@ -521,6 +521,9 @@ namespace wxl::scripts::weaponextension
+         if (g_sidecarLoaded) return;
+         g_sidecarLoaded = true;
+ 
++        // <root>\WXL first (where the files live now), then the old places
++        LoadWeaponModelSidecarFile("WXL\\WXLWeaponModels.csv");
++        LoadWeaponTextureSidecarFile("WXL\\WXLWeaponTextures.csv");
+         LoadWeaponModelSidecarFile("WXLWeaponModels.csv");
+         LoadWeaponModelSidecarFile("DBFilesClient\\WXLWeaponModels.csv");
+         LoadWeaponTextureSidecarFile("WXLWeaponTextures.csv");

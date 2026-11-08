@@ -16,7 +16,7 @@
 // path was made from. A model with no .phy2 is left alone. The .phy2 files come from
 // Tools/m2_extract_phys.py (retail .m2 -> .phys -> .phy2). Phy2Library.hpp has the details.
 //
-// Switched on by WXLExtendedEquipment.ini:   [Physics]  Enabled=1
+// Switched on by WXLSetup.ini:   [Physics]  Enabled=1
 //
 // Stuck items (PhysicsGuard.hpp). Two more keys, both on by default:
 //     CarryAnchors=1       a model with several kinematic anchors and no root body: every anchor carries

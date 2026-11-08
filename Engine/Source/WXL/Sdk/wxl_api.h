@@ -392,7 +392,7 @@ typedef struct WxlApi
     /* events: 0 on success, nonzero for an unknown event name */
     int  (*subscribe)(const char* eventName, WxlEventHandler handler, void* user);
 
-    /* WXLExtendedEquipment.ini, next to the client. iniGetString returns 1 when the key exists. */
+    /* WXLSetup.ini, in the WXL folder beside the client executable. iniGetString returns 1 when the key exists. */
     int      (*iniGetString)(const char* section, const char* key, char* out, size_t cap);
     int      (*iniGetInt)(const char* section, const char* key, int defaultValue);
     int      (*iniGetBool)(const char* section, const char* key, int defaultValue);

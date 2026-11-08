@@ -356,7 +356,16 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         g_equipAnimCsvLoaded = true;
 
         std::vector<uint8_t> raw;
-        if (!wxl::storage::ReadNative("DBFilesClient\\WXLEquipAnimations.csv", raw) || raw.empty())
+        bool haveCsv = false;
+        if (FILE* f = std::fopen("WXL\\WXLEquipAnimations.csv", "rb"))   // <root>\WXL first, then the game files
+        {
+            uint8_t chunk[4096];
+            size_t got;
+            while ((got = std::fread(chunk, 1, sizeof(chunk), f)) > 0) raw.insert(raw.end(), chunk, chunk + got);
+            std::fclose(f);
+            haveCsv = !raw.empty();
+        }
+        if (!haveCsv && (!wxl::storage::ReadNative("DBFilesClient\\WXLEquipAnimations.csv", raw) || raw.empty()))
         {
             EquipLog("  WXLEquipAnimations: no CSV present, animation sync stays off for all items");
             return;
@@ -644,7 +653,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         (void)charRc;
     }
 
-    /// [Bones] CrcPrimary in WXLExtendedEquipment.ini (default 0). Read once, outside the SEH-guarded matcher.
+    /// [Bones] CrcPrimary in WXLSetup.ini (default 0). Read once, outside the SEH-guarded matcher.
     static bool CrcPrimaryBones() noexcept
     {
         static const bool s_value = WxlIniGetBool("Bones", "CrcPrimary", false);
@@ -713,7 +722,7 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
             if (!collBase) return r;
             r.count = static_cast<uint16_t>(collN);
 
-            // [Bones] CrcPrimary=1 in WXLExtendedEquipment.ini makes the bone-name CRC match final: a CRC match is
+            // [Bones] CrcPrimary=1 in WXLSetup.ini makes the bone-name CRC match final: a CRC match is
             // never overwritten by the key-bone-id pass below. The default (0) keeps this module's own order,
             // in which the key-bone-id pass runs second and overwrites a CRC match for the same bone.
             const bool s_crcPrimary = CrcPrimaryBones();
@@ -1606,6 +1615,9 @@ static EquipExtension* g_equipInstance = nullptr; // set in the constructor, use
         if (g_sidecarLoaded) return;
         g_sidecarLoaded = true;
 
+        // <root>\WXL first (where the files live now), then the old places
+        LoadSidecarFile("WXL\\WXLItemDisplayModels.csv");
+        LoadMaterialSidecarFile("WXL\\WXLItemDisplayModelMaterials.csv");
         LoadSidecarFile("WXLItemDisplayModels.csv");
         LoadSidecarFile("DBFilesClient\\WXLItemDisplayModels.csv");
         LoadMaterialSidecarFile("WXLItemDisplayModelMaterials.csv");

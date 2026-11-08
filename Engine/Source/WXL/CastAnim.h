@@ -3,7 +3,7 @@
 //
 // OPT-IN. The stock client plays the precast (wind-up) sequence at its authored speed, whatever the cast time.
 // With the switch below on, CGUnit_C::PlayBaseAnimation plays it at sequenceDuration / castTime, so the
-// wind-up finishes when the cast bar does. Everything else is stock. In WXLExtendedEquipment.ini (beside the
+// wind-up finishes when the cast bar does. Everything else is stock. In WXLSetup.ini (beside the
 // client executable):
 //
 //     [Animation]

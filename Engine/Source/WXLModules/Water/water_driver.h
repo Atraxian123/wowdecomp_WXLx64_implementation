@@ -6,7 +6,7 @@
 //     [Water]
 //     Enabled=1
 //
-// in WXLExtendedEquipment.ini (beside the client executable). Its own settings, waterdata.bin and log are in
+// in WXLSetup.ini (beside the client executable). Its own settings, waterdata.bin and log are in
 // WXL\Modules\wxl_water\ . This file is the standalone module's hooks.cpp, water half, without the byte patching:
 // the core calls the moments registered through the water service at the same points the module used to detour.
 #pragma once

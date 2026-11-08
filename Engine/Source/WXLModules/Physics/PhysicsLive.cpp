@@ -583,7 +583,7 @@ namespace wxl::equip::physics
         g_inited = true;
 
         g_enabled = host::IniGetBool("Physics", "Enabled", false);
-        wxl::LogCat("PHYS", "physics: %s (WXLExtendedEquipment.ini [Physics] Enabled); per-model .phy2 beside each model",
+        wxl::LogCat("PHYS", "physics: %s (WXLSetup.ini [Physics] Enabled); per-model .phy2 beside each model",
                     g_enabled ? "on" : "off");
         g_carryAnchors = host::IniGetBool("Physics", "CarryAnchors", true);
         g_guardCfg.enabled = host::IniGetBool("Physics", "Unstick", true);

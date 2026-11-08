@@ -5,7 +5,7 @@
 // terrain-hugging circles, cones and lines, with the client's own projected texture pass (the one that draws the spell
 // targeting circle under the cursor). The core answers what the object manager and the spell data know and does the
 // drawing (spellAreaDraw); everything else, the ini, the csv files, the shapes and their textures, lives here.
-// Off unless [SpellArea] Enabled=1 in WXLExtendedEquipment.ini.
+// Off unless [SpellArea] Enabled=1 in WXLSetup.ini.
 
 #include "SpellAreaShapes.h"
 #include "wxl_module.hpp"
