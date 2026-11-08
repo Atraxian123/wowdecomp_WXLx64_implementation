@@ -1,0 +1,6 @@
+# SpellJumpDistance.csv: put it in the WXL folder beside the client executable (WXL\SpellJumpDistance.csv; the path can be
+# changed with [SpellArea] JumpDistanceFile).
+# It is an export of the server's spell_jump_distance table (acore_world), for example:
+#   mysql -u acore -p acore_world --batch -e "SELECT * FROM spell_jump_distance" > WXL\SpellJumpDistance.csv
+# The header line is needed; the columns are found by name (see SpellArea.md). The rows below are placeholders.
+ID,MaxJumpDistance

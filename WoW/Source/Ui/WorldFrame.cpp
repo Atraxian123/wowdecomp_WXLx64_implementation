@@ -88,7 +88,7 @@
 #include <cfloat>
 #include <cmath>
 #include "Engine/Source/WXL/WaterHooks.h"
-#include "Engine/Source/WXLApi/SpellArea.h"
+#include "Engine/Source/WXLApi/SpellAreaRender.h"
 #include "WoW/Source/Ui/SpellBookFrame.h"
 
 // STATIC: 0x009F9864
@@ -1752,7 +1752,7 @@ void CGWorldFrame::OnWorldRender() {
         DrawSpellCursorShadow(0x200122);
     }
 
-    wxl::spellarea::Render(0x200122, 5); // WXL: ground areas of spells being cast, channeled or lying on the ground (off unless [SpellArea] Enabled=1)
+    wxl::api::spellareahost::Render(0x200122, 5); // WXL: ground areas of spells being cast, channeled or lying on the ground (off unless [SpellArea] Enabled=1)
 
     GxuSortDrawList(GxuCat_0, GxuSort_VtxStream, *World::GetCamPos());
     GxuFlushDrawList(GxuCat_0, *World::GetCamPos());
@@ -1776,7 +1776,7 @@ void CGWorldFrame::OnWorldRender() {
         DrawSpellCursorShadow(0x20000);
     }
 
-    wxl::spellarea::Render(0x20000, 4); // WXL: the same areas over liquids (no doodads: they were drawn above)
+    wxl::api::spellareahost::Render(0x20000, 4); // WXL: the same areas over liquids (no doodads: they were drawn above)
 
     SpellVisualsTick();
     SpellVisualsRender();

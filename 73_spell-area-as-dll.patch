@@ -1,0 +1,2079 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5de1039..43b19b0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -90,6 +90,7 @@ add_subdirectory(Engine/Source/WXLApi)
+ add_subdirectory(Engine/Source/WXLModules/Physics)
+ add_subdirectory(Engine/Source/WXLModules/Equip)
+ add_subdirectory(Engine/Source/WXLModules/Outline)
++add_subdirectory(Engine/Source/WXLModules/SpellArea)
+ add_subdirectory(Engine/Source/WXLModules/Creature)
+ add_subdirectory(Engine/Source/WXLModules/Weapon)
+ add_subdirectory(Engine/Source/WXLModules/Water)
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 0404274..a5165d7 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -305,6 +305,78 @@ typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char*
+ /* 1 when the instance is drawn with a mirrored (handedness-flipping) palette, so the renderer swaps the cull direction. */
+ typedef int (*WxlMirroredModelQueryFn)(const void* model);
+ 
++/* ---- the spell area module's engine access --------------------------------------------------- */
++
++/* The ground areas of spells (Blizzard, a cone breath, a chain's first jump ...) are drawn by the spell area module
++ * with the client's own projected-texture pass. The module decides what to draw and how; the core answers what the
++ * object manager, the spell data and the Gx device know. Guids are the game's 64-bit guids. */
++
++/* A dynamic object on the ground (Blizzard, Consecration, Death and Decay ...). Far sight foci are not listed. */
++typedef struct WxlSpellAreaDynObject
++{
++    uint64_t guid;
++    uint64_t casterGuid;
++    uint32_t spellId;
++    float    radius;            /* yards, as the server sent it */
++    uint32_t casterIsPlayer;    /* 1 when the caster is the active player */
++    uint32_t casterKnown;       /* 1 when the caster is a visible unit (casterHostile means something only then) */
++    uint32_t casterHostile;     /* 1 when the caster's reaction toward the player is unfriendly or worse */
++    uint32_t reserved;
++} WxlSpellAreaDynObject;
++
++/* A visible unit that is casting or channeling, the active player included (isPlayer). Times are the client's
++ * millisecond clock (the same one the render callback gets as nowMs); an end time in the past means "not any more". */
++typedef struct WxlSpellAreaCaster
++{
++    uint64_t guid;
++    uint64_t target;            /* what the unit has targeted, 0 for none */
++    uint64_t channelObject;     /* the target of the channel, 0 for none */
++    uint32_t isPlayer;
++    uint32_t hostile;
++    uint32_t castSpell, castStartMs, castEndMs;
++    uint32_t channelSpell, channelEndMs;
++} WxlSpellAreaCaster;
++
++/* What a spell's three effects say, with the radii worked out for the caster (its level and, for the active player,
++ * the radius modifiers of talents and auras: the ones the targeting circle uses). radius 0 = none. */
++typedef struct WxlSpellAreaEffects
++{
++    int32_t effect[3];
++    int32_t targetA[3];
++    int32_t targetB[3];
++    float   radius[3];
++    int32_t chainTargets[3];
++} WxlSpellAreaEffects;
++
++#define WXL_SPELLAREA_TARGET_DEST 0x40u   /* WxlSpellAreaPending.targetFlags: the cast has a ground point */
++/* The targets of a cast that is in progress. */
++typedef struct WxlSpellAreaPending
++{
++    uint32_t targetFlags;
++    float    dest[3];
++    uint64_t objectTarget;      /* 0 for none */
++} WxlSpellAreaPending;
++
++/* One draw: a square of `2 * half` yards centred on pos, the texture stretched over it, laid on the terrain inside the
++ * box's height. A texture's front (row 0) points along `facing` when rotate is 1. */
++typedef struct WxlSpellAreaDraw
++{
++    uint32_t structSize;        /* sizeof(WxlSpellAreaDraw), set by the caller */
++    void*    texture;           /* from spellAreaCreateTexture */
++    float    pos[3];
++    float    half;
++    float    facing;            /* radians */
++    uint32_t rotate;
++    uint8_t  r, g, b, a;
++    uint32_t triFlags;          /* the ones the render callback was given */
++    uint32_t projectFlags;
++} WxlSpellAreaDraw;
++
++/* Called from the world render, beside the client's own spell cursor shadow: once after the opaque pass with
++ * (0x200122, 5) and once after the transparent ones with (0x20000, 4) (the second leaves the doodads out so nothing is
++ * drawn twice). Draw from it with spellAreaDraw, nowhere else. */
++typedef void (*WxlSpellAreaRenderFn)(void* user, uint32_t triFlags, uint32_t projectFlags, uint32_t nowMs);
++
+ /* ---- the table -------------------------------------------------------------------------------- */
+ 
+ typedef struct WxlApi
+@@ -481,6 +553,25 @@ typedef struct WxlApi
+        above 0 only the ones within that many yards of the player are listed. Pointers only, never dereferenced
+        by the caller; call it on a timer. */
+     uint32_t (*outlineTrackedTargets)(WxlOutlineTracked* out, uint32_t max, float maxYards);
++
++    /* ---- engine access for the spell area module: check WXL_API_HAS(api, setSpellAreaRenderer) once ---- */
++    /* The visible dynamic objects, up to `max`, returned as the count. Never dereferenced by the caller. */
++    uint32_t (*spellAreaDynamicObjects)(WxlSpellAreaDynObject* out, uint32_t max);
++    /* The visible units that are casting or channeling right now (and the active player when it is), up to `max`. */
++    uint32_t (*spellAreaCasters)(WxlSpellAreaCaster* out, uint32_t max);
++    /* The effects of a spell for the caster `casterGuid` (0 for none: no level, no modifiers). 1 when the spell exists. */
++    int      (*spellAreaEffects)(uint32_t spellId, uint64_t casterGuid, WxlSpellAreaEffects* out);
++    /* The targets of the cast of `spellId` that `casterGuid` has in progress. 1 when the client knows of one. */
++    int      (*spellAreaPendingCast)(uint64_t casterGuid, uint32_t spellId, WxlSpellAreaPending* out);
++    /* Where an object is: pos[3] and the facing in radians. 0 when it is not around. */
++    int      (*spellAreaObjectPose)(uint64_t guid, float* pos, float* facing);
++    /* A `size` x `size` texture from ARGB8888 pixels (copied: the caller keeps its buffer), bilinear filtered.
++     * NULL on failure. The handle lives for the rest of the process. */
++    void*    (*spellAreaCreateTexture)(const uint32_t* argbPixels, uint32_t size, const char* name);
++    /* Draws one area. Only legal inside the render callback. */
++    void     (*spellAreaDraw)(const WxlSpellAreaDraw* draw);
++    /* The one function the world render calls (see WxlSpellAreaRenderFn); a later call replaces the earlier. */
++    void     (*setSpellAreaRenderer)(WxlSpellAreaRenderFn fn, void* user);
+ } WxlApi;
+ 
+ #define WXL_API_HAS(api, member) \
+diff --git a/Engine/Source/WXLApi/ApiTable.cpp b/Engine/Source/WXLApi/ApiTable.cpp
+index fdeda1e..2a88972 100644
+--- a/Engine/Source/WXLApi/ApiTable.cpp
++++ b/Engine/Source/WXLApi/ApiTable.cpp
+@@ -15,6 +15,7 @@
+ #include "Engine/Source/WXLApi/EquipHost.h"
+ #include "Engine/Source/WXLApi/ModelAccess.h"
+ #include "Engine/Source/WXLApi/OutlineHost.h"
++#include "Engine/Source/WXLApi/SpellAreaHost.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ 
+ #include <array>
+@@ -242,6 +243,15 @@ namespace wxl::api
+             &wxl::api::outlinehost::QuestTurnIns,
+             // minimap tracking for the outline module (OutlineHost.cpp)
+             &wxl::api::outlinehost::TrackedTargets,
++            // ground areas of spells for the spell area module (SpellAreaHost.cpp)
++            &wxl::api::spellareahost::DynamicObjects,
++            &wxl::api::spellareahost::Casters,
++            &wxl::api::spellareahost::Effects,
++            &wxl::api::spellareahost::PendingCast,
++            &wxl::api::spellareahost::ObjectPose,
++            &wxl::api::spellareahost::CreateTexture,
++            &wxl::api::spellareahost::Draw,
++            &wxl::api::spellareahost::SetRenderer,
+         };
+     }
+ 
+diff --git a/Engine/Source/WXLApi/SpellArea.cpp b/Engine/Source/WXLApi/SpellArea.cpp
+deleted file mode 100644
+index 8e99361..0000000
+--- a/Engine/Source/WXLApi/SpellArea.cpp
++++ /dev/null
+@@ -1,676 +0,0 @@
+-// The spell area indicator's engine side. See SpellArea.h.
+-// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+-
+-#include "Engine/Source/WXLApi/SpellArea.h"
+-
+-#ifdef WXL_ALLOW_32BIT_HEADER   // the module API is 64-bit only: a 32-bit client keeps a no-op
+-
+-namespace wxl::spellarea
+-{
+-    void Render(uint32_t, uint32_t) {}
+-}
+-
+-#else
+-
+-#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
+-#include "Engine/Source/Gx/CGxTexFlags.h"
+-#include "Engine/Source/Gx/Gx.h"
+-#include "Engine/Source/Gx/Types.h"
+-#include "Engine/Source/Os/TimeManager.h"
+-#include "Engine/Source/Services/Texture.h"
+-#include "Engine/Source/Tempest/C3Vector.h"
+-#include "Engine/Source/Tempest/C44Matrix.h"
+-#include "Engine/Source/Tempest/CAaBox.h"
+-#include "Engine/Source/Tempest/CImVector.h"
+-#include "Engine/Source/WXL/Log.h"
+-#include "Engine/Source/WXL/SpellAreaShapes.h"
+-#include "WoW/Source/DB/DBClient/DBClient.h"
+-#include "WoW/Source/DB/Rec/SpellRadiusRec.h"
+-#include "WoW/Source/DB/Rec/SpellRec.h"
+-#include "WoW/Source/Game/GameClient/ProjectTex.h"
+-#include "WoW/Source/Magic/MagicClient/Spell_C.h"
+-#include "WoW/Source/Object/ObjectClient/DynamicObject_C.h"
+-#include "WoW/Source/Object/ObjectClient/Object_C.h"
+-#include "WoW/Source/Object/ObjectClient/Player_C.h"
+-#include "WoW/Source/Object/ObjectClient/Unit_C.h"
+-#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+-
+-#ifdef _WIN32
+-#include <windows.h>
+-#endif
+-
+-#include <algorithm>
+-#include <cmath>
+-#include <cstdio>
+-#include <cstdlib>
+-#include <cstring>
+-#include <fstream>
+-#include <iterator>
+-#include <map>
+-#include <string>
+-#include <vector>
+-
+-namespace wxl::spellarea
+-{
+-    namespace
+-    {
+-        // ------------------------------------------------------------------------------------------------ config
+-        struct Config
+-        {
+-            bool  enabled      = false;
+-            bool  own          = true;    // the player's own casts and areas
+-            bool  others       = false;   // everybody else's too
+-            bool  enemiesOnly  = false;   // only what hostile units cast: own and friendly areas are left out
+-            bool  precast      = true;    // the area of a spell that is being cast
+-            bool  channel      = true;    // the area of a spell that is being channeled
+-            bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
+-            bool  cones        = true;
+-            float opacity      = 0.65f;
+-            float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
+-            bool  chain        = true;    // chain spells: the circle of the first jump around the target
+-            float chainRadius  = 12.5f;
+-            float harmful[3]   = { 1.0f, 0.235f, 0.157f };
+-            float helpful[3]   = { 0.235f, 1.0f, 0.353f };
+-            float neutral[3]   = { 1.0f, 0.784f, 0.235f };
+-            float coneAngle    = 90.0f;
+-            float minRadius    = 1.0f;
+-            float maxRadius    = 60.0f;
+-            int   maxAreas     = 16;
+-            std::string overrideFile = "SpellAreaOverride.csv";
+-            std::string jumpFile     = "WXL\\SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
+-            std::string coneFile     = "WXL\\SpellCone.csv";           // spell id, cone degrees; no header
+-        };
+-
+-        Config                g_cfg;
+-        OverrideTable         g_overrides;
+-        JumpDistanceTable     g_jump;
+-        ConeAngleTable        g_cone;
+-        bool                  g_loaded = false;
+-        uint32_t              g_lastPoll = 0;
+-        uint64_t              g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0;
+-
+-#ifdef _WIN32
+-        bool ExeFolderPath(const char* name, char* path, size_t cap)
+-        {
+-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
+-            if (n == 0 || n >= cap) return false;
+-            char* slash = std::strrchr(path, '\\');
+-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
+-            std::strcpy(slash + 1, name);
+-            return true;
+-        }
+-
+-        uint64_t FileStamp(const char* path)
+-        {
+-            WIN32_FILE_ATTRIBUTE_DATA d;
+-            if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) return 0;
+-            return (static_cast<uint64_t>(d.ftLastWriteTime.dwHighDateTime) << 32) | d.ftLastWriteTime.dwLowDateTime;
+-        }
+-
+-        int IniInt(const char* path, const char* key, int def)
+-        {
+-            return static_cast<int>(GetPrivateProfileIntA("SpellArea", key, def, path));
+-        }
+-
+-        std::string IniStr(const char* path, const char* key)
+-        {
+-            char out[260] = {};
+-            GetPrivateProfileStringA("SpellArea", key, "", out, sizeof(out), path);
+-            return out;
+-        }
+-#endif
+-
+-        float IniFloat(const char* path, const char* key, float def)
+-        {
+-#ifdef _WIN32
+-            const std::string s = IniStr(path, key);
+-            if (s.empty()) return def;
+-            std::string t = s;
+-            for (char& c : t) if (c == ',') c = '.';
+-            char* end = nullptr;
+-            const double v = std::strtod(t.c_str(), &end);
+-            return (end == t.c_str() || !std::isfinite(v)) ? def : static_cast<float>(v);
+-#else
+-            (void)path; (void)key;
+-            return def;
+-#endif
+-        }
+-
+-        void ReadColor(const char* path, const char* key, float rgb[3])
+-        {
+-#ifdef _WIN32
+-            const std::string s = IniStr(path, key);
+-            if (s.empty()) return;
+-            float c[3];
+-            if (ParseColorHex(s.c_str(), c)) { rgb[0] = c[0]; rgb[1] = c[1]; rgb[2] = c[2]; }
+-            else wxl::LogCat("AOE", "[SpellArea] %s='%s' is not RRGGBB; ignored", key, s.c_str());
+-#else
+-            (void)path; (void)key; (void)rgb;
+-#endif
+-        }
+-
+-        float Clamp(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
+-
+-        // EnemiesOnly shows what hostile units cast and nothing else: your own areas are left out and everybody else's
+-        // are looked at (a hostile caster is one whose reaction toward the player is unfriendly or worse).
+-        bool OwnOn()    { return g_cfg.own && !g_cfg.enemiesOnly; }
+-        bool OthersOn() { return g_cfg.others || g_cfg.enemiesOnly; }
+-
+-        void LoadConfig(const char* ini)
+-        {
+-#ifdef _WIN32
+-            Config c;
+-            c.enabled    = IniInt(ini, "Enabled", 0) != 0;
+-            c.own        = IniInt(ini, "Own", 1) != 0;
+-            c.others     = IniInt(ini, "Others", 0) != 0;
+-            c.enemiesOnly = IniInt(ini, "EnemiesOnly", 0) != 0;
+-            c.precast    = IniInt(ini, "Precast", 1) != 0;
+-            c.channel    = IniInt(ini, "Channel", 1) != 0;
+-            c.persistent = IniInt(ini, "Persistent", 1) != 0;
+-            c.cones      = IniInt(ini, "Cones", 1) != 0;
+-            c.opacity    = Clamp(IniFloat(ini, "Opacity", c.opacity), 0.05f, 1.0f);
+-            c.maxOpacity = Clamp(IniFloat(ini, "MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
+-            c.chain      = IniInt(ini, "Chain", 1) != 0;
+-            c.chainRadius = Clamp(IniFloat(ini, "ChainRadius", c.chainRadius), 1.0f, 60.0f);
+-            c.coneAngle  = Clamp(IniFloat(ini, "ConeAngle", c.coneAngle), 5.0f, 180.0f);
+-            c.minRadius  = Clamp(IniFloat(ini, "MinRadius", c.minRadius), 0.1f, 50.0f);
+-            c.maxRadius  = Clamp(IniFloat(ini, "MaxRadius", c.maxRadius), c.minRadius, 150.0f);
+-            c.maxAreas   = std::max(1, std::min(64, IniInt(ini, "MaxAreas", c.maxAreas)));
+-            ReadColor(ini, "HarmfulColor", c.harmful);
+-            ReadColor(ini, "HelpfulColor", c.helpful);
+-            ReadColor(ini, "NeutralColor", c.neutral);
+-            const std::string file = IniStr(ini, "OverrideFile");
+-            if (!file.empty()) c.overrideFile = file;
+-            const std::string jump = IniStr(ini, "JumpDistanceFile");
+-            if (!jump.empty()) c.jumpFile = jump;
+-            const std::string cone = IniStr(ini, "ConeFile");
+-            if (!cone.empty()) c.coneFile = cone;
+-            const bool was = g_cfg.enabled;
+-            g_cfg = c;
+-            if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, opacity %.2f max %.2f)",
+-                            c.enabled ? "on" : "off",
+-                            c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
+-                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.opacity, c.maxOpacity);
+-#else
+-            (void)ini;
+-#endif
+-        }
+-
+-        void LoadOverrides()
+-        {
+-#ifdef _WIN32
+-            g_overrides = OverrideTable{};
+-            char path[MAX_PATH] = {};
+-            const std::string& name = g_cfg.overrideFile;
+-            if (name.find(':') != std::string::npos || name.find('\\') == 0) std::snprintf(path, sizeof(path), "%s", name.c_str());
+-            else if (!ExeFolderPath(name.c_str(), path, sizeof(path))) return;
+-
+-            g_csvStamp = FileStamp(path);
+-            if (!g_csvStamp) return;   // optional file
+-            std::ifstream f(path, std::ios::binary);
+-            const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+-            std::string problems;
+-            g_overrides.Parse(text, problems);
+-            wxl::LogCat("AOE", "%s: %zu row(s)", name.c_str(), g_overrides.Rows());
+-            size_t at = 0;
+-            while (at < problems.size())
+-            {
+-                const size_t eol = problems.find('\n', at);
+-                wxl::LogCat("AOE", "%s %s", name.c_str(), problems.substr(at, eol - at).c_str());
+-                if (eol == std::string::npos) break;
+-                at = eol + 1;
+-            }
+-#endif
+-        }
+-
+-        // A file name from the ini: a full path as it is, else a path under the client executable's folder (the default
+-        // files live in its WXL subfolder).
+-        bool ResolvePath(const std::string& name, char* path, size_t cap)
+-        {
+-#ifdef _WIN32
+-            if (name.find(':') != std::string::npos || name.find('\\') == 0) return std::snprintf(path, cap, "%s", name.c_str()) > 0;
+-            return ExeFolderPath(name.c_str(), path, cap);
+-#else
+-            (void)name; (void)path; (void)cap;
+-            return false;
+-#endif
+-        }
+-
+-        void LoadJumpDistances()
+-        {
+-#ifdef _WIN32
+-            g_jump = JumpDistanceTable{};
+-            char path[MAX_PATH] = {};
+-            if (!ResolvePath(g_cfg.jumpFile, path, sizeof(path))) return;
+-            g_jumpStamp = FileStamp(path);
+-            if (!g_jumpStamp) return;   // optional file
+-            std::ifstream f(path, std::ios::binary);
+-            const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+-            std::string problems;
+-            g_jump.Parse(text, problems);
+-            wxl::LogCat("AOE", "%s: %zu spell(s) with a jump distance", g_cfg.jumpFile.c_str(), g_jump.Rows());
+-            size_t at = 0;
+-            while (at < problems.size())
+-            {
+-                const size_t eol = problems.find('\n', at);
+-                wxl::LogCat("AOE", "%s %s", g_cfg.jumpFile.c_str(), problems.substr(at, eol - at).c_str());
+-                if (eol == std::string::npos) break;
+-                at = eol + 1;
+-            }
+-#endif
+-        }
+-
+-        void LoadConeAngles()
+-        {
+-#ifdef _WIN32
+-            g_cone = ConeAngleTable{};
+-            char path[MAX_PATH] = {};
+-            if (!ResolvePath(g_cfg.coneFile, path, sizeof(path))) return;
+-            g_coneStamp = FileStamp(path);
+-            if (!g_coneStamp) return;   // optional file
+-            std::ifstream f(path, std::ios::binary);
+-            const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+-            std::string problems;
+-            g_cone.Parse(text, problems);
+-            wxl::LogCat("AOE", "%s: %zu spell(s) with a cone angle", g_cfg.coneFile.c_str(), g_cone.Rows());
+-            size_t at = 0;
+-            while (at < problems.size())
+-            {
+-                const size_t eol = problems.find('\n', at);
+-                wxl::LogCat("AOE", "%s %s", g_cfg.coneFile.c_str(), problems.substr(at, eol - at).c_str());
+-                if (eol == std::string::npos) break;
+-                at = eol + 1;
+-            }
+-#endif
+-        }
+-
+-        // Reads the ini (and the override file) again whenever they are saved; looks once a second.
+-        void PollConfig()
+-        {
+-#ifdef _WIN32
+-            const uint32_t now = OsGetAsyncTimeMs();
+-            if (g_loaded && static_cast<int32_t>(now - g_lastPoll) < 1000) return;
+-            g_lastPoll = now;
+-
+-            char ini[MAX_PATH] = {};
+-            if (!ExeFolderPath("WXLExtendedEquipment.ini", ini, sizeof(ini))) { g_loaded = true; return; }
+-            const uint64_t stamp = FileStamp(ini);
+-            const bool iniChanged = !g_loaded || stamp != g_iniStamp;
+-            if (iniChanged) { g_iniStamp = stamp; LoadConfig(ini); }
+-
+-            char csv[MAX_PATH] = {};
+-            const std::string& name = g_cfg.overrideFile;
+-            const bool haveCsv = (name.find(':') != std::string::npos || name.find('\\') == 0)
+-                                     ? (std::snprintf(csv, sizeof(csv), "%s", name.c_str()) > 0)
+-                                     : ExeFolderPath(name.c_str(), csv, sizeof(csv));
+-            if (iniChanged || (haveCsv && FileStamp(csv) != g_csvStamp)) LoadOverrides();
+-
+-            char jump[MAX_PATH] = {};
+-            if (iniChanged || (ResolvePath(g_cfg.jumpFile, jump, sizeof(jump)) && FileStamp(jump) != g_jumpStamp)) LoadJumpDistances();
+-
+-            char cone[MAX_PATH] = {};
+-            if (iniChanged || (ResolvePath(g_cfg.coneFile, cone, sizeof(cone)) && FileStamp(cone) != g_coneStamp)) LoadConeAngles();
+-            g_loaded = true;
+-#else
+-            g_loaded = true;
+-#endif
+-        }
+-
+-        // --------------------------------------------------------------------------------------------- the areas
+-        struct Area
+-        {
+-            Shape    shape;
+-            bool     follow = false;     // the position (and facing) come from `guid` every frame
+-            WOWGUID  guid;
+-            C3Vector pos;                // a fixed ground point, when !follow
+-            float    facing = 0;         // a fixed facing, when !follow
+-            float    strength = 1.0f;    // 0..1: how far the cast is (an area that is only being cast fades in)
+-        };
+-
+-        std::vector<Area> g_areas;
+-        uint32_t          g_lastCollect = 0;
+-
+-        CGObject_C* Object(const WOWGUID& guid)
+-        {
+-            return ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
+-        }
+-
+-        bool Hostile(CGUnit_C* caster, CGUnit_C* player)
+-        {
+-            if (!caster || !player || caster == player) return false;
+-            return static_cast<int>(caster->UnitReaction(player)) <= static_cast<int>(UNIT_REACTION_UNFRIENDLY);
+-        }
+-
+-        // What a spell's three effects say, with the radii worked out for this caster (level and, for the player,
+-        // the radius modifiers of talents and auras: the same ones the targeting circle uses).
+-        bool SpellEffectsOf(uint32_t spellId, CGUnit_C* caster, bool own, SpellEffects& out)
+-        {
+-            SpellRec spell;
+-            if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return false;
+-
+-            const int32_t level = caster && caster->m_unit ? static_cast<int32_t>(caster->m_unit->m_unitFieldLevel) : 0;
+-            int32_t flat = 0, pct = 100;
+-            const bool modified = own && Spell_C_GetSpellModifiers(&spell, 6, flat, pct);
+-
+-            for (int i = 0; i < 3; ++i)
+-            {
+-                out.effect[i]  = spell.m_effect[i];
+-                out.targetA[i] = spell.m_implicitTargetA[i];
+-                out.targetB[i] = spell.m_implicitTargetB[i];
+-                out.radius[i]  = 0;
+-                out.chainTargets[i] = spell.m_effectChainTargets[i];
+-
+-                SpellRadiusRec* rec = g_spellRadiusDB.GetRecord(spell.m_effectRadiusIndex[i]);
+-                if (!rec) continue;
+-                float radius = rec->m_radius + static_cast<float>(level) * rec->m_radiusPerLevel;
+-                if (rec->m_radiusMax > 0.0f) radius = std::min(radius, rec->m_radiusMax);
+-                if (modified && radius > 0.0f) radius = (radius + static_cast<float>(flat)) * static_cast<float>(pct) * 0.01f;
+-                out.radius[i] = radius;
+-            }
+-            return true;
+-        }
+-
+-        // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
+-        size_t ShapesOf(uint32_t spellId, CGUnit_C* caster, bool own, Shape out[8])
+-        {
+-            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius };
+-
+-            bool none = false;
+-            std::vector<Shape> rows;
+-            if (g_overrides.Find(spellId, none, rows))
+-            {
+-                size_t n = 0;
+-                for (const Shape& s : rows)
+-                    if (n < 8 && s.radius >= g_cfg.minRadius) { out[n] = s; out[n].radius = std::min(s.radius, g_cfg.maxRadius); ++n; }
+-                return n;
+-            }
+-
+-            SpellEffects effects;
+-            if (!SpellEffectsOf(spellId, caster, own, effects)) return 0;
+-            float jumpYards = 0;
+-            if (g_jump.Find(spellId, jumpYards)) effects.chainRadius = jumpYards;   // the server's own jump distance first
+-            float coneDegrees = 0;
+-            if (g_cone.Find(spellId, coneDegrees)) effects.coneAngle = coneDegrees; // and its own cone angle
+-            Shape derived[3];
+-            const size_t n = ShapesFromSpell(effects, rules, derived);
+-            for (size_t i = 0; i < n; ++i) out[i] = derived[i];
+-            return n;
+-        }
+-
+-        struct DynKey { WOWGUID caster; uint32_t spell; };
+-
+-        struct Collector
+-        {
+-            WOWGUID player;
+-            CGUnit_C* playerUnit = nullptr;
+-            std::vector<DynKey> dyn;
+-            std::vector<WOWGUID> casters;     // other units that are casting or channeling
+-        };
+-
+-        void AddArea(const Area& a)
+-        {
+-            if (static_cast<int>(g_areas.size()) < g_cfg.maxAreas) g_areas.push_back(a);
+-        }
+-
+-        void AddDynamicObject(Collector& c, CGObject_C* obj, const WOWGUID& guid)
+-        {
+-            const CGDynamicObjectData* d = static_cast<CGDynamicObject_C*>(obj)->m_dynamicObject;
+-            if (!d || d->m_bytes[0] == 2) return;                    // type 2 is a far sight focus, not an area
+-            const bool own = d->m_caster == c.player;
+-            if (own ? !OwnOn() : !OthersOn()) return;
+-            if (!(d->m_radius >= g_cfg.minRadius)) return;
+-
+-            CGUnit_C* caster = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(d->m_caster, TYPEMASK_UNIT, __FILE__, __LINE__));
+-            if (g_cfg.enemiesOnly && !Hostile(caster, c.playerUnit)) return;   // a caster that is gone is not known to be an enemy
+-
+-            c.dyn.push_back(DynKey{ d->m_caster, d->m_spellID });
+-            if (!g_cfg.persistent) return;
+-
+-            Area a;
+-            a.shape.kind = ShapeKind::Circle;
+-            a.shape.radius = std::min(d->m_radius, g_cfg.maxRadius);
+-            a.shape.intent = Intent::Neutral;
+-            Shape derived[8];
+-            if (ShapesOf(d->m_spellID, caster, own, derived) > 0) a.shape.intent = derived[0].intent;
+-            if (!own && Hostile(caster, c.playerUnit)) a.shape.intent = Intent::Harmful;
+-            a.follow = true;
+-            a.guid = guid;
+-            AddArea(a);
+-        }
+-
+-        int32_t CollectCallback(WOWGUID guid, void* param)
+-        {
+-            auto* c = static_cast<Collector*>(param);
+-            if (guid == c->player) return 1;
+-
+-            CGObject_C* obj = Object(guid);
+-            if (!obj || !obj->m_obj) return 1;
+-
+-            const uint32_t type = static_cast<uint32_t>(obj->m_obj->m_type);
+-            if (type & TYPEMASK_DYNAMICOBJECT)
+-            {
+-                AddDynamicObject(*c, obj, guid);
+-            }
+-            else if ((type & TYPEMASK_UNIT) && OthersOn())
+-            {
+-                CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
+-                if ((unit->m_castingSpellId || unit->m_channelSpellId) && (!g_cfg.enemiesOnly || Hostile(unit, c->playerUnit)))
+-                    c->casters.push_back(guid);
+-            }
+-            return 1;
+-        }
+-
+-        // The area of what one unit is casting or channeling right now.
+-        void AddCasts(Collector& c, const WOWGUID& guid, uint32_t now)
+-        {
+-            CGUnit_C* unit = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(guid, TYPEMASK_UNIT, __FILE__, __LINE__));
+-            if (!unit || !unit->m_unit) return;
+-            const bool own = guid == c.player;
+-
+-            struct Cast { uint32_t spell; float strength; bool precast; };
+-            Cast casts[2];
+-            int count = 0;
+-            if (g_cfg.precast && unit->m_castingSpellId && static_cast<int32_t>(now - unit->m_castEndTime) < 0)
+-            {
+-                const float total = static_cast<float>(unit->m_castEndTime - unit->m_castStartTime);
+-                const float done = static_cast<float>(now - unit->m_castStartTime);
+-                casts[count++] = Cast{ unit->m_castingSpellId, total > 1.0f ? Clamp(done / total, 0.0f, 1.0f) : 1.0f, true };
+-            }
+-            if (g_cfg.channel && unit->m_channelSpellId && static_cast<int32_t>(now - unit->m_channelEndTime) < 0)
+-                casts[count++] = Cast{ unit->m_channelSpellId, 1.0f, false };
+-
+-            for (int k = 0; k < count; ++k)
+-            {
+-                Shape shapes[8];
+-                const size_t n = ShapesOf(casts[k].spell, unit, own, shapes);
+-                if (!n) continue;
+-
+-                bool lyingOnTheGround = false;   // a dynamic object of this cast exists: it draws the real area
+-                for (const DynKey& d : c.dyn)
+-                    if (d.caster == guid && d.spell == casts[k].spell) { lyingOnTheGround = true; break; }
+-
+-                PendingSpellCastData data;
+-                const bool haveData = Spell_C_WxlFindPendingCast(guid, casts[k].spell, &data);
+-
+-                for (size_t i = 0; i < n; ++i)
+-                {
+-                    if (lyingOnTheGround && shapes[i].kind == ShapeKind::Circle) continue;
+-
+-                    Area a;
+-                    a.shape = shapes[i];
+-                    a.strength = casts[k].strength;
+-                    if (shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster)
+-                    {
+-                        a.follow = true;
+-                        a.guid = guid;
+-                    }
+-                    else if (haveData && (data.m_targetFlags & 0x40))          // a ground point: Blizzard, Flamestrike ...
+-                    {
+-                        a.pos = data.GetDestLocation();
+-                    }
+-                    else if (haveData && data.m_objectTarget.m_guid)           // around the target unit
+-                    {
+-                        a.follow = true;
+-                        a.guid = data.m_objectTarget;
+-                    }
+-                    else if (!casts[k].precast && unit->m_unit->m_unitFieldChannelObject.m_guid)   // around the channel's target
+-                    {
+-                        a.follow = true;
+-                        a.guid = unit->m_unit->m_unitFieldChannelObject;
+-                    }
+-                    else if (unit->m_unit->m_unitFieldTarget.m_guid)           // no cast data: around what the caster has targeted
+-                    {
+-                        a.follow = true;
+-                        a.guid = unit->m_unit->m_unitFieldTarget;
+-                    }
+-                    else
+-                    {
+-                        continue;                                              // nothing to place it on
+-                    }
+-                    AddArea(a);
+-                }
+-            }
+-        }
+-
+-        void Collect(uint32_t now)
+-        {
+-            g_areas.clear();
+-
+-            Collector c;
+-            c.player = ClntObjMgrGetActivePlayer();
+-            if (!c.player) return;
+-            c.playerUnit = static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(c.player, TYPEMASK_UNIT, __FILE__, __LINE__));
+-            if (!c.playerUnit || !c.playerUnit->m_unit) return;
+-
+-            ClntObjMgrEnumVisibleObjects(CollectCallback, &c);
+-
+-            if (OwnOn()) AddCasts(c, c.player, now);
+-            for (const WOWGUID& g : c.casters) AddCasts(c, g, now);
+-        }
+-
+-        // ------------------------------------------------------------------------------------------- the textures
+-        constexpr int kTexSize = 256;
+-
+-        struct TexEntry
+-        {
+-            std::vector<uint32_t> pixels;
+-            CTexture*             tex = nullptr;
+-        };
+-        std::map<uint64_t, TexEntry> g_textures;
+-
+-        void TextureFeed(EGxTexCommand command, uint32_t width, uint32_t, uint32_t, uint32_t, void* userArg, uint32_t& texelStrideInBytes, const void*& texels)
+-        {
+-            if (command == GxTex_Latch)
+-            {
+-                texelStrideInBytes = 4 * width;
+-                texels = userArg;     // the entry's pixels live as long as the texture does
+-            }
+-        }
+-
+-        CGxTex* TextureFor(ShapeKind kind, uint32_t param)
+-        {
+-            const uint64_t key = (static_cast<uint64_t>(kind) << 32) | param;
+-            auto it = g_textures.find(key);
+-            if (it == g_textures.end())
+-            {
+-                TexEntry entry;
+-                switch (kind)
+-                {
+-                case ShapeKind::Circle: RenderCircleTexture(entry.pixels, kTexSize); break;
+-                case ShapeKind::Cone:   RenderConeTexture(entry.pixels, kTexSize, static_cast<float>(param)); break;
+-                case ShapeKind::Line:   RenderLineTexture(entry.pixels, kTexSize, static_cast<float>(param) / 256.0f); break;
+-                }
+-                it = g_textures.emplace(key, std::move(entry)).first;
+-                TexEntry& e = it->second;
+-                e.tex = TextureCreate(GxTex_2d, kTexSize, kTexSize, 0, GxTex_Argb8888, GxTex_Argb8888, CGxTexFlags(GxTex_Linear),
+-                                      e.pixels.data(), TextureFeed, "WxlSpellArea", 0);
+-            }
+-            return it->second.tex ? TextureGetGxTex(it->second.tex, 0, nullptr) : nullptr;
+-        }
+-
+-        // ------------------------------------------------------------------------------------------------ drawing
+-        void DrawArea(const Area& a, const C3Vector& pos, float facing, uint32_t triFlags, uint32_t projectFlags)
+-        {
+-            const Shape& s = a.shape;
+-            float half = s.radius;
+-            uint32_t param = 0;
+-            switch (s.kind)
+-            {
+-            case ShapeKind::Circle: break;
+-            case ShapeKind::Cone:   param = static_cast<uint32_t>(Clamp(std::floor(s.param + 0.5f), 1.0f, 359.0f)); break;
+-            case ShapeKind::Line:
+-            {
+-                const float frac = Clamp(s.param / (2.0f * s.radius), 1.0f / 256.0f, 1.0f);
+-                param = static_cast<uint32_t>(std::floor(frac * 256.0f + 0.5f));
+-                break;
+-            }
+-            }
+-
+-            CGxTex* texture = TextureFor(s.kind, param);
+-            if (!texture || !(half > 0.0f)) return;
+-
+-            const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
+-            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
+-            CImVector color;
+-            color.b = static_cast<uint8_t>(rgb[2] * 255.0f + 0.5f);
+-            color.g = static_cast<uint8_t>(rgb[1] * 255.0f + 0.5f);
+-            color.r = static_cast<uint8_t>(rgb[0] * 255.0f + 0.5f);
+-            color.a = static_cast<uint8_t>(Clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+-
+-            // A square box around the shape's center (a cone's apex, a line's start); the texture is stretched over it
+-            // and the box's height is how far above and below the center the ground still takes the picture.
+-            const float hz = Clamp(half * 0.5f, 4.0f, 20.0f);
+-            CAaBox box(C3Vector(pos.x - half, pos.y - half, pos.z - hz), C3Vector(pos.x + half, pos.y + half, pos.z + hz));
+-
+-            // The texture's front (row 0) points along the facing once rotated by -facing (see SpellAreaShapes test 5).
+-            C44Matrix rotation;
+-            const bool rotate = s.kind != ShapeKind::Circle;
+-            if (rotate) rotation.RotateAroundZ(-facing);
+-
+-            g_theGxDevicePtr->RsPush();
+-            GxRsSet(GxRs_Lighting, 0);
+-            GxRsSet(GxRs_DepthWrite, 0);
+-            GxRsSet(GxRs_Culling, 0);
+-            GxRsSet(GxRs_BlendingMode, 2);
+-            GxUpdateAlphaRef(GxRs_AlphaRef);
+-            g_theGxDevicePtr->RsSet(GxRs_Texture0, texture);
+-            g_theGxDevicePtr->RsSet(GxRs_Texture1, ProjectTex2dGetAddFadeTex());
+-            GxRsSet(GxRs_ColorOp0, 0);
+-            GxRsSet(GxRs_AlphaOp0, 0);
+-            GxRsSet(GxRs_ColorOp1, 0);
+-            GxRsSet(GxRs_AlphaOp1, 0);
+-            ProjectTex::Render2d(box, color, rotate ? &rotation : nullptr, 0.5f, triFlags, projectFlags, 0.4f);
+-            g_theGxDevicePtr->RsPop();
+-        }
+-    }
+-
+-    void Render(uint32_t triFlags, uint32_t projectFlags)
+-    {
+-        PollConfig();
+-        if (!g_cfg.enabled) return;
+-
+-        const uint32_t now = OsGetAsyncTimeMs();
+-        if (static_cast<int32_t>(now - g_lastCollect) >= 66 || g_lastCollect == 0)
+-        {
+-            Collect(now);
+-            g_lastCollect = now ? now : 1;
+-        }
+-
+-        for (const Area& a : g_areas)
+-        {
+-            C3Vector pos = a.pos;
+-            float facing = a.facing;
+-            if (a.follow)
+-            {
+-                CGObject_C* obj = Object(a.guid);
+-                if (!obj) continue;
+-                pos = obj->GetPosition();
+-                facing = obj->GetFacing();
+-            }
+-            DrawArea(a, pos, facing, triFlags, projectFlags);
+-        }
+-    }
+-}
+-
+-#endif
+diff --git a/Engine/Source/WXLApi/SpellArea.h b/Engine/Source/WXLApi/SpellArea.h
+deleted file mode 100644
+index 7e80acc..0000000
+--- a/Engine/Source/WXLApi/SpellArea.h
++++ /dev/null
+@@ -1,18 +0,0 @@
+-// The spell area indicator's engine side. See Engine/Source/WXL/SpellArea.md.
+-// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
+-//
+-// Draws the ground area of spells being cast, channeled or lying on the ground (a dynamic object) as colored,
+-// terrain-hugging circles, cones and lines, with the client's own projected texture pass (the one that draws the
+-// spell targeting circle under the cursor). Off unless [SpellArea] Enabled=1 in WXLExtendedEquipment.ini.
+-#pragma once
+-
+-#include <cstdint>
+-
+-namespace wxl::spellarea
+-{
+-    /// Called by the world render beside the client's own spell cursor shadow, once after the opaque pass with
+-    /// (0x200122, 5) and once after the transparent ones with (0x20000, 4): the ProjectTex triangle flags and
+-    /// render flags of those two calls (the second leaves the doodads out so nothing is drawn twice).
+-    /// Does nothing while the indicator is off.
+-    void Render(uint32_t triFlags, uint32_t projectFlags);
+-}
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.cpp b/Engine/Source/WXLApi/SpellAreaHost.cpp
+new file mode 100644
+index 0000000..9b272b1
+--- /dev/null
++++ b/Engine/Source/WXLApi/SpellAreaHost.cpp
+@@ -0,0 +1,319 @@
++// The core's side of the spell area module's engine access. See SpellAreaHost.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// What the spell area indicator did to the engine while it was compiled into the client (it was SpellArea.cpp in this
++// folder): the object manager scan, the spell record reads and the projected texture draw. The decisions moved to the
++// module; these functions only answer and draw.
++
++#include "Engine/Source/WXLApi/SpellAreaHost.h"
++
++#ifdef WXL_ALLOW_32BIT_HEADER   // the module API is 64-bit only: a 32-bit client keeps no-ops
++
++namespace wxl::api::spellareahost
++{
++    uint32_t DynamicObjects(WxlSpellAreaDynObject*, uint32_t) { return 0; }
++    uint32_t Casters(WxlSpellAreaCaster*, uint32_t) { return 0; }
++    int      Effects(uint32_t, uint64_t, WxlSpellAreaEffects*) { return 0; }
++    int      PendingCast(uint64_t, uint32_t, WxlSpellAreaPending*) { return 0; }
++    int      ObjectPose(uint64_t, float*, float*) { return 0; }
++    void*    CreateTexture(const uint32_t*, uint32_t, const char*) { return nullptr; }
++    void     Draw(const WxlSpellAreaDraw*) {}
++    void     SetRenderer(WxlSpellAreaRenderFn, void*) {}
++    void     Render(uint32_t, uint32_t) {}
++}
++
++#else
++
++#include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
++#include "Engine/Source/Gx/CGxTexFlags.h"
++#include "Engine/Source/Gx/Gx.h"
++#include "Engine/Source/Gx/Types.h"
++#include "Engine/Source/Os/TimeManager.h"
++#include "Engine/Source/Services/Texture.h"
++#include "Engine/Source/Tempest/C3Vector.h"
++#include "Engine/Source/Tempest/C44Matrix.h"
++#include "Engine/Source/Tempest/CAaBox.h"
++#include "Engine/Source/Tempest/CImVector.h"
++#include "WoW/Source/DB/DBClient/DBClient.h"
++#include "WoW/Source/DB/Rec/SpellRadiusRec.h"
++#include "WoW/Source/DB/Rec/SpellRec.h"
++#include "WoW/Source/Game/GameClient/ProjectTex.h"
++#include "WoW/Source/Magic/MagicClient/Spell_C.h"
++#include "WoW/Source/Object/ObjectClient/DynamicObject_C.h"
++#include "WoW/Source/Object/ObjectClient/Object_C.h"
++#include "WoW/Source/Object/ObjectClient/Player_C.h"
++#include "WoW/Source/Object/ObjectClient/Unit_C.h"
++#include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
++
++#include <algorithm>
++#include <cstring>
++#include <memory>
++#include <vector>
++
++namespace wxl::api::spellareahost
++{
++    namespace
++    {
++        WxlSpellAreaRenderFn g_renderer = nullptr;
++        void*                g_rendererUser = nullptr;
++
++        CGObject_C* Object(const WOWGUID& guid)
++        {
++            return ClntObjMgrObjectPtr(guid, static_cast<TypeMask>(TYPEMASK_OBJECT), __FILE__, __LINE__);
++        }
++
++        CGUnit_C* Unit(const WOWGUID& guid)
++        {
++            return static_cast<CGUnit_C*>(ClntObjMgrObjectPtr(guid, TYPEMASK_UNIT, __FILE__, __LINE__));
++        }
++
++        CGUnit_C* PlayerUnit(WOWGUID& guid)
++        {
++            guid = ClntObjMgrGetActivePlayer();
++            if (!guid) return nullptr;
++            CGUnit_C* unit = Unit(guid);
++            return unit && unit->m_unit ? unit : nullptr;
++        }
++
++        // A hostile caster is one whose reaction toward the player is unfriendly or worse.
++        bool Hostile(CGUnit_C* caster, CGUnit_C* player)
++        {
++            if (!caster || !player || caster == player) return false;
++            return static_cast<int>(caster->UnitReaction(player)) <= static_cast<int>(UNIT_REACTION_UNFRIENDLY);
++        }
++
++        // ---------------------------------------------------------------------------------------- the scans
++        struct Scan
++        {
++            WOWGUID   player = {};
++            CGUnit_C* playerUnit = nullptr;
++            WxlSpellAreaDynObject* dyn = nullptr;
++            WxlSpellAreaCaster*    casters = nullptr;
++            uint32_t  max = 0;
++            uint32_t  count = 0;
++        };
++
++        void FillCaster(WxlSpellAreaCaster& c, const WOWGUID& guid, CGUnit_C* unit, const Scan& s)
++        {
++            c = {};
++            c.guid          = guid.m_guid;
++            c.isPlayer      = guid == s.player ? 1u : 0u;
++            c.hostile       = Hostile(unit, s.playerUnit) ? 1u : 0u;
++            c.castSpell     = unit->m_castingSpellId;
++            c.castStartMs   = unit->m_castStartTime;
++            c.castEndMs     = unit->m_castEndTime;
++            c.channelSpell  = unit->m_channelSpellId;
++            c.channelEndMs  = unit->m_channelEndTime;
++            c.target        = unit->m_unit->m_unitFieldTarget.m_guid;
++            c.channelObject = unit->m_unit->m_unitFieldChannelObject.m_guid;
++        }
++
++        int32_t DynCallback(WOWGUID guid, void* param)
++        {
++            auto* s = static_cast<Scan*>(param);
++            if (s->count >= s->max || guid == s->player) return 1;
++
++            CGObject_C* obj = Object(guid);
++            if (!obj || !obj->m_obj) return 1;
++            if (!(static_cast<uint32_t>(obj->m_obj->m_type) & TYPEMASK_DYNAMICOBJECT)) return 1;
++
++            const CGDynamicObjectData* d = static_cast<CGDynamicObject_C*>(obj)->m_dynamicObject;
++            if (!d || d->m_bytes[0] == 2) return 1;                  // type 2 is a far sight focus, not an area
++
++            CGUnit_C* caster = Unit(d->m_caster);
++            WxlSpellAreaDynObject& o = s->dyn[s->count++];
++            o = {};
++            o.guid           = guid.m_guid;
++            o.casterGuid     = d->m_caster.m_guid;
++            o.spellId        = d->m_spellID;
++            o.radius         = d->m_radius;
++            o.casterIsPlayer = d->m_caster == s->player ? 1u : 0u;
++            o.casterKnown    = caster ? 1u : 0u;                     // a caster that is gone is not known to be an enemy
++            o.casterHostile  = Hostile(caster, s->playerUnit) ? 1u : 0u;
++            return 1;
++        }
++
++        int32_t CasterCallback(WOWGUID guid, void* param)
++        {
++            auto* s = static_cast<Scan*>(param);
++            if (s->count >= s->max || guid == s->player) return 1;
++
++            CGObject_C* obj = Object(guid);
++            if (!obj || !obj->m_obj) return 1;
++            if (!(static_cast<uint32_t>(obj->m_obj->m_type) & TYPEMASK_UNIT)) return 1;
++
++            CGUnit_C* unit = static_cast<CGUnit_C*>(obj);
++            if (!unit->m_unit || !(unit->m_castingSpellId || unit->m_channelSpellId)) return 1;
++            FillCaster(s->casters[s->count++], guid, unit, *s);
++            return 1;
++        }
++
++        // ------------------------------------------------------------------------------------- the textures
++        struct TexEntry
++        {
++            std::vector<uint32_t> pixels;
++            CTexture*             tex = nullptr;
++        };
++        std::vector<std::unique_ptr<TexEntry>> g_textures;   // entries never move: the texture reads their pixels again
++
++        void TextureFeed(EGxTexCommand command, uint32_t width, uint32_t, uint32_t, uint32_t, void* userArg, uint32_t& texelStrideInBytes, const void*& texels)
++        {
++            if (command == GxTex_Latch)
++            {
++                texelStrideInBytes = 4 * width;
++                texels = userArg;     // the entry's pixels live as long as the texture does
++            }
++        }
++
++        template <class T> T Clamp(T v, T lo, T hi) { return std::max(lo, std::min(hi, v)); }
++    }
++
++    uint32_t DynamicObjects(WxlSpellAreaDynObject* out, uint32_t max)
++    {
++        if (!out || !max) return 0;
++        Scan s;
++        s.playerUnit = PlayerUnit(s.player);
++        if (!s.playerUnit) return 0;
++        s.dyn = out;
++        s.max = max;
++        ClntObjMgrEnumVisibleObjects(DynCallback, &s);
++        return s.count;
++    }
++
++    uint32_t Casters(WxlSpellAreaCaster* out, uint32_t max)
++    {
++        if (!out || !max) return 0;
++        Scan s;
++        s.playerUnit = PlayerUnit(s.player);
++        if (!s.playerUnit) return 0;
++        s.casters = out;
++        s.max = max;
++        if (s.playerUnit->m_castingSpellId || s.playerUnit->m_channelSpellId)
++            FillCaster(s.casters[s.count++], s.player, s.playerUnit, s);   // the player first
++        ClntObjMgrEnumVisibleObjects(CasterCallback, &s);
++        return s.count;
++    }
++
++    // What a spell's three effects say, with the radii worked out for this caster (level and, for the player, the
++    // radius modifiers of talents and auras: the same ones the targeting circle uses).
++    int Effects(uint32_t spellId, uint64_t casterGuid, WxlSpellAreaEffects* out)
++    {
++        if (!out) return 0;
++        SpellRec spell;
++        if (!spellId || !g_spellDB.GetRecord(static_cast<int32_t>(spellId), &spell)) return 0;
++
++        CGUnit_C* caster = casterGuid ? Unit(WOWGUID{ casterGuid }) : nullptr;
++        const int32_t level = caster && caster->m_unit ? static_cast<int32_t>(caster->m_unit->m_unitFieldLevel) : 0;
++        const WOWGUID player = ClntObjMgrGetActivePlayer();
++        const bool own = casterGuid && player && player.m_guid == casterGuid;
++        int32_t flat = 0, pct = 100;
++        const bool modified = own && Spell_C_GetSpellModifiers(&spell, 6, flat, pct);
++
++        *out = {};
++        for (int i = 0; i < 3; ++i)
++        {
++            out->effect[i]       = spell.m_effect[i];
++            out->targetA[i]      = spell.m_implicitTargetA[i];
++            out->targetB[i]      = spell.m_implicitTargetB[i];
++            out->chainTargets[i] = spell.m_effectChainTargets[i];
++
++            SpellRadiusRec* rec = g_spellRadiusDB.GetRecord(spell.m_effectRadiusIndex[i]);
++            if (!rec) continue;
++            float radius = rec->m_radius + static_cast<float>(level) * rec->m_radiusPerLevel;
++            if (rec->m_radiusMax > 0.0f) radius = std::min(radius, rec->m_radiusMax);
++            if (modified && radius > 0.0f) radius = (radius + static_cast<float>(flat)) * static_cast<float>(pct) * 0.01f;
++            out->radius[i] = radius;
++        }
++        return 1;
++    }
++
++    int PendingCast(uint64_t casterGuid, uint32_t spellId, WxlSpellAreaPending* out)
++    {
++        if (!out) return 0;
++        PendingSpellCastData data;
++        if (!Spell_C_WxlFindPendingCast(WOWGUID{ casterGuid }, spellId, &data)) return 0;
++        const C3Vector dest = data.GetDestLocation();
++        out->targetFlags  = static_cast<uint32_t>(data.m_targetFlags);
++        out->dest[0]      = dest.x;
++        out->dest[1]      = dest.y;
++        out->dest[2]      = dest.z;
++        out->objectTarget = data.m_objectTarget.m_guid;
++        return 1;
++    }
++
++    int ObjectPose(uint64_t guid, float* pos, float* facing)
++    {
++        if (!guid || !pos || !facing) return 0;
++        CGObject_C* obj = Object(WOWGUID{ guid });
++        if (!obj) return 0;
++        const C3Vector p = obj->GetPosition();
++        pos[0] = p.x; pos[1] = p.y; pos[2] = p.z;
++        *facing = obj->GetFacing();
++        return 1;
++    }
++
++    void* CreateTexture(const uint32_t* argbPixels, uint32_t size, const char* name)
++    {
++        if (!argbPixels || size < 2 || size > 2048) return nullptr;
++        auto entry = std::make_unique<TexEntry>();
++        entry->pixels.assign(argbPixels, argbPixels + static_cast<size_t>(size) * size);
++        entry->tex = TextureCreate(GxTex_2d, size, size, 0, GxTex_Argb8888, GxTex_Argb8888, CGxTexFlags(GxTex_Linear),
++                                   entry->pixels.data(), TextureFeed, name && *name ? name : "WxlSpellArea", 0);
++        if (!entry->tex) return nullptr;
++        g_textures.push_back(std::move(entry));
++        return g_textures.back().get();
++    }
++
++    void Draw(const WxlSpellAreaDraw* d)
++    {
++        if (!d || d->structSize < sizeof(WxlSpellAreaDraw) || !d->texture || !(d->half > 0.0f)) return;
++        auto* entry = static_cast<TexEntry*>(d->texture);
++        CGxTex* texture = entry->tex ? TextureGetGxTex(entry->tex, 0, nullptr) : nullptr;
++        if (!texture) return;
++
++        CImVector color;
++        color.b = d->b;
++        color.g = d->g;
++        color.r = d->r;
++        color.a = d->a;
++
++        // A square box around the shape's center (a cone's apex, a line's start); the texture is stretched over it
++        // and the box's height is how far above and below the center the ground still takes the picture.
++        const float half = d->half;
++        const float hz = Clamp(half * 0.5f, 4.0f, 20.0f);
++        CAaBox box(C3Vector(d->pos[0] - half, d->pos[1] - half, d->pos[2] - hz), C3Vector(d->pos[0] + half, d->pos[1] + half, d->pos[2] + hz));
++
++        // The texture's front (row 0) points along the facing once rotated by -facing.
++        C44Matrix rotation;
++        const bool rotate = d->rotate != 0;
++        if (rotate) rotation.RotateAroundZ(-d->facing);
++
++        g_theGxDevicePtr->RsPush();
++        GxRsSet(GxRs_Lighting, 0);
++        GxRsSet(GxRs_DepthWrite, 0);
++        GxRsSet(GxRs_Culling, 0);
++        GxRsSet(GxRs_BlendingMode, 2);
++        GxUpdateAlphaRef(GxRs_AlphaRef);
++        g_theGxDevicePtr->RsSet(GxRs_Texture0, texture);
++        g_theGxDevicePtr->RsSet(GxRs_Texture1, ProjectTex2dGetAddFadeTex());
++        GxRsSet(GxRs_ColorOp0, 0);
++        GxRsSet(GxRs_AlphaOp0, 0);
++        GxRsSet(GxRs_ColorOp1, 0);
++        GxRsSet(GxRs_AlphaOp1, 0);
++        ProjectTex::Render2d(box, color, rotate ? &rotation : nullptr, 0.5f, d->triFlags, d->projectFlags, 0.4f);
++        g_theGxDevicePtr->RsPop();
++    }
++
++    void SetRenderer(WxlSpellAreaRenderFn fn, void* user)
++    {
++        g_renderer = fn;
++        g_rendererUser = user;
++    }
++
++    void Render(uint32_t triFlags, uint32_t projectFlags)
++    {
++        if (g_renderer) g_renderer(g_rendererUser, triFlags, projectFlags, OsGetAsyncTimeMs());
++    }
++}
++
++#endif
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.h b/Engine/Source/WXLApi/SpellAreaHost.h
+new file mode 100644
+index 0000000..40bfa7e
+--- /dev/null
++++ b/Engine/Source/WXLApi/SpellAreaHost.h
+@@ -0,0 +1,25 @@
++// The core's side of the spell area module's engine access (Engine/Source/WXL/Sdk/wxl_api.h): the visible dynamic
++// objects and casting units, a spell's effects and radii, the targets of a cast in progress, and the projected
++// texture pass the areas are drawn with. See Engine/Source/WXLModules/SpellArea/SpellArea.md.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Like OutlineHost.cpp this is a place that knows the object manager, the spell database and the Gx device. What to
++// draw, where it comes from and what it looks like is the module's business (wxl_spellarea.dll).
++#pragma once
++
++#include "Engine/Source/WXL/Sdk/wxl_api.h"
++#include "Engine/Source/WXLApi/SpellAreaRender.h"
++
++#include <cstdint>
++
++namespace wxl::api::spellareahost
++{
++    uint32_t DynamicObjects(WxlSpellAreaDynObject* out, uint32_t max);
++    uint32_t Casters(WxlSpellAreaCaster* out, uint32_t max);
++    int      Effects(uint32_t spellId, uint64_t casterGuid, WxlSpellAreaEffects* out);
++    int      PendingCast(uint64_t casterGuid, uint32_t spellId, WxlSpellAreaPending* out);
++    int      ObjectPose(uint64_t guid, float* pos, float* facing);
++    void*    CreateTexture(const uint32_t* argbPixels, uint32_t size, const char* name);
++    void     Draw(const WxlSpellAreaDraw* draw);
++    void     SetRenderer(WxlSpellAreaRenderFn fn, void* user);
++}
+diff --git a/Engine/Source/WXLApi/SpellAreaRender.h b/Engine/Source/WXLApi/SpellAreaRender.h
+new file mode 100644
+index 0000000..c42cb21
+--- /dev/null
++++ b/Engine/Source/WXLApi/SpellAreaRender.h
+@@ -0,0 +1,17 @@
++// The one call the world render makes for the spell area indicator. See SpellAreaHost.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Kept apart from SpellAreaHost.h so the client's UI code can include it without the module API header (which refuses
++// a 32-bit build unless told it only declares).
++#pragma once
++
++#include <cstdint>
++
++namespace wxl::api::spellareahost
++{
++    /// Called by the world render beside the client's own spell cursor shadow, once after the opaque pass with
++    /// (0x200122, 5) and once after the transparent ones with (0x20000, 4): the ProjectTex triangle flags and render
++    /// flags of those two calls (the second leaves the doodads out so nothing is drawn twice). Calls the spell area
++    /// module's renderer when there is one; does nothing when that module is not loaded (or declined to load).
++    void Render(uint32_t triFlags, uint32_t projectFlags);
++}
+diff --git a/Engine/Source/WXLModules/SpellArea/CMakeLists.txt b/Engine/Source/WXLModules/SpellArea/CMakeLists.txt
+new file mode 100644
+index 0000000..b566b27
+--- /dev/null
++++ b/Engine/Source/WXLModules/SpellArea/CMakeLists.txt
+@@ -0,0 +1,24 @@
++# WXL spell area module: wxl_spellarea.dll, loaded from <client folder>\WXL\Modules\ by the 64-bit client.
++# Built against Engine/Source/WXL/Sdk (wxl_api.h, wxl_module.hpp) and its own folder only: what the module needs of the
++# engine (the visible dynamic objects and casters, spell effects, the projected texture pass) comes through the module API.
++if (NOT WOWDECOMP_ARCH_64)
++    message(STATUS "WXL modules are 64-bit only: wxl_spellarea is not built")
++    return()
++endif ()
++
++file(GLOB MODULE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
++
++add_library(wxl_spellarea SHARED ${MODULE_SOURCES})
++
++target_include_directories(wxl_spellarea
++    PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}
++        ${CMAKE_SOURCE_DIR}/Engine/Source/WXL/Sdk
++)
++
++set_target_properties(wxl_spellarea PROPERTIES
++    PREFIX ""
++    CXX_VISIBILITY_PRESET hidden
++    VISIBILITY_INLINES_HIDDEN ON
++    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_SOURCE_DIR}/bin/Win/WXL/Modules>"
++)
+diff --git a/Engine/Source/WXLModules/SpellArea/Module.cpp b/Engine/Source/WXLModules/SpellArea/Module.cpp
+new file mode 100644
+index 0000000..2c9f628
+--- /dev/null
++++ b/Engine/Source/WXLModules/SpellArea/Module.cpp
+@@ -0,0 +1,36 @@
++// The spell area module's entry points. See Engine/Source/WXL/Sdk/wxl_api.h and SpellArea.md.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++
++#include "wxl_module.hpp"
++
++#include <cstring>
++
++namespace wxl::spellarea
++{
++    bool Start();   // SpellArea.cpp: registers the render callback; reads [SpellArea] now and whenever the ini is saved
++    void Stop();    // unregisters the render callback
++}
++
++WXL_DEFINE_MODULE_ABI()
++
++WXL_MODULE_API int WxlModuleInit(const WxlApi* api, WxlModuleInfo* info)
++{
++    // setSpellAreaRenderer is the last member of the engine access added for this module: its presence means all of
++    // them are.
++    if (!api || api->abiVersion != WXL_ABI_VERSION || !WXL_API_HAS(api, setSpellAreaRenderer)) return 1;
++    wxl::module::Bind(api);
++    if (info)
++    {
++        std::strncpy(info->name, "spellarea", sizeof(info->name) - 1);
++        info->versionMajor = 1;
++        info->versionMinor = 0;
++    }
++    // Stays loaded with [SpellArea] Enabled=0 (it is the default): saving the ini with Enabled=1 turns the indicator on
++    // without a restart, as it always did, and while it is off a frame costs one integer compare.
++    return wxl::spellarea::Start() ? 0 : 1;
++}
++
++WXL_MODULE_API void WxlModuleShutdown(void)
++{
++    wxl::spellarea::Stop();
++}
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+new file mode 100644
+index 0000000..00cceb3
+--- /dev/null
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -0,0 +1,512 @@
++// The spell area indicator, as a module. See SpellArea.md.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Engine/Source/WXL/Event.h)
++//
++// Draws the ground area of spells being cast, channeled or lying on the ground (a dynamic object) as colored,
++// terrain-hugging circles, cones and lines, with the client's own projected texture pass (the one that draws the spell
++// targeting circle under the cursor). The core answers what the object manager and the spell data know and does the
++// drawing (spellAreaDraw); everything else, the ini, the csv files, the shapes and their textures, lives here.
++// Off unless [SpellArea] Enabled=1 in WXLExtendedEquipment.ini.
++
++#include "SpellAreaShapes.h"
++#include "wxl_module.hpp"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <fstream>
++#include <iterator>
++#include <map>
++#include <string>
++#include <vector>
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++namespace wxl::spellarea
++{
++    namespace
++    {
++        // ------------------------------------------------------------------------------------------------ config
++        struct Config
++        {
++            bool  enabled      = false;
++            bool  own          = true;    // the player's own casts and areas
++            bool  others       = false;   // everybody else's too
++            bool  enemiesOnly  = false;   // only what hostile units cast: own and friendly areas are left out
++            bool  precast      = true;    // the area of a spell that is being cast
++            bool  channel      = true;    // the area of a spell that is being channeled
++            bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
++            bool  cones        = true;
++            float opacity      = 0.65f;
++            float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
++            bool  chain        = true;    // chain spells: the circle of the first jump around the target
++            float chainRadius  = 12.5f;
++            float harmful[3]   = { 1.0f, 0.235f, 0.157f };
++            float helpful[3]   = { 0.235f, 1.0f, 0.353f };
++            float neutral[3]   = { 1.0f, 0.784f, 0.235f };
++            float coneAngle    = 90.0f;
++            float minRadius    = 1.0f;
++            float maxRadius    = 60.0f;
++            int   maxAreas     = 16;
++            std::string overrideFile = "SpellAreaOverride.csv";
++            std::string jumpFile     = "WXL\\SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
++            std::string coneFile     = "WXL\\SpellCone.csv";           // spell id, cone degrees; no header
++        };
++
++        const char* const kSection = "SpellArea";
++
++        Config            g_cfg;
++        OverrideTable     g_overrides;
++        JumpDistanceTable g_jump;
++        ConeAngleTable    g_cone;
++        bool              g_loaded = false;
++        uint32_t          g_lastPoll = 0;
++        uint64_t          g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0;
++
++        const WxlApi* Api() { return wxl::module::Api(); }
++
++        // The folder the default files live under: the client's working directory, which is its executable's folder.
++        bool FolderPath(const std::string& name, char* path, size_t cap)
++        {
++            if (name.find(':') != std::string::npos || name.find('\\') == 0)   // a full path as it is
++                return std::snprintf(path, cap, "%s", name.c_str()) > 0;
++            std::string dir = wxl::WorkingDirectory();
++            if (dir.empty()) return false;
++            if (dir.back() != '\\' && dir.back() != '/') dir += '\\';
++            return std::snprintf(path, cap, "%s%s", dir.c_str(), name.c_str()) > 0;
++        }
++
++        uint64_t FileStamp(const char* path)
++        {
++#ifdef _WIN32
++            WIN32_FILE_ATTRIBUTE_DATA d;
++            if (!GetFileAttributesExA(path, GetFileExInfoStandard, &d)) return 0;
++            return (static_cast<uint64_t>(d.ftLastWriteTime.dwHighDateTime) << 32) | d.ftLastWriteTime.dwLowDateTime;
++#else
++            std::ifstream f(path, std::ios::binary | std::ios::ate);   // no timestamp without the OS: size, so a change shows
++            return f ? static_cast<uint64_t>(f.tellg()) + 1 : 0;
++#endif
++        }
++
++        int IniInt(const char* key, int def) { return Api()->iniGetInt(kSection, key, def); }
++
++        std::string IniStr(const char* key)
++        {
++            char out[260] = {};
++            return Api()->iniGetString(kSection, key, out, sizeof(out)) ? std::string(out) : std::string();
++        }
++
++        float IniFloat(const char* key, float def)
++        {
++            std::string t = IniStr(key);
++            if (t.empty()) return def;
++            for (char& c : t) if (c == ',') c = '.';
++            char* end = nullptr;
++            const double v = std::strtod(t.c_str(), &end);
++            return (end == t.c_str() || !std::isfinite(v)) ? def : static_cast<float>(v);
++        }
++
++        void ReadColor(const char* key, float rgb[3])
++        {
++            const std::string s = IniStr(key);
++            if (s.empty()) return;
++            float c[3];
++            if (ParseColorHex(s.c_str(), c)) { rgb[0] = c[0]; rgb[1] = c[1]; rgb[2] = c[2]; }
++            else wxl::LogCat("AOE", "[SpellArea] %s='%s' is not RRGGBB; ignored", key, s.c_str());
++        }
++
++        float Clamp(float v, float lo, float hi) { return std::max(lo, std::min(hi, v)); }
++
++        // EnemiesOnly shows what hostile units cast and nothing else: your own areas are left out and everybody else's
++        // are looked at (a hostile caster is one whose reaction toward the player is unfriendly or worse).
++        bool OwnOn()    { return g_cfg.own && !g_cfg.enemiesOnly; }
++        bool OthersOn() { return g_cfg.others || g_cfg.enemiesOnly; }
++
++        void LoadConfig()
++        {
++            Config c;
++            c.enabled     = IniInt("Enabled", 0) != 0;
++            c.own         = IniInt("Own", 1) != 0;
++            c.others      = IniInt("Others", 0) != 0;
++            c.enemiesOnly = IniInt("EnemiesOnly", 0) != 0;
++            c.precast     = IniInt("Precast", 1) != 0;
++            c.channel     = IniInt("Channel", 1) != 0;
++            c.persistent  = IniInt("Persistent", 1) != 0;
++            c.cones       = IniInt("Cones", 1) != 0;
++            c.opacity     = Clamp(IniFloat("Opacity", c.opacity), 0.05f, 1.0f);
++            c.maxOpacity  = Clamp(IniFloat("MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
++            c.chain       = IniInt("Chain", 1) != 0;
++            c.chainRadius = Clamp(IniFloat("ChainRadius", c.chainRadius), 1.0f, 60.0f);
++            c.coneAngle   = Clamp(IniFloat("ConeAngle", c.coneAngle), 5.0f, 180.0f);
++            c.minRadius   = Clamp(IniFloat("MinRadius", c.minRadius), 0.1f, 50.0f);
++            c.maxRadius   = Clamp(IniFloat("MaxRadius", c.maxRadius), c.minRadius, 150.0f);
++            c.maxAreas    = std::max(1, std::min(64, IniInt("MaxAreas", c.maxAreas)));
++            ReadColor("HarmfulColor", c.harmful);
++            ReadColor("HelpfulColor", c.helpful);
++            ReadColor("NeutralColor", c.neutral);
++            const std::string file = IniStr("OverrideFile");
++            if (!file.empty()) c.overrideFile = file;
++            const std::string jump = IniStr("JumpDistanceFile");
++            if (!jump.empty()) c.jumpFile = jump;
++            const std::string cone = IniStr("ConeFile");
++            if (!cone.empty()) c.coneFile = cone;
++            const bool was = g_cfg.enabled;
++            g_cfg = c;
++            if (!g_loaded || was != c.enabled)
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, opacity %.2f max %.2f)",
++                            c.enabled ? "on" : "off",
++                            c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
++                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.opacity, c.maxOpacity);
++        }
++
++        // One csv the module reads: its text, or false when the file is not there (they are all optional).
++        bool ReadCsv(const std::string& name, uint64_t& stamp, std::string& text)
++        {
++            char path[1024] = {};
++            if (!FolderPath(name, path, sizeof(path))) return false;
++            stamp = FileStamp(path);
++            if (!stamp) return false;
++            std::ifstream f(path, std::ios::binary);
++            text.assign((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++            return true;
++        }
++
++        void LogProblems(const std::string& name, const std::string& problems)
++        {
++            size_t at = 0;
++            while (at < problems.size())
++            {
++                const size_t eol = problems.find('\n', at);
++                wxl::LogCat("AOE", "%s %s", name.c_str(), problems.substr(at, eol - at).c_str());
++                if (eol == std::string::npos) break;
++                at = eol + 1;
++            }
++        }
++
++        void LoadOverrides()
++        {
++            g_overrides = OverrideTable{};
++            std::string text, problems;
++            if (!ReadCsv(g_cfg.overrideFile, g_csvStamp, text)) return;
++            g_overrides.Parse(text, problems);
++            wxl::LogCat("AOE", "%s: %zu row(s)", g_cfg.overrideFile.c_str(), g_overrides.Rows());
++            LogProblems(g_cfg.overrideFile, problems);
++        }
++
++        void LoadJumpDistances()
++        {
++            g_jump = JumpDistanceTable{};
++            std::string text, problems;
++            if (!ReadCsv(g_cfg.jumpFile, g_jumpStamp, text)) return;
++            g_jump.Parse(text, problems);
++            wxl::LogCat("AOE", "%s: %zu spell(s) with a jump distance", g_cfg.jumpFile.c_str(), g_jump.Rows());
++            LogProblems(g_cfg.jumpFile, problems);
++        }
++
++        void LoadConeAngles()
++        {
++            g_cone = ConeAngleTable{};
++            std::string text, problems;
++            if (!ReadCsv(g_cfg.coneFile, g_coneStamp, text)) return;
++            g_cone.Parse(text, problems);
++            wxl::LogCat("AOE", "%s: %zu spell(s) with a cone angle", g_cfg.coneFile.c_str(), g_cone.Rows());
++            LogProblems(g_cfg.coneFile, problems);
++        }
++
++        bool FileChanged(const std::string& name, uint64_t last)
++        {
++            char path[1024] = {};
++            return FolderPath(name, path, sizeof(path)) && FileStamp(path) != last;
++        }
++
++        // Reads the ini (and the csv files) again whenever they are saved; looks once a second.
++        void PollConfig(uint32_t now)
++        {
++            if (g_loaded && static_cast<int32_t>(now - g_lastPoll) < 1000) return;
++            g_lastPoll = now;
++
++            const uint64_t stamp = Api()->iniStamp ? Api()->iniStamp() : 0;
++            const bool iniChanged = !g_loaded || stamp != g_iniStamp;
++            if (iniChanged) { g_iniStamp = stamp; LoadConfig(); }
++
++            if (iniChanged || FileChanged(g_cfg.overrideFile, g_csvStamp)) LoadOverrides();
++            if (iniChanged || FileChanged(g_cfg.jumpFile, g_jumpStamp))    LoadJumpDistances();
++            if (iniChanged || FileChanged(g_cfg.coneFile, g_coneStamp))    LoadConeAngles();
++            g_loaded = true;
++        }
++
++        // --------------------------------------------------------------------------------------------- the areas
++        struct Area
++        {
++            Shape    shape;
++            bool     follow = false;     // the position (and facing) come from `guid` every frame
++            uint64_t guid = 0;
++            float    pos[3] = {};        // a fixed ground point, when !follow
++            float    facing = 0;         // a fixed facing, when !follow
++            float    strength = 1.0f;    // 0..1: how far the cast is (an area that is only being cast fades in)
++        };
++
++        std::vector<Area> g_areas;
++        uint32_t          g_lastCollect = 0;
++
++        constexpr uint32_t kMaxScan = 128;   // dynamic objects / casting units asked of the core per collection
++
++        // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
++        size_t ShapesOf(uint32_t spellId, uint64_t casterGuid, Shape out[8])
++        {
++            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius };
++
++            bool none = false;
++            std::vector<Shape> rows;
++            if (g_overrides.Find(spellId, none, rows))
++            {
++                size_t n = 0;
++                for (const Shape& s : rows)
++                    if (n < 8 && s.radius >= g_cfg.minRadius) { out[n] = s; out[n].radius = std::min(s.radius, g_cfg.maxRadius); ++n; }
++                return n;
++            }
++
++            WxlSpellAreaEffects raw;
++            if (!spellId || !Api()->spellAreaEffects(spellId, casterGuid, &raw)) return 0;
++            SpellEffects effects;
++            for (int i = 0; i < 3; ++i)
++            {
++                effects.effect[i]       = raw.effect[i];
++                effects.targetA[i]      = raw.targetA[i];
++                effects.targetB[i]      = raw.targetB[i];
++                effects.radius[i]       = raw.radius[i];
++                effects.chainTargets[i] = raw.chainTargets[i];
++            }
++            float jumpYards = 0;
++            if (g_jump.Find(spellId, jumpYards)) effects.chainRadius = jumpYards;   // the server's own jump distance first
++            float coneDegrees = 0;
++            if (g_cone.Find(spellId, coneDegrees)) effects.coneAngle = coneDegrees; // and its own cone angle
++            Shape derived[3];
++            const size_t n = ShapesFromSpell(effects, rules, derived);
++            for (size_t i = 0; i < n; ++i) out[i] = derived[i];
++            return n;
++        }
++
++        struct DynKey { uint64_t caster; uint32_t spell; };
++
++        void AddArea(const Area& a)
++        {
++            if (static_cast<int>(g_areas.size()) < g_cfg.maxAreas) g_areas.push_back(a);
++        }
++
++        void AddDynamicObject(const WxlSpellAreaDynObject& d, std::vector<DynKey>& dyn)
++        {
++            const bool own = d.casterIsPlayer != 0;
++            if (own ? !OwnOn() : !OthersOn()) return;
++            if (!(d.radius >= g_cfg.minRadius)) return;
++
++            const bool hostile = d.casterKnown && d.casterHostile;
++            if (g_cfg.enemiesOnly && !hostile) return;   // a caster that is gone is not known to be an enemy
++
++            dyn.push_back(DynKey{ d.casterGuid, d.spellId });
++            if (!g_cfg.persistent) return;
++
++            Area a;
++            a.shape.kind = ShapeKind::Circle;
++            a.shape.radius = std::min(d.radius, g_cfg.maxRadius);
++            a.shape.intent = Intent::Neutral;
++            Shape derived[8];
++            if (ShapesOf(d.spellId, d.casterGuid, derived) > 0) a.shape.intent = derived[0].intent;
++            if (!own && hostile) a.shape.intent = Intent::Harmful;
++            a.follow = true;
++            a.guid = d.guid;
++            AddArea(a);
++        }
++
++        // The area of what one unit is casting or channeling right now.
++        void AddCasts(const WxlSpellAreaCaster& unit, const std::vector<DynKey>& dyn, uint32_t now)
++        {
++            struct Cast { uint32_t spell; float strength; bool precast; };
++            Cast casts[2];
++            int count = 0;
++            if (g_cfg.precast && unit.castSpell && static_cast<int32_t>(now - unit.castEndMs) < 0)
++            {
++                const float total = static_cast<float>(unit.castEndMs - unit.castStartMs);
++                const float done = static_cast<float>(now - unit.castStartMs);
++                casts[count++] = Cast{ unit.castSpell, total > 1.0f ? Clamp(done / total, 0.0f, 1.0f) : 1.0f, true };
++            }
++            if (g_cfg.channel && unit.channelSpell && static_cast<int32_t>(now - unit.channelEndMs) < 0)
++                casts[count++] = Cast{ unit.channelSpell, 1.0f, false };
++
++            for (int k = 0; k < count; ++k)
++            {
++                Shape shapes[8];
++                const size_t n = ShapesOf(casts[k].spell, unit.guid, shapes);
++                if (!n) continue;
++
++                bool lyingOnTheGround = false;   // a dynamic object of this cast exists: it draws the real area
++                for (const DynKey& d : dyn)
++                    if (d.caster == unit.guid && d.spell == casts[k].spell) { lyingOnTheGround = true; break; }
++
++                WxlSpellAreaPending data = {};
++                const bool haveData = Api()->spellAreaPendingCast(unit.guid, casts[k].spell, &data) != 0;
++
++                for (size_t i = 0; i < n; ++i)
++                {
++                    if (lyingOnTheGround && shapes[i].kind == ShapeKind::Circle) continue;
++
++                    Area a;
++                    a.shape = shapes[i];
++                    a.strength = casts[k].strength;
++                    if (shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster)
++                    {
++                        a.follow = true;
++                        a.guid = unit.guid;
++                    }
++                    else if (haveData && (data.targetFlags & WXL_SPELLAREA_TARGET_DEST))   // a ground point: Blizzard, Flamestrike ...
++                    {
++                        std::memcpy(a.pos, data.dest, sizeof(a.pos));
++                    }
++                    else if (haveData && data.objectTarget)                                // around the target unit
++                    {
++                        a.follow = true;
++                        a.guid = data.objectTarget;
++                    }
++                    else if (!casts[k].precast && unit.channelObject)                      // around the channel's target
++                    {
++                        a.follow = true;
++                        a.guid = unit.channelObject;
++                    }
++                    else if (unit.target)                                                  // no cast data: around what the caster has targeted
++                    {
++                        a.follow = true;
++                        a.guid = unit.target;
++                    }
++                    else
++                    {
++                        continue;                                                          // nothing to place it on
++                    }
++                    AddArea(a);
++                }
++            }
++        }
++
++        void Collect(uint32_t now)
++        {
++            g_areas.clear();
++
++            static WxlSpellAreaDynObject dynBuf[kMaxScan];
++            static WxlSpellAreaCaster    casterBuf[kMaxScan];
++
++            std::vector<DynKey> dyn;
++            const uint32_t dynCount = Api()->spellAreaDynamicObjects(dynBuf, kMaxScan);
++            for (uint32_t i = 0; i < dynCount; ++i) AddDynamicObject(dynBuf[i], dyn);
++
++            const uint32_t casterCount = Api()->spellAreaCasters(casterBuf, kMaxScan);   // the player first
++            for (uint32_t i = 0; i < casterCount; ++i)
++            {
++                const WxlSpellAreaCaster& c = casterBuf[i];
++                if (c.isPlayer ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || c.hostile))) continue;
++                AddCasts(c, dyn, now);
++            }
++        }
++
++        // ------------------------------------------------------------------------------------------- the textures
++        constexpr int kTexSize = 256;
++
++        std::map<uint64_t, void*> g_textures;   // shape kind + parameter -> the core's texture handle
++
++        void* TextureFor(ShapeKind kind, uint32_t param)
++        {
++            const uint64_t key = (static_cast<uint64_t>(kind) << 32) | param;
++            auto it = g_textures.find(key);
++            if (it != g_textures.end()) return it->second;
++
++            std::vector<uint32_t> pixels;
++            switch (kind)
++            {
++            case ShapeKind::Circle: RenderCircleTexture(pixels, kTexSize); break;
++            case ShapeKind::Cone:   RenderConeTexture(pixels, kTexSize, static_cast<float>(param)); break;
++            case ShapeKind::Line:   RenderLineTexture(pixels, kTexSize, static_cast<float>(param) / 256.0f); break;
++            }
++            void* tex = Api()->spellAreaCreateTexture(pixels.data(), kTexSize, "WxlSpellArea");
++            g_textures.emplace(key, tex);
++            return tex;
++        }
++
++        // ------------------------------------------------------------------------------------------------ drawing
++        void DrawArea(const Area& a, const float pos[3], float facing, uint32_t triFlags, uint32_t projectFlags)
++        {
++            const Shape& s = a.shape;
++            const float half = s.radius;
++            uint32_t param = 0;
++            switch (s.kind)
++            {
++            case ShapeKind::Circle: break;
++            case ShapeKind::Cone:   param = static_cast<uint32_t>(Clamp(std::floor(s.param + 0.5f), 1.0f, 359.0f)); break;
++            case ShapeKind::Line:
++            {
++                const float frac = Clamp(s.param / (2.0f * s.radius), 1.0f / 256.0f, 1.0f);
++                param = static_cast<uint32_t>(std::floor(frac * 256.0f + 0.5f));
++                break;
++            }
++            }
++
++            void* texture = TextureFor(s.kind, param);
++            if (!texture || !(half > 0.0f)) return;
++
++            const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
++            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
++
++            WxlSpellAreaDraw d = {};
++            d.structSize   = sizeof(d);
++            d.texture      = texture;
++            d.pos[0]       = pos[0];
++            d.pos[1]       = pos[1];
++            d.pos[2]       = pos[2];
++            d.half         = half;
++            d.facing       = facing;
++            d.rotate       = s.kind != ShapeKind::Circle ? 1u : 0u;
++            d.b            = static_cast<uint8_t>(rgb[2] * 255.0f + 0.5f);
++            d.g            = static_cast<uint8_t>(rgb[1] * 255.0f + 0.5f);
++            d.r            = static_cast<uint8_t>(rgb[0] * 255.0f + 0.5f);
++            d.a            = static_cast<uint8_t>(Clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
++            d.triFlags     = triFlags;
++            d.projectFlags = projectFlags;
++            Api()->spellAreaDraw(&d);
++        }
++
++        // The world render's call: once after the opaque pass and once after the transparent ones.
++        void OnRender(void*, uint32_t triFlags, uint32_t projectFlags, uint32_t now)
++        {
++            PollConfig(now);
++            if (!g_cfg.enabled) return;
++
++            if (static_cast<int32_t>(now - g_lastCollect) >= 66 || g_lastCollect == 0)
++            {
++                Collect(now);
++                g_lastCollect = now ? now : 1;
++            }
++
++            for (const Area& a : g_areas)
++            {
++                float pos[3] = { a.pos[0], a.pos[1], a.pos[2] };
++                float facing = a.facing;
++                if (a.follow && !Api()->spellAreaObjectPose(a.guid, pos, &facing)) continue;
++                DrawArea(a, pos, facing, triFlags, projectFlags);
++            }
++        }
++    }
++
++    bool Start()
++    {
++        Api()->setSpellAreaRenderer(&OnRender, nullptr);
++        return true;
++    }
++
++    void Stop()
++    {
++        const WxlApi* api = Api();
++        if (api && WXL_API_HAS(api, setSpellAreaRenderer)) api->setSpellAreaRenderer(nullptr, nullptr);
++        g_areas.clear();
++        g_textures.clear();
++    }
++}
+diff --git a/Engine/Source/WXL/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+similarity index 81%
+rename from Engine/Source/WXL/SpellArea.md
+rename to Engine/Source/WXLModules/SpellArea/SpellArea.md
+index 8652b81..b0f2d5c 100644
+--- a/Engine/Source/WXL/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -2,7 +2,8 @@
+ 
+ Draws the ground area of spells as colored, terrain-hugging shapes: while a spell is **being cast** (the precast),
+ while it is **channeled**, and for as long as it **lies on the ground** (Blizzard, Flamestrike, Consecration, Death and
+-Decay, Rain of Fire ...). Circles, cones and lines. Off by default; part of the client, no module DLL.
++Decay, Rain of Fire ...). Circles, cones and lines. Off by default. It is a module, `wxl_spellarea.dll`, loaded from
++`WXL\Modules` like the equip, creature and outline modules (a build of the client builds it).
+ 
+ It uses the client's own projected-texture pass, the one that paints the targeting circle under the cursor, so the
+ shapes follow terrain, WMOs and doodads and show over water. The client's circle while you aim is untouched.
+@@ -15,7 +16,8 @@ Enabled=1
+ ```
+ 
+ The ini is looked at once a second: save it and the indicator switches on or off, and picks up the other keys, without
+-restarting.
++restarting. The module stays loaded while it is off (a frame then costs one compare), which is what makes that possible.
++To not load it at all, delete `wxl_spellarea.dll` or list it in `[Modules] Disable=wxl_spellarea.dll`.
+ 
+ ## Keys (all optional)
+ 
+@@ -146,8 +148,20 @@ SpellId,Shape,Anchor,Radius,Param,Intent
+ 
+ ## Where the code is
+ 
+-* `Engine/Source/WXL/SpellAreaShapes.*`: what a spell covers (target types to shapes), the override file, the shape
++The module (`Engine/Source/WXLModules/SpellArea`, built as `wxl_spellarea.dll`) holds everything that decides what is
++drawn; it sees the engine only through the module API (`Engine/Source/WXL/Sdk/wxl_api.h`).
++
++* `SpellAreaShapes.*`: what a spell covers (target types to shapes), the override, jump distance and cone files, the shape
+   textures. No engine dependency, tested by `Tools/WxlModuleTest/run_spell_area_tests.sh`.
+-* `Engine/Source/WXLApi/SpellArea.*`: collects the casts, channels and dynamic objects, and draws.
+-* `WorldFrame.cpp`: two `wxl::spellarea::Render` calls beside the client's own cursor shadow.
++* `SpellArea.cpp`: reads `[SpellArea]` and the csv files (again whenever they are saved), collects the casts, channels
++  and dynamic objects, makes the shapes' textures, and draws. `Module.cpp`: the entry points. The same test script runs
++  the module against a stubbed API (`spell_area_module_test.cpp`).
++* `Engine/Source/WXLApi/SpellAreaHost.*`: the core's side, the `spellArea*` members of the table. Visible dynamic objects
++  and casting units (with their reaction toward the player), a spell's effects with radii worked out for the caster,
++  the targets of a cast in progress, an object's position, the texture upload and the projected-texture draw.
++* `WorldFrame.cpp`: two `wxl::api::spellareahost::Render` calls beside the client's own cursor shadow; they call the
++  renderer the module registered with `setSpellAreaRenderer`, and do nothing without the module.
+ * `Spell_C.cpp`: `Spell_C_WxlFindPendingCast`, the targets of a cast in progress.
++
++The csv files are read from the client's folder as before (`WXL\SpellJumpDistance.csv`, `WXL\SpellCone.csv`,
++`SpellAreaOverride.csv`); the examples next to this file show the format.
+diff --git a/Engine/Source/WXL/SpellAreaOverride.example.csv b/Engine/Source/WXLModules/SpellArea/SpellAreaOverride.example.csv
+similarity index 100%
+rename from Engine/Source/WXL/SpellAreaOverride.example.csv
+rename to Engine/Source/WXLModules/SpellArea/SpellAreaOverride.example.csv
+diff --git a/Engine/Source/WXL/SpellAreaShapes.cpp b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+similarity index 97%
+rename from Engine/Source/WXL/SpellAreaShapes.cpp
+rename to Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+index bfa8ec1..cf9a519 100644
+--- a/Engine/Source/WXL/SpellAreaShapes.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+@@ -1,7 +1,7 @@
+ // WXL spell area indicator: shape rules, override file, textures. See SpellAreaShapes.h.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
+ 
+-#include "Engine/Source/WXL/SpellAreaShapes.h"
++#include "SpellAreaShapes.h"
+ 
+ #include <algorithm>
+ #include <cctype>
+@@ -166,7 +166,7 @@ namespace wxl::spellarea
+             const unsigned long id = std::strtoul(cells[0].c_str(), &end, 10);
+             if (cells[0].empty() || *end != '\0')
+             {
+-                if (lineNo != 1 && !Lower(cells[0]).starts_with("spell"))
++                if (lineNo != 1 && Lower(cells[0]).compare(0, 5, "spell") != 0)
+                     problems += "line " + std::to_string(lineNo) + ": the spell id '" + cells[0] + "' is not a number; skipped\n";
+                 continue;   // the header line, or a bad one
+             }
+diff --git a/Engine/Source/WXL/SpellAreaShapes.h b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+similarity index 100%
+rename from Engine/Source/WXL/SpellAreaShapes.h
+rename to Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+diff --git a/Engine/Source/WXL/SpellCone.example.csv b/Engine/Source/WXLModules/SpellArea/SpellCone.example.csv
+similarity index 100%
+rename from Engine/Source/WXL/SpellCone.example.csv
+rename to Engine/Source/WXLModules/SpellArea/SpellCone.example.csv
+diff --git a/Engine/Source/WXL/SpellJumpDistance.example.csv b/Engine/Source/WXLModules/SpellArea/SpellJumpDistance.example.csv
+similarity index 100%
+rename from Engine/Source/WXL/SpellJumpDistance.example.csv
+rename to Engine/Source/WXLModules/SpellArea/SpellJumpDistance.example.csv
+diff --git a/Tools/WowClient/CMakeLists.txt b/Tools/WowClient/CMakeLists.txt
+index b663bd0..a528586 100644
+--- a/Tools/WowClient/CMakeLists.txt
++++ b/Tools/WowClient/CMakeLists.txt
+@@ -38,12 +38,12 @@ target_include_directories(WowClient
+ 
+ target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
+ 
+-# The equipment extension and the unit outline are modules as well: wxl_equip.dll and wxl_outline.dll, loaded from
++# The equipment extension and the unit outline and the spell area indicator are modules as well: wxl_equip.dll, wxl_outline.dll and wxl_spellarea.dll, loaded from
+ # WXL\Modules like the others.
+ option(WOWCLIENT_BUILD_WXL_MODULES "Also build the WXL module DLLs when building WowClient" ON)
+ 
+ if (WOWCLIENT_BUILD_WXL_MODULES)
+-	foreach (wxl_module wxl_equip wxl_outline wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
++	foreach (wxl_module wxl_equip wxl_outline wxl_spellarea wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
+ 		if (TARGET ${wxl_module})
+ 			add_dependencies(WowClient ${wxl_module})
+ 		endif ()
+diff --git a/Tools/WxlModuleTest/run_spell_area_tests.sh b/Tools/WxlModuleTest/run_spell_area_tests.sh
+index 06ef8c1..3263b41 100644
+--- a/Tools/WxlModuleTest/run_spell_area_tests.sh
++++ b/Tools/WxlModuleTest/run_spell_area_tests.sh
+@@ -5,5 +5,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ OUT="${TMPDIR:-/tmp}/spell_area_test"
+ mkdir -p "$OUT"
+ g++ -std=c++20 -O1 -g -fsanitize=address,undefined -Wall -I "$ROOT" \
+-    "$ROOT/Tools/WxlModuleTest/spell_area_test.cpp" "$ROOT/Engine/Source/WXL/SpellAreaShapes.cpp" -o "$OUT/spell_area_test"
++    "$ROOT/Tools/WxlModuleTest/spell_area_test.cpp" "$ROOT/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp" -o "$OUT/spell_area_test"
+ "$OUT/spell_area_test"
++
++# the module itself, with a stubbed module API (the engine side is not needed)
++g++ -std=c++17 -O1 -g -fsanitize=address,undefined -Wall -I "$ROOT/Engine/Source/WXL/Sdk" -I "$ROOT/Engine/Source/WXLModules/SpellArea" \
++    "$ROOT/Tools/WxlModuleTest/spell_area_module_test.cpp" "$ROOT/Engine/Source/WXLModules/SpellArea"/*.cpp -o "$OUT/spell_area_module_test"
++"$OUT/spell_area_module_test"
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+new file mode 100644
+index 0000000..cd4f522
+--- /dev/null
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -0,0 +1,80 @@
++// Spell area module through a fake module API: the module is linked in, the engine side is stubbed. Checks that it
++// registers its renderer, collects a hostile dynamic object and the player's own cast, draws them with the right
++// size and color, caches its textures, and unregisters the renderer on shutdown.
++#include "wxl_api.h"
++
++#include <cstdio>
++#include <cstring>
++
++extern "C" int  WxlModuleInit(const WxlApi*, WxlModuleInfo*);
++extern "C" void WxlModuleShutdown();
++
++static int g_failed = 0;
++static void Check(bool ok, const char* what) { if (!ok) { ++g_failed; std::printf("  FAIL: %s\n", what); } }
++
++static WxlSpellAreaRenderFn g_fn;
++static void* g_user;
++static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0;
++
++int main()
++{
++    static WxlApi api = {};
++    api.abiVersion = WXL_ABI_VERSION;
++    api.structSize = sizeof(api);
++    api.log = [](const char*, const char*) {};
++    api.iniGetInt = [](const char*, const char* k, int d) { return !std::strcmp(k, "Enabled") ? 1 : !std::strcmp(k, "Others") ? 1 : d; };
++    api.iniGetString = [](const char*, const char*, char*, size_t) { return 0; };
++    api.iniStamp = []() -> uint64_t { return 1; };
++    api.workingDirectory = []() -> const char* { return "/nonexistent"; };
++    api.spellAreaDynamicObjects = [](WxlSpellAreaDynObject* o, uint32_t) -> uint32_t
++    {
++        o[0] = {}; o[0].guid = 5; o[0].casterGuid = 9; o[0].spellId = 10; o[0].radius = 8; o[0].casterKnown = 1; o[0].casterHostile = 1;
++        return 1;
++    };
++    api.spellAreaCasters = [](WxlSpellAreaCaster* o, uint32_t) -> uint32_t
++    {
++        o[0] = {}; o[0].guid = 1; o[0].isPlayer = 1; o[0].castSpell = 20; o[0].castStartMs = 0; o[0].castEndMs = 5000; o[0].target = 7;
++        return 1;
++    };
++    api.spellAreaEffects = [](uint32_t, uint64_t, WxlSpellAreaEffects* o) -> int
++    {
++        *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = 10;   // an area around the caster, 10 yards
++        return 1;
++    };
++    api.spellAreaPendingCast = [](uint64_t, uint32_t, WxlSpellAreaPending*) -> int { return 0; };
++    api.spellAreaObjectPose = [](uint64_t, float* p, float* f) -> int { p[0] = p[1] = p[2] = 0; *f = 0; return 1; };
++    api.spellAreaCreateTexture = [](const uint32_t* px, uint32_t size, const char*) -> void* { ++g_textures; return px && size == 256 ? &g_textures : nullptr; };
++    api.spellAreaDraw = [](const WxlSpellAreaDraw* d)
++    {
++        ++g_draws;
++        if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
++        if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
++    };
++    api.setSpellAreaRenderer = [](WxlSpellAreaRenderFn f, void* u) { g_fn = f; g_user = u; };
++
++    std::printf("1. init\n");
++    WxlModuleInfo info = {};
++    Check(WxlModuleInit(&api, &info) == 0, "init succeeds");
++    Check(std::strcmp(info.name, "spellarea") == 0, "names itself");
++    Check(g_fn != nullptr, "registers the renderer");
++
++    std::printf("2. one frame (two render calls)\n");
++    g_fn(g_user, 0x200122, 5, 2500);
++    g_fn(g_user, 0x20000, 4, 2500);
++    Check(g_draws == 4, "two areas drawn on each of the two calls");
++    Check(g_redHalf8 == 2, "the enemy's dynamic object: 8 yards, red");
++    Check(g_halfTen == 2, "the player's cast: 10 yards");
++    Check(g_textures == 1, "one circle texture, made once");
++
++    std::printf("3. a cast that is over\n");
++    g_draws = 0;
++    g_fn(g_user, 0x200122, 5, 2500 + 5000 + 1000);   // past the cast's end: only the dynamic object is left
++    Check(g_draws == 1, "only the ground effect remains");
++
++    std::printf("4. shutdown\n");
++    WxlModuleShutdown();
++    Check(g_fn == nullptr, "renderer unregistered");
++
++    std::printf(g_failed ? "\n%d check(s) FAILED\n" : "\nall checks passed\n", g_failed);
++    return g_failed ? 1 : 0;
++}
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+index 971bcaa..7158004 100644
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -1,5 +1,5 @@
+ // Spell area indicator, the engine-free part: shape rules, override file, textures, and the projection orientation.
+-#include "Engine/Source/WXL/SpellAreaShapes.h"
++#include "Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h"
+ 
+ #include <cmath>
+ #include <cstdio>
+diff --git a/WoW/Source/Ui/WorldFrame.cpp b/WoW/Source/Ui/WorldFrame.cpp
+index dc80c28..22b0967 100644
+--- a/WoW/Source/Ui/WorldFrame.cpp
++++ b/WoW/Source/Ui/WorldFrame.cpp
+@@ -88,7 +88,7 @@
+ #include <cfloat>
+ #include <cmath>
+ #include "Engine/Source/WXL/WaterHooks.h"
+-#include "Engine/Source/WXLApi/SpellArea.h"
++#include "Engine/Source/WXLApi/SpellAreaRender.h"
+ #include "WoW/Source/Ui/SpellBookFrame.h"
+ 
+ // STATIC: 0x009F9864
+@@ -1752,7 +1752,7 @@ void CGWorldFrame::OnWorldRender() {
+         DrawSpellCursorShadow(0x200122);
+     }
+ 
+-    wxl::spellarea::Render(0x200122, 5); // WXL: ground areas of spells being cast, channeled or lying on the ground (off unless [SpellArea] Enabled=1)
++    wxl::api::spellareahost::Render(0x200122, 5); // WXL: ground areas of spells being cast, channeled or lying on the ground (off unless [SpellArea] Enabled=1)
+ 
+     GxuSortDrawList(GxuCat_0, GxuSort_VtxStream, *World::GetCamPos());
+     GxuFlushDrawList(GxuCat_0, *World::GetCamPos());
+@@ -1776,7 +1776,7 @@ void CGWorldFrame::OnWorldRender() {
+         DrawSpellCursorShadow(0x20000);
+     }
+ 
+-    wxl::spellarea::Render(0x20000, 4); // WXL: the same areas over liquids (no doodads: they were drawn above)
++    wxl::api::spellareahost::Render(0x20000, 4); // WXL: the same areas over liquids (no doodads: they were drawn above)
+ 
+     SpellVisualsTick();
+     SpellVisualsRender();

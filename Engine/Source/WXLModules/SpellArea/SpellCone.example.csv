@@ -1,0 +1,7 @@
+# SpellCone.csv: put it in the WXL folder beside the client executable (WXL\SpellCone.csv; the path can be changed with
+# [SpellArea] ConeFile).
+# One spell per line, NO header: spell id, cone angle in degrees (above 0, up to 360). See SpellArea.md.
+# A listed spell is drawn as a cone; its radius is still the spell's own. Examples (placeholder ids, replace them):
+#   100001,60
+#   100002,90
+#   100003,180

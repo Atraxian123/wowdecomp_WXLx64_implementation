@@ -305,6 +305,78 @@ typedef int (*WxlHandItemResolverFn)(uint32_t displayId, uint32_t invSlot, char*
 /* 1 when the instance is drawn with a mirrored (handedness-flipping) palette, so the renderer swaps the cull direction. */
 typedef int (*WxlMirroredModelQueryFn)(const void* model);
 
+/* ---- the spell area module's engine access --------------------------------------------------- */
+
+/* The ground areas of spells (Blizzard, a cone breath, a chain's first jump ...) are drawn by the spell area module
+ * with the client's own projected-texture pass. The module decides what to draw and how; the core answers what the
+ * object manager, the spell data and the Gx device know. Guids are the game's 64-bit guids. */
+
+/* A dynamic object on the ground (Blizzard, Consecration, Death and Decay ...). Far sight foci are not listed. */
+typedef struct WxlSpellAreaDynObject
+{
+    uint64_t guid;
+    uint64_t casterGuid;
+    uint32_t spellId;
+    float    radius;            /* yards, as the server sent it */
+    uint32_t casterIsPlayer;    /* 1 when the caster is the active player */
+    uint32_t casterKnown;       /* 1 when the caster is a visible unit (casterHostile means something only then) */
+    uint32_t casterHostile;     /* 1 when the caster's reaction toward the player is unfriendly or worse */
+    uint32_t reserved;
+} WxlSpellAreaDynObject;
+
+/* A visible unit that is casting or channeling, the active player included (isPlayer). Times are the client's
+ * millisecond clock (the same one the render callback gets as nowMs); an end time in the past means "not any more". */
+typedef struct WxlSpellAreaCaster
+{
+    uint64_t guid;
+    uint64_t target;            /* what the unit has targeted, 0 for none */
+    uint64_t channelObject;     /* the target of the channel, 0 for none */
+    uint32_t isPlayer;
+    uint32_t hostile;
+    uint32_t castSpell, castStartMs, castEndMs;
+    uint32_t channelSpell, channelEndMs;
+} WxlSpellAreaCaster;
+
+/* What a spell's three effects say, with the radii worked out for the caster (its level and, for the active player,
+ * the radius modifiers of talents and auras: the ones the targeting circle uses). radius 0 = none. */
+typedef struct WxlSpellAreaEffects
+{
+    int32_t effect[3];
+    int32_t targetA[3];
+    int32_t targetB[3];
+    float   radius[3];
+    int32_t chainTargets[3];
+} WxlSpellAreaEffects;
+
+#define WXL_SPELLAREA_TARGET_DEST 0x40u   /* WxlSpellAreaPending.targetFlags: the cast has a ground point */
+/* The targets of a cast that is in progress. */
+typedef struct WxlSpellAreaPending
+{
+    uint32_t targetFlags;
+    float    dest[3];
+    uint64_t objectTarget;      /* 0 for none */
+} WxlSpellAreaPending;
+
+/* One draw: a square of `2 * half` yards centred on pos, the texture stretched over it, laid on the terrain inside the
+ * box's height. A texture's front (row 0) points along `facing` when rotate is 1. */
+typedef struct WxlSpellAreaDraw
+{
+    uint32_t structSize;        /* sizeof(WxlSpellAreaDraw), set by the caller */
+    void*    texture;           /* from spellAreaCreateTexture */
+    float    pos[3];
+    float    half;
+    float    facing;            /* radians */
+    uint32_t rotate;
+    uint8_t  r, g, b, a;
+    uint32_t triFlags;          /* the ones the render callback was given */
+    uint32_t projectFlags;
+} WxlSpellAreaDraw;
+
+/* Called from the world render, beside the client's own spell cursor shadow: once after the opaque pass with
+ * (0x200122, 5) and once after the transparent ones with (0x20000, 4) (the second leaves the doodads out so nothing is
+ * drawn twice). Draw from it with spellAreaDraw, nowhere else. */
+typedef void (*WxlSpellAreaRenderFn)(void* user, uint32_t triFlags, uint32_t projectFlags, uint32_t nowMs);
+
 /* ---- the table -------------------------------------------------------------------------------- */
 
 typedef struct WxlApi
@@ -481,6 +553,25 @@ typedef struct WxlApi
        above 0 only the ones within that many yards of the player are listed. Pointers only, never dereferenced
        by the caller; call it on a timer. */
     uint32_t (*outlineTrackedTargets)(WxlOutlineTracked* out, uint32_t max, float maxYards);
+
+    /* ---- engine access for the spell area module: check WXL_API_HAS(api, setSpellAreaRenderer) once ---- */
+    /* The visible dynamic objects, up to `max`, returned as the count. Never dereferenced by the caller. */
+    uint32_t (*spellAreaDynamicObjects)(WxlSpellAreaDynObject* out, uint32_t max);
+    /* The visible units that are casting or channeling right now (and the active player when it is), up to `max`. */
+    uint32_t (*spellAreaCasters)(WxlSpellAreaCaster* out, uint32_t max);
+    /* The effects of a spell for the caster `casterGuid` (0 for none: no level, no modifiers). 1 when the spell exists. */
+    int      (*spellAreaEffects)(uint32_t spellId, uint64_t casterGuid, WxlSpellAreaEffects* out);
+    /* The targets of the cast of `spellId` that `casterGuid` has in progress. 1 when the client knows of one. */
+    int      (*spellAreaPendingCast)(uint64_t casterGuid, uint32_t spellId, WxlSpellAreaPending* out);
+    /* Where an object is: pos[3] and the facing in radians. 0 when it is not around. */
+    int      (*spellAreaObjectPose)(uint64_t guid, float* pos, float* facing);
+    /* A `size` x `size` texture from ARGB8888 pixels (copied: the caller keeps its buffer), bilinear filtered.
+     * NULL on failure. The handle lives for the rest of the process. */
+    void*    (*spellAreaCreateTexture)(const uint32_t* argbPixels, uint32_t size, const char* name);
+    /* Draws one area. Only legal inside the render callback. */
+    void     (*spellAreaDraw)(const WxlSpellAreaDraw* draw);
+    /* The one function the world render calls (see WxlSpellAreaRenderFn); a later call replaces the earlier. */
+    void     (*setSpellAreaRenderer)(WxlSpellAreaRenderFn fn, void* user);
 } WxlApi;
 
 #define WXL_API_HAS(api, member) \

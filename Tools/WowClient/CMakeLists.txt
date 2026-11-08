@@ -38,12 +38,12 @@ target_include_directories(WowClient
 
 target_link_options(WowClient PRIVATE "/INCREMENTAL:NO" "/ENTRY:start")
 
-# The equipment extension and the unit outline are modules as well: wxl_equip.dll and wxl_outline.dll, loaded from
+# The equipment extension and the unit outline and the spell area indicator are modules as well: wxl_equip.dll, wxl_outline.dll and wxl_spellarea.dll, loaded from
 # WXL\Modules like the others.
 option(WOWCLIENT_BUILD_WXL_MODULES "Also build the WXL module DLLs when building WowClient" ON)
 
 if (WOWCLIENT_BUILD_WXL_MODULES)
-	foreach (wxl_module wxl_equip wxl_outline wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
+	foreach (wxl_module wxl_equip wxl_outline wxl_spellarea wxl_module wxl_physics wxl_creature wxl_weapon wxl_listfile wxl_water)
 		if (TARGET ${wxl_module})
 			add_dependencies(WowClient ${wxl_module})
 		endif ()

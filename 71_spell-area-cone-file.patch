@@ -1,0 +1,371 @@
+diff --git a/Engine/Source/WXL/SpellAreaShapes.h b/Engine/Source/WXL/SpellAreaShapes.h
+--- a/Engine/Source/WXL/SpellAreaShapes.h
++++ b/Engine/Source/WXL/SpellAreaShapes.h
+@@ -40,6 +40,7 @@
+         float   radius[3]  = {};
+         int32_t chainTargets[3] = {};   // Spell.dbc EffectChainTargets: how many targets the effect reaches by jumping
+         float   chainRadius = 0;        // the spell's jump distance from the server's table, yards; 0 = not known
++        float   coneAngle = 0;          // the spell's cone angle from SpellCone.csv, degrees; 0 = not listed
+     };
+ 
+     struct ShapeRules
+@@ -63,7 +64,9 @@
+     /// A cone target type gives a cone (angle from rules), an area around the caster or the destination gives a
+     /// circle, and so do the area aura effects (35, 65, 119, 128, 129, 143: around the caster) and the persistent area
+     /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
+-    /// of its first jump, around the target. Its radius, in order: the spell's jump distance from the server's table
++    /// of its first jump, around the target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
++    /// cone: its cone target types use that angle instead of the default, and its areas around the caster become cones
++    /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle. Its radius, in order: the spell's jump distance from the server's table
+     /// (SpellEffects::chainRadius), the effect's own radius, ShapeRules::chainRadius. Lines cannot be told from the
+     /// DBC: they come from the override file.
+     size_t ShapesFromSpell(const SpellEffects& spell, const ShapeRules& rules, Shape out[3]);
+@@ -106,12 +109,27 @@
+         std::vector<Row> m_rows;   // sorted by spell id
+     };
+ 
++    // ---- cone angles ----
++    /// SpellCone.csv: one line per spell, no header: `spellId,degrees` (comma, semicolon or tab; `#` starts a comment; a
++    /// first line that is not numbers is taken for a header and skipped). Degrees are above 0 and up to 360.
++    class ConeAngleTable
++    {
++    public:
++        void Parse(const std::string& text, std::string& problems);
++        bool Find(uint32_t spellId, float& degrees) const;
++        size_t Rows() const { return m_rows.size(); }
++
++    private:
++        struct Row { uint32_t spell; float degrees; };
++        std::vector<Row> m_rows;   // sorted by spell id
++    };
++
+     /// "RRGGBB" or "#RRGGBB" to 0..1 floats; false when it is not six hex digits.
+     bool ParseColorHex(const char* text, float rgb[3]);
+ 
+     // ---- textures: ARGB8888 (0xAARRGGBB), white with the shape in the alpha channel, row 0 = the shape's front ----
+     void RenderCircleTexture(std::vector<uint32_t>& argb, int size);
+-    /// a cone with its apex at the center of the texture, opening toward row 0, `angleDeg` wide (up to 180)
++    /// a cone with its apex at the center of the texture, opening toward row 0, `angleDeg` wide (1 .. 359)
+     void RenderConeTexture(std::vector<uint32_t>& argb, int size, float angleDeg);
+     /// a strip from the center of the texture to row 0, `widthFraction` of the texture wide (0..1)
+     void RenderLineTexture(std::vector<uint32_t>& argb, int size, float widthFraction);
+diff --git a/Engine/Source/WXL/SpellAreaShapes.cpp b/Engine/Source/WXL/SpellAreaShapes.cpp
+--- a/Engine/Source/WXL/SpellAreaShapes.cpp
++++ b/Engine/Source/WXL/SpellAreaShapes.cpp
+@@ -84,7 +84,7 @@
+             float r = spell.radius[i];
+ 
+             const int32_t a = spell.targetA[i], b = spell.targetB[i], eff = spell.effect[i];
+-            const bool cone = IsConeTarget(a) || IsConeTarget(b);
++            bool cone = IsConeTarget(a) || IsConeTarget(b);
+             bool casterArea = IsCasterAreaTarget(a) || IsCasterAreaTarget(b);
+             bool destArea = IsDestAreaTarget(a) || IsDestAreaTarget(b);
+             if (!cone && !casterArea && !destArea)
+@@ -92,6 +92,7 @@
+                 if (In(eff, kAreaAuraCaster)) casterArea = true;
+                 else if (eff == 27) destArea = true;       // persistent area aura: the area is at the destination
+             }
++            if (spell.coneAngle > 0.0f && !cone && casterArea) { cone = true; casterArea = false; }   // a listed spell: its area is a cone
+             if (!cone && !casterArea && !destArea && rules.chain && spell.chainTargets[i] > 1)
+             {
+                 destArea = true;                                  // the first jump: around the target
+@@ -105,7 +106,13 @@
+ 
+             Shape s;
+             s.radius = r;
+-            if (cone)            { s.kind = ShapeKind::Cone; s.anchor = Anchor::Caster; s.param = rules.coneAngle; }
++            if (cone)
++            {
++                const float angle = spell.coneAngle > 0.0f ? spell.coneAngle : rules.coneAngle;
++                s.anchor = Anchor::Caster;
++                if (angle >= 360.0f) s.kind = ShapeKind::Circle;                 // all around: just the circle
++                else { s.kind = ShapeKind::Cone; s.param = angle; }
++            }
+             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
+             else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
+ 
+@@ -215,6 +222,65 @@
+         return found;
+     }
+ 
++    void ConeAngleTable::Parse(const std::string& text, std::string& problems)
++    {
++        m_rows.clear();
++        size_t pos = 0;
++        int lineNo = 0;
++        bool first = true;
++        while (pos <= text.size())
++        {
++            size_t eol = text.find('\n', pos);
++            if (eol == std::string::npos) eol = text.size();
++            std::string line = text.substr(pos, eol - pos);
++            pos = eol + 1;
++            ++lineNo;
++            if (!line.empty() && line.back() == '\r') line.pop_back();
++            line = Trim(line);
++            if (line.empty() || line[0] == '#') continue;
++
++            const char sep = line.find('\t') != std::string::npos ? '\t' : line.find(';') != std::string::npos ? ';' : ',';
++            std::vector<std::string> cells;
++            size_t a = 0;
++            for (;;)
++            {
++                const size_t b = line.find(sep, a);
++                std::string cell = Trim(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
++                while (!cell.empty() && (cell.front() == '"' || cell.front() == '`')) cell.erase(cell.begin());
++                while (!cell.empty() && (cell.back() == '"' || cell.back() == '`')) cell.pop_back();
++                cells.push_back(cell);
++                if (b == std::string::npos) break;
++                a = b + 1;
++            }
++
++            char* end = nullptr;
++            const unsigned long spell = std::strtoul(cells[0].c_str(), &end, 10);
++            const bool numeric = !cells[0].empty() && *end == '\0';
++            if (!numeric && first) { first = false; continue; }       // a header line, though the file should have none
++            first = false;
++
++            float degrees = 0;
++            if (!numeric || cells.size() < 2 || !ParseFloat(cells[1], degrees) || !(degrees > 0.0f) || degrees > 360.0f)
++            {
++                problems += "line " + std::to_string(lineNo) + ": expected a spell id and degrees above 0 up to 360; skipped\n";
++                continue;
++            }
++            bool found = false;
++            for (Row& r : m_rows)
++                if (r.spell == spell) { r.degrees = degrees; found = true; break; }   // the last line of a spell counts
++            if (!found) m_rows.push_back(Row{ static_cast<uint32_t>(spell), degrees });
++        }
++        std::sort(m_rows.begin(), m_rows.end(), [](const Row& x, const Row& y) { return x.spell < y.spell; });
++    }
++
++    bool ConeAngleTable::Find(uint32_t spellId, float& degrees) const
++    {
++        auto it = std::lower_bound(m_rows.begin(), m_rows.end(), spellId, [](const Row& r, uint32_t id) { return r.spell < id; });
++        if (it == m_rows.end() || it->spell != spellId) return false;
++        degrees = it->degrees;
++        return true;
++    }
++
+     void JumpDistanceTable::Parse(const std::string& text, std::string& problems)
+     {
+         m_rows.clear();
+@@ -346,7 +412,14 @@
+         const float pixel = 1.0f / static_cast<float>(size);
+         const float R = 0.485f;
+         const float kPi = 3.14159265358979f;
+-        const float half = std::max(1.0f, std::min(180.0f, angleDeg)) * 0.5f * kPi / 180.0f;
++        const float half = std::max(1.0f, std::min(359.0f, angleDeg)) * 0.5f * kPi / 180.0f;
++        // signed distance (positive inside) to a wedge of half-angle `h` (up to 90 degrees) around the axis, for a point
++        // at `radius` and `theta` radians from that axis
++        auto wedge = [kPi](float radius, float theta, float h) {
++            if (theta <= h) return radius * std::sin(h - theta);
++            if (theta - h > kPi * 0.5f) return -radius;               // behind the apex: far from both sides
++            return radius * std::sin(h - theta);
++        };
+         for (int row = 0; row < size; ++row)
+             for (int col = 0; col < size; ++col)
+             {
+@@ -354,9 +427,8 @@
+                 const float r = std::sqrt(x * x + y * y);
+                 const float theta = std::atan2(std::fabs(x), y);      // angle from the front, 0..pi
+                 float edge;                                           // signed distance to the straight sides
+-                if (theta <= half) edge = r * std::sin(half - theta);
+-                else if (theta - half > kPi * 0.5f) edge = -r;        // behind the apex: far from both sides
+-                else edge = r * std::sin(half - theta);
++                if (half <= kPi * 0.5f) edge = wedge(r, theta, half);
++                else edge = -wedge(r, kPi - theta, kPi - half);       // wider than a half circle: the circle minus the wedge behind
+                 const float d = std::min(R - r, edge);
+                 argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel));
+             }
+diff --git a/Engine/Source/WXLApi/SpellArea.cpp b/Engine/Source/WXLApi/SpellArea.cpp
+--- a/Engine/Source/WXLApi/SpellArea.cpp
++++ b/Engine/Source/WXLApi/SpellArea.cpp
+@@ -78,14 +78,16 @@
+             int   maxAreas     = 16;
+             std::string overrideFile = "SpellAreaOverride.csv";
+             std::string jumpFile     = "SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
++            std::string coneFile     = "SpellCone.csv";           // spell id, cone degrees; no header
+         };
+ 
+         Config                g_cfg;
+         OverrideTable         g_overrides;
+         JumpDistanceTable     g_jump;
++        ConeAngleTable        g_cone;
+         bool                  g_loaded = false;
+         uint32_t              g_lastPoll = 0;
+-        uint64_t              g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0;
++        uint64_t              g_iniStamp = 0, g_csvStamp = 0, g_jumpStamp = 0, g_coneStamp = 0;
+ 
+ #ifdef _WIN32
+         bool ExeFolderPath(const char* name, char* path, size_t cap)
+@@ -181,6 +183,8 @@
+             if (!file.empty()) c.overrideFile = file;
+             const std::string jump = IniStr(ini, "JumpDistanceFile");
+             if (!jump.empty()) c.jumpFile = jump;
++            const std::string cone = IniStr(ini, "ConeFile");
++            if (!cone.empty()) c.coneFile = cone;
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+@@ -256,6 +260,30 @@
+ #endif
+         }
+ 
++        void LoadConeAngles()
++        {
++#ifdef _WIN32
++            g_cone = ConeAngleTable{};
++            char path[MAX_PATH] = {};
++            if (!ResolvePath(g_cfg.coneFile, path, sizeof(path))) return;
++            g_coneStamp = FileStamp(path);
++            if (!g_coneStamp) return;   // optional file
++            std::ifstream f(path, std::ios::binary);
++            const std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
++            std::string problems;
++            g_cone.Parse(text, problems);
++            wxl::LogCat("AOE", "%s: %zu spell(s) with a cone angle", g_cfg.coneFile.c_str(), g_cone.Rows());
++            size_t at = 0;
++            while (at < problems.size())
++            {
++                const size_t eol = problems.find('\n', at);
++                wxl::LogCat("AOE", "%s %s", g_cfg.coneFile.c_str(), problems.substr(at, eol - at).c_str());
++                if (eol == std::string::npos) break;
++                at = eol + 1;
++            }
++#endif
++        }
++
+         // Reads the ini (and the override file) again whenever they are saved; looks once a second.
+         void PollConfig()
+         {
+@@ -279,6 +307,9 @@
+ 
+             char jump[MAX_PATH] = {};
+             if (iniChanged || (ResolvePath(g_cfg.jumpFile, jump, sizeof(jump)) && FileStamp(jump) != g_jumpStamp)) LoadJumpDistances();
++
++            char cone[MAX_PATH] = {};
++            if (iniChanged || (ResolvePath(g_cfg.coneFile, cone, sizeof(cone)) && FileStamp(cone) != g_coneStamp)) LoadConeAngles();
+             g_loaded = true;
+ #else
+             g_loaded = true;
+@@ -358,6 +389,8 @@
+             if (!SpellEffectsOf(spellId, caster, own, effects)) return 0;
+             float jumpYards = 0;
+             if (g_jump.Find(spellId, jumpYards)) effects.chainRadius = jumpYards;   // the server's own jump distance first
++            float coneDegrees = 0;
++            if (g_cone.Find(spellId, coneDegrees)) effects.coneAngle = coneDegrees; // and its own cone angle
+             Shape derived[3];
+             const size_t n = ShapesFromSpell(effects, rules, derived);
+             for (size_t i = 0; i < n; ++i) out[i] = derived[i];
+@@ -564,7 +597,7 @@
+             switch (s.kind)
+             {
+             case ShapeKind::Circle: break;
+-            case ShapeKind::Cone:   param = static_cast<uint32_t>(Clamp(std::floor(s.param + 0.5f), 1.0f, 180.0f)); break;
++            case ShapeKind::Cone:   param = static_cast<uint32_t>(Clamp(std::floor(s.param + 0.5f), 1.0f, 359.0f)); break;
+             case ShapeKind::Line:
+             {
+                 const float frac = Clamp(s.param / (2.0f * s.radius), 1.0f / 256.0f, 1.0f);
+diff --git a/Engine/Source/WXL/SpellArea.md b/Engine/Source/WXL/SpellArea.md
+--- a/Engine/Source/WXL/SpellArea.md
++++ b/Engine/Source/WXL/SpellArea.md
+@@ -34,6 +34,7 @@
+ Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
+ ChainRadius=12.5        ; 1 .. 60 yards: the jump radius for a chain spell the jump distance file does not list
+ JumpDistanceFile=SpellJumpDistance.csv   ; export of the server's spell_jump_distance table (see below)
++ConeFile=SpellCone.csv  ; spell id, cone degrees, one spell per line, no header (see below)
+ HarmfulColor=FF3C28     ; RRGGBB: areas that hurt (enemy area targets)
+ HelpfulColor=3CFF5A     ; areas that help (party, raid, ally area targets, area auras)
+ NeutralColor=FFC83C     ; the rest
+@@ -91,6 +92,24 @@
+ is read as spell id, distance. A spell listed several times (one row per effect) keeps its largest distance. The file is
+ read again when saved.
+ 
++## Cone angles: SpellCone.csv
++
++The spell data has no cone angle, and the server applies cones to some spells whose data only says "area around the
++caster". `SpellCone.csv` lists them: one spell per line, **no header**, spell id then degrees. Comma, semicolon or tab
++separated, `#` starts a comment, read again when saved:
++
++```
++# spell id, degrees
++2643,60
++12345,90
++23456,180
++```
++
++A spell that is listed is a cone: its cone target types use the listed angle instead of `ConeAngle`, and its areas
++around the caster are drawn as cones of that angle (the radius is still the spell's own). Degrees go above 0 up to 360;
++over 180 is the circle minus a wedge behind the caster, and 360 is a full circle. A row in the override file still
++beats this file for the same spell. A bad line is skipped and written to `WXL.log` (category AOE).
++
+ ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
+ 
+ The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. A file beside the
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -141,6 +141,39 @@
+         Check(!JumpDistanceTable{}.Find(421, y), "an empty table lists nothing");
+     }
+ 
++    std::printf("2d. SpellCone.csv\n");
++    {
++        SpellEffects s;               // a spell the DBC only knows as "area around the caster"
++        s.effect[0] = 2; s.targetA[0] = 22; s.targetB[0] = 15; s.radius[0] = 10;
++        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Circle, "not listed: a circle");
++        s.coneAngle = 60.0f;
++        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Cone && Near(out[0].param, 60) && Near(out[0].radius, 10) && out[0].anchor == Anchor::Caster, "listed: the area around the caster is a cone of the listed angle");
++        SpellEffects c;               // a cone target type takes the listed angle over the default
++        c.effect[0] = 2; c.targetA[0] = 24; c.radius[0] = 12; c.coneAngle = 45.0f;
++        Check(ShapesFromSpell(c, rules, out) == 1 && Near(out[0].param, 45), "cone target type: the listed angle beats ConeAngle");
++        c.coneAngle = 360.0f;
++        Check(ShapesFromSpell(c, rules, out) == 1 && out[0].kind == ShapeKind::Circle, "360 degrees is a circle");
++        SpellEffects d;               // an area around the destination is not turned into a cone
++        d.effect[0] = 2; d.targetA[0] = 16; d.radius[0] = 8; d.coneAngle = 60.0f;
++        Check(ShapesFromSpell(d, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest, "a destination area stays a circle");
++        ShapeRules nocone = rules; nocone.cones = false;
++        Check(ShapesFromSpell(s, nocone, out) == 0, "cones off: a listed spell draws nothing rather than the wrong shape");
++
++        ConeAngleTable t;
++        std::string problems;
++        t.Parse("# spell id, degrees\n2643,60\n12345;90\n23456\t180\n2643,75\n", problems);
++        float deg = 0;
++        Check(t.Rows() == 3 && t.Find(2643, deg) && Near(deg, 75) && t.Find(12345, deg) && Near(deg, 90) && t.Find(23456, deg) && Near(deg, 180) && !t.Find(1, deg) && problems.empty(), "headless file: comma, semicolon, tab; the last line of a spell counts");
++        ConeAngleTable h;
++        h.Parse("SpellId,Degrees\r\n100,30\r\n", problems);
++        Check(h.Rows() == 1 && h.Find(100, deg) && Near(deg, 30) && problems.empty(), "a header line is skipped quietly");
++        ConeAngleTable b;
++        problems.clear();
++        b.Parse("100,0\n101,361\nabc,45\n102\n103,45,extra\n", problems);
++        Check(b.Rows() == 1 && b.Find(103, deg) && problems.find("line 1") != std::string::npos && problems.find("line 2") != std::string::npos &&
++              problems.find("line 3") != std::string::npos && problems.find("line 4") != std::string::npos, "bad rows (0, over 360, text, missing degrees) are reported and skipped");
++    }
++
+     std::printf("3. override file\n");
+     {
+         OverrideTable t;
+@@ -194,6 +227,11 @@
+         Check(AlphaAt(t, N, 0, 0.485f) > 200, "cone: bright arc");
+         RenderConeTexture(t, N, 180);
+         Check(AlphaAt(t, N, 0.3f, 0.02f) > 40 && AlphaAt(t, N, 0.3f, -0.05f) == 0, "cone of 180 degrees is the front half");
++        RenderConeTexture(t, N, 270);
++        Check(AlphaAt(t, N, 0.3f, 0.0f) > 40 && AlphaAt(t, N, -0.3f, 0.0f) > 40, "cone of 270 degrees: both sides are in");
++        Check(AlphaAt(t, N, 0.0f, -0.3f) == 0, "cone of 270 degrees: the wedge straight behind is out");
++        Check(AlphaAt(t, N, 0.3f * std::sin(0.5f), -0.3f * std::cos(0.5f)) == 0 && AlphaAt(t, N, 0.3f * std::sin(1.2f), -0.3f * std::cos(1.2f)) > 40, "cone of 270 degrees: the wedge is 90 wide (45 each side of the back)");
++        Check(AlphaAt(t, N, 0.3f * std::sin(0.785f), -0.3f * std::cos(0.785f)) > 200, "cone of 270 degrees: bright edge where the wedge starts");
+ 
+         RenderLineTexture(t, N, 0.2f);
+         Check(AlphaAt(t, N, 0, 0.25f) > 40 && AlphaAt(t, N, 0, 0.25f) < 90, "line: fill along the middle");
+diff --git a/Engine/Source/WXL/SpellCone.example.csv b/Engine/Source/WXL/SpellCone.example.csv
+new file mode 100644
+--- /dev/null
++++ b/Engine/Source/WXL/SpellCone.example.csv
+@@ -0,0 +1,6 @@
++# SpellCone.csv: put it beside the client executable (the name can be changed with [SpellArea] ConeFile).
++# One spell per line, NO header: spell id, cone angle in degrees (above 0, up to 360). See SpellArea.md.
++# A listed spell is drawn as a cone; its radius is still the spell's own. Examples (placeholder ids, replace them):
++#   100001,60
++#   100002,90
++#   100003,180

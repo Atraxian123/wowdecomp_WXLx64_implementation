@@ -1,0 +1,91 @@
+diff --git a/Engine/Source/WXLApi/SpellArea.cpp b/Engine/Source/WXLApi/SpellArea.cpp
+--- a/Engine/Source/WXLApi/SpellArea.cpp
++++ b/Engine/Source/WXLApi/SpellArea.cpp
+@@ -77,8 +77,8 @@
+             float maxRadius    = 60.0f;
+             int   maxAreas     = 16;
+             std::string overrideFile = "SpellAreaOverride.csv";
+-            std::string jumpFile     = "SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
+-            std::string coneFile     = "SpellCone.csv";           // spell id, cone degrees; no header
++            std::string jumpFile     = "WXL\\SpellJumpDistance.csv";   // export of the server's spell_jump_distance table
++            std::string coneFile     = "WXL\\SpellCone.csv";           // spell id, cone degrees; no header
+         };
+ 
+         Config                g_cfg;
+@@ -224,7 +224,8 @@
+ #endif
+         }
+ 
+-        // A file name from the ini: a full path as it is, else a file beside the client executable.
++        // A file name from the ini: a full path as it is, else a path under the client executable's folder (the default
++        // files live in its WXL subfolder).
+         bool ResolvePath(const std::string& name, char* path, size_t cap)
+         {
+ #ifdef _WIN32
+diff --git a/Engine/Source/WXL/SpellArea.md b/Engine/Source/WXL/SpellArea.md
+--- a/Engine/Source/WXL/SpellArea.md
++++ b/Engine/Source/WXL/SpellArea.md
+@@ -33,8 +33,8 @@
+ MaxOpacity=1.0          ; 0.05 .. 1: ceiling for every indicator, applied last; lower it to keep them faint whatever Opacity says
+ Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
+ ChainRadius=12.5        ; 1 .. 60 yards: the jump radius for a chain spell the jump distance file does not list
+-JumpDistanceFile=SpellJumpDistance.csv   ; export of the server's spell_jump_distance table (see below)
+-ConeFile=SpellCone.csv  ; spell id, cone degrees, one spell per line, no header (see below)
++JumpDistanceFile=WXL\SpellJumpDistance.csv   ; export of the server's spell_jump_distance table (see below)
++ConeFile=WXL\SpellCone.csv  ; spell id, cone degrees, one spell per line, no header (see below)
+ HarmfulColor=FF3C28     ; RRGGBB: areas that hurt (enemy area targets)
+ HelpfulColor=3CFF5A     ; areas that help (party, raid, ally area targets, area auras)
+ NeutralColor=FFC83C     ; the rest
+@@ -75,14 +75,14 @@
+ 
+ ### Where the jump radius comes from
+ 
+-In this order: the spell's row in **SpellJumpDistance.csv** (the server's own number), then the radius in the spell data
++In this order: the spell's row in **WXL\SpellJumpDistance.csv** (the server's own number), then the radius in the spell data
+ if it has one, then `ChainRadius`. A row in the override file replaces all of it for that spell.
+ 
+ The client cannot ask the server's database, so SpellJumpDistance.csv is an export of the `spell_jump_distance` table of
+-your `acore_world` database, put beside the client executable. Any of these makes it:
++your `acore_world` database, put in the `WXL` folder beside the client executable. Any of these makes it:
+ 
+ ```
+-mysql -u acore -p acore_world --batch -e "SELECT * FROM spell_jump_distance" > SpellJumpDistance.csv
++mysql -u acore -p acore_world --batch -e "SELECT * FROM spell_jump_distance" > WXL\SpellJumpDistance.csv
+ ```
+ 
+ or "Export table to CSV" in HeidiSQL, MySQL Workbench or DBeaver. Tab, comma or semicolon separated, with the header
+@@ -92,10 +92,10 @@
+ is read as spell id, distance. A spell listed several times (one row per effect) keeps its largest distance. The file is
+ read again when saved.
+ 
+-## Cone angles: SpellCone.csv
++## Cone angles: WXL\SpellCone.csv
+ 
+ The spell data has no cone angle, and the server applies cones to some spells whose data only says "area around the
+-caster". `SpellCone.csv` lists them: one spell per line, **no header**, spell id then degrees. Comma, semicolon or tab
++caster". `WXL\SpellCone.csv` (in the `WXL` folder beside the client executable) lists them: one spell per line, **no header**, spell id then degrees. Comma, semicolon or tab
+ separated, `#` starts a comment, read again when saved:
+ 
+ ```
+diff --git a/Engine/Source/WXL/SpellJumpDistance.example.csv b/Engine/Source/WXL/SpellJumpDistance.example.csv
+--- a/Engine/Source/WXL/SpellJumpDistance.example.csv
++++ b/Engine/Source/WXL/SpellJumpDistance.example.csv
+@@ -1,5 +1,6 @@
+-# SpellJumpDistance.csv: put it beside the client executable (the name can be changed with [SpellArea] JumpDistanceFile).
++# SpellJumpDistance.csv: put it in the WXL folder beside the client executable (WXL\SpellJumpDistance.csv; the path can be
++# changed with [SpellArea] JumpDistanceFile).
+ # It is an export of the server's spell_jump_distance table (acore_world), for example:
+-#   mysql -u acore -p acore_world --batch -e "SELECT * FROM spell_jump_distance" > SpellJumpDistance.csv
++#   mysql -u acore -p acore_world --batch -e "SELECT * FROM spell_jump_distance" > WXL\SpellJumpDistance.csv
+ # The header line is needed; the columns are found by name (see SpellArea.md). The rows below are placeholders.
+ ID,MaxJumpDistance
+diff --git a/Engine/Source/WXL/SpellCone.example.csv b/Engine/Source/WXL/SpellCone.example.csv
+--- a/Engine/Source/WXL/SpellCone.example.csv
++++ b/Engine/Source/WXL/SpellCone.example.csv
+@@ -1,4 +1,5 @@
+-# SpellCone.csv: put it beside the client executable (the name can be changed with [SpellArea] ConeFile).
++# SpellCone.csv: put it in the WXL folder beside the client executable (WXL\SpellCone.csv; the path can be changed with
++# [SpellArea] ConeFile).
+ # One spell per line, NO header: spell id, cone angle in degrees (above 0, up to 360). See SpellArea.md.
+ # A listed spell is drawn as a cone; its radius is still the spell's own. Examples (placeholder ids, replace them):
+ #   100001,60

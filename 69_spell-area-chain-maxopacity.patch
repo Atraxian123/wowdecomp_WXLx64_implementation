@@ -1,0 +1,206 @@
+diff --git a/Engine/Source/WXL/SpellAreaShapes.h b/Engine/Source/WXL/SpellAreaShapes.h
+--- a/Engine/Source/WXL/SpellAreaShapes.h
++++ b/Engine/Source/WXL/SpellAreaShapes.h
+@@ -38,6 +38,7 @@
+         int32_t targetA[3] = {};
+         int32_t targetB[3] = {};
+         float   radius[3]  = {};
++        int32_t chainTargets[3] = {};   // Spell.dbc EffectChainTargets: how many targets the effect reaches by jumping
+     };
+ 
+     struct ShapeRules
+@@ -46,6 +47,8 @@
+         float minRadius = 1.0f;    // a radius under this is not an area worth drawing
+         float maxRadius = 60.0f;   // a radius over this is drawn at this size
+         bool  cones     = true;
++        bool  chain     = true;     // chain spells get the circle of their first jump around the target
++        float chainRadius = 12.5f;  // yards, for a chain effect that has no radius of its own
+     };
+ 
+     // ---- target type classes (3.3.5 Spell.dbc implicit target ids) ----
+@@ -58,7 +61,9 @@
+     /// The areas a spell covers, from its effects: at most one per effect, equal ones merged. `out` has room for 3.
+     /// A cone target type gives a cone (angle from rules), an area around the caster or the destination gives a
+     /// circle, and so do the area aura effects (35, 65, 119, 128, 129, 143: around the caster) and the persistent area
+-    /// aura (27: around the destination). Lines cannot be told from the DBC: they come from the override file.
++    /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
++    /// of its first jump: around the target, `chainRadius` yards unless the effect has a radius. Lines cannot be told
++    /// from the DBC: they come from the override file.
+     size_t ShapesFromSpell(const SpellEffects& spell, const ShapeRules& rules, Shape out[3]);
+ 
+     // ---- override file ----
+diff --git a/Engine/Source/WXL/SpellAreaShapes.cpp b/Engine/Source/WXL/SpellAreaShapes.cpp
+--- a/Engine/Source/WXL/SpellAreaShapes.cpp
++++ b/Engine/Source/WXL/SpellAreaShapes.cpp
+@@ -82,8 +82,6 @@
+         {
+             if (!spell.effect[i]) continue;
+             float r = spell.radius[i];
+-            if (!(r >= rules.minRadius)) continue;
+-            r = std::min(r, rules.maxRadius);
+ 
+             const int32_t a = spell.targetA[i], b = spell.targetB[i], eff = spell.effect[i];
+             const bool cone = IsConeTarget(a) || IsConeTarget(b);
+@@ -94,8 +92,15 @@
+                 if (In(eff, kAreaAuraCaster)) casterArea = true;
+                 else if (eff == 27) destArea = true;       // persistent area aura: the area is at the destination
+             }
++            if (!cone && !casterArea && !destArea && rules.chain && spell.chainTargets[i] > 1)
++            {
++                destArea = true;                                  // the first jump: around the target
++                if (!(r >= rules.minRadius)) r = rules.chainRadius;
++            }
+             if (!cone && !casterArea && !destArea) continue;
+             if (cone && !rules.cones) continue;
++            if (!(r >= rules.minRadius)) continue;
++            r = std::min(r, rules.maxRadius);
+ 
+             Shape s;
+             s.radius = r;
+diff --git a/Engine/Source/WXLApi/SpellArea.cpp b/Engine/Source/WXLApi/SpellArea.cpp
+--- a/Engine/Source/WXLApi/SpellArea.cpp
++++ b/Engine/Source/WXLApi/SpellArea.cpp
+@@ -66,6 +66,9 @@
+             bool  persistent   = true;    // the dynamic objects (Blizzard, Consecration, Death and Decay ...)
+             bool  cones        = true;
+             float opacity      = 0.65f;
++            float maxOpacity   = 1.0f;    // ceiling for every indicator, whatever else says
++            bool  chain        = true;    // chain spells: the circle of the first jump around the target
++            float chainRadius  = 12.5f;
+             float harmful[3]   = { 1.0f, 0.235f, 0.157f };
+             float helpful[3]   = { 0.235f, 1.0f, 0.353f };
+             float neutral[3]   = { 1.0f, 0.784f, 0.235f };
+@@ -162,6 +165,9 @@
+             c.persistent = IniInt(ini, "Persistent", 1) != 0;
+             c.cones      = IniInt(ini, "Cones", 1) != 0;
+             c.opacity    = Clamp(IniFloat(ini, "Opacity", c.opacity), 0.05f, 1.0f);
++            c.maxOpacity = Clamp(IniFloat(ini, "MaxOpacity", c.maxOpacity), 0.05f, 1.0f);
++            c.chain      = IniInt(ini, "Chain", 1) != 0;
++            c.chainRadius = Clamp(IniFloat(ini, "ChainRadius", c.chainRadius), 1.0f, 60.0f);
+             c.coneAngle  = Clamp(IniFloat(ini, "ConeAngle", c.coneAngle), 5.0f, 180.0f);
+             c.minRadius  = Clamp(IniFloat(ini, "MinRadius", c.minRadius), 0.1f, 50.0f);
+             c.maxRadius  = Clamp(IniFloat(ini, "MaxRadius", c.maxRadius), c.minRadius, 150.0f);
+@@ -174,10 +180,10 @@
+             const bool was = g_cfg.enabled;
+             g_cfg = c;
+             if (!g_loaded || was != c.enabled)
+-                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, opacity %.2f)",
++                wxl::LogCat("AOE", "spell area indicator: %s (%s, precast %d, channel %d, persistent %d, cones %d, chain %d, opacity %.2f max %.2f)",
+                             c.enabled ? "on" : "off",
+                             c.enemiesOnly ? "enemies only" : c.own && c.others ? "own and others" : c.others ? "others" : c.own ? "own" : "nobody",
+-                            c.precast, c.channel, c.persistent, c.cones, c.opacity);
++                            c.precast, c.channel, c.persistent, c.cones, c.chain, c.opacity, c.maxOpacity);
+ #else
+             (void)ini;
+ #endif
+@@ -278,6 +284,7 @@
+                 out.targetA[i] = spell.m_implicitTargetA[i];
+                 out.targetB[i] = spell.m_implicitTargetB[i];
+                 out.radius[i]  = 0;
++                out.chainTargets[i] = spell.m_effectChainTargets[i];
+ 
+                 SpellRadiusRec* rec = g_spellRadiusDB.GetRecord(spell.m_effectRadiusIndex[i]);
+                 if (!rec) continue;
+@@ -292,7 +299,7 @@
+         // The shapes a spell covers: the override file's rows when it has any for the spell, else the effects'.
+         size_t ShapesOf(uint32_t spellId, CGUnit_C* caster, bool own, Shape out[8])
+         {
+-            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones };
++            const ShapeRules rules{ g_cfg.coneAngle, g_cfg.minRadius, g_cfg.maxRadius, g_cfg.cones, g_cfg.chain, g_cfg.chainRadius };
+ 
+             bool none = false;
+             std::vector<Shape> rows;
+@@ -433,6 +440,11 @@
+                         a.follow = true;
+                         a.guid = unit->m_unit->m_unitFieldChannelObject;
+                     }
++                    else if (unit->m_unit->m_unitFieldTarget.m_guid)           // no cast data: around what the caster has targeted
++                    {
++                        a.follow = true;
++                        a.guid = unit->m_unit->m_unitFieldTarget;
++                    }
+                     else
+                     {
+                         continue;                                              // nothing to place it on
+@@ -520,7 +532,7 @@
+             if (!texture || !(half > 0.0f)) return;
+ 
+             const float* rgb = s.intent == Intent::Harmful ? g_cfg.harmful : s.intent == Intent::Helpful ? g_cfg.helpful : g_cfg.neutral;
+-            const float alpha = g_cfg.opacity * (0.45f + 0.55f * a.strength);
++            const float alpha = std::min(g_cfg.opacity * (0.45f + 0.55f * a.strength), g_cfg.maxOpacity);
+             CImVector color;
+             color.b = static_cast<uint8_t>(rgb[2] * 255.0f + 0.5f);
+             color.g = static_cast<uint8_t>(rgb[1] * 255.0f + 0.5f);
+diff --git a/Engine/Source/WXL/SpellArea.md b/Engine/Source/WXL/SpellArea.md
+--- a/Engine/Source/WXL/SpellArea.md
++++ b/Engine/Source/WXL/SpellArea.md
+@@ -29,7 +29,10 @@
+ Channel=1               ; the area of a spell being channeled (Hellfire, Tranquility, ...)
+ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+ Cones=1                 ; cone spells
+-Opacity=0.65            ; 0.05 .. 1
++Opacity=0.65            ; 0.05 .. 1: how strong an indicator is once its cast is done (it fades in from 45% of this)
++MaxOpacity=1.0          ; 0.05 .. 1: ceiling for every indicator, applied last; lower it to keep them faint whatever Opacity says
++Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
++ChainRadius=12.5        ; 1 .. 60 yards: the jump radius for a chain spell whose data gives none
+ HarmfulColor=FF3C28     ; RRGGBB: areas that hurt (enemy area targets)
+ HelpfulColor=3CFF5A     ; areas that help (party, raid, ally area targets, area auras)
+ NeutralColor=FFC83C     ; the rest
+@@ -47,6 +50,7 @@
+ | a ground-targeted spell with a cast time (Flamestrike, Mass Dispel) | circle, fading in as the cast goes on | the ground point you aimed at |
+ | a spell around the caster being cast or channeled (Arcane Explosion, Hellfire) | circle | the caster, following it |
+ | a spell on a target (area around the target unit) | circle | the target unit |
++| a chain spell (Chain Lightning, Chain Heal, Prayer of Mending style jumps ...) | circle of the **first jump**, `ChainRadius` unless the spell data has a radius | the target the cast is aimed at |
+ | a channel's area aura (Tranquility, Divine Hymn ...) | circle | the caster |
+ | a cone spell (Cone of Cold, Dragon's Breath ...) | cone, 90 degrees by default | the caster, turning with it |
+ | anything lying on the ground (Blizzard, Consecration, Death and Decay, Rain of Fire, Volley, ground effects of bosses) | circle of its real radius | the game's dynamic object, for as long as it exists |
+@@ -64,6 +68,11 @@
+ When a dynamic object of a spell exists, it is the one that is drawn (its radius is the truth), so Blizzard shows one
+ circle, not two.
+ 
++The chain circle is only shown while the spell is being cast (it needs the target of the cast, or failing that the
++caster's current target). The server decides the real jump distance and it is not in the client data, so `ChainRadius`
++is a best guess; for a spell where it is off, a row in the override file sets the right radius for that spell
++(`circle,dest,<radius>`: `dest` is the target unit when the spell has no ground point).
++
+ ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
+ 
+ The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. A file beside the
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -74,6 +74,34 @@
+         Check(Near(out[0].radius, rules.maxRadius), "a huge radius is capped");
+     }
+ 
++    std::printf("2b. chain spells\n");
++    {
++        SpellEffects s;               // Chain Lightning style: a single enemy target, two chain targets, no radius
++        s.effect[0] = 2; s.targetA[0] = 6; s.chainTargets[0] = 2;
++        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest &&
++              Near(out[0].radius, 12.5f) && out[0].intent == Intent::Harmful, "chain: the circle of the first jump around the target, 12.5 yards");
++        SpellEffects h;               // Chain Heal style
++        h.effect[0] = 10; h.targetA[0] = 45; h.chainTargets[0] = 3;
++        Check(ShapesFromSpell(h, rules, out) == 1 && out[0].intent == Intent::Helpful && out[0].anchor == Anchor::Dest, "chain heal: helpful");
++        SpellEffects own;             // a chain effect that carries a radius uses it
++        own.effect[0] = 2; own.targetA[0] = 6; own.chainTargets[0] = 4; own.radius[0] = 8;
++        Check(ShapesFromSpell(own, rules, out) == 1 && Near(out[0].radius, 8), "chain: the spell's own radius wins");
++        ShapeRules custom = rules; custom.chainRadius = 20.0f;
++        Check(ShapesFromSpell(s, custom, out) == 1 && Near(out[0].radius, 20), "chain radius follows the rules");
++        custom.chain = false;
++        Check(ShapesFromSpell(s, custom, out) == 0, "chain can be switched off");
++        SpellEffects one;             // one target is not a chain
++        one.effect[0] = 2; one.targetA[0] = 6; one.chainTargets[0] = 1;
++        Check(ShapesFromSpell(one, rules, out) == 0, "a single target spell is not a chain");
++        SpellEffects both;            // an area effect that also lists chain targets stays one area circle
++        both.effect[0] = 2; both.targetA[0] = 22; both.targetB[0] = 15; both.radius[0] = 10; both.chainTargets[0] = 3;
++        Check(ShapesFromSpell(both, rules, out) == 1 && out[0].anchor == Anchor::Caster && Near(out[0].radius, 10), "an area is not turned into a chain circle");
++        SpellEffects big;             // the cap holds for the chain radius too
++        big.effect[0] = 2; big.targetA[0] = 6; big.chainTargets[0] = 2;
++        ShapeRules huge = rules; huge.chainRadius = 500.0f;
++        Check(ShapesFromSpell(big, huge, out) == 1 && Near(out[0].radius, huge.maxRadius), "chain radius is capped");
++    }
++
+     std::printf("3. override file\n");
+     {
+         OverrideTable t;

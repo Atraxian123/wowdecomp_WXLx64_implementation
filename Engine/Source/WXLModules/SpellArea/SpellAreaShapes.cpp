@@ -1,7 +1,7 @@
 // WXL spell area indicator: shape rules, override file, textures. See SpellAreaShapes.h.
 // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
 
-#include "Engine/Source/WXL/SpellAreaShapes.h"
+#include "SpellAreaShapes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -82,11 +82,9 @@ namespace wxl::spellarea
         {
             if (!spell.effect[i]) continue;
             float r = spell.radius[i];
-            if (!(r >= rules.minRadius)) continue;
-            r = std::min(r, rules.maxRadius);
 
             const int32_t a = spell.targetA[i], b = spell.targetB[i], eff = spell.effect[i];
-            const bool cone = IsConeTarget(a) || IsConeTarget(b);
+            bool cone = IsConeTarget(a) || IsConeTarget(b);
             bool casterArea = IsCasterAreaTarget(a) || IsCasterAreaTarget(b);
             bool destArea = IsDestAreaTarget(a) || IsDestAreaTarget(b);
             if (!cone && !casterArea && !destArea)
@@ -94,12 +92,27 @@ namespace wxl::spellarea
                 if (In(eff, kAreaAuraCaster)) casterArea = true;
                 else if (eff == 27) destArea = true;       // persistent area aura: the area is at the destination
             }
+            if (spell.coneAngle > 0.0f && !cone && casterArea) { cone = true; casterArea = false; }   // a listed spell: its area is a cone
+            if (!cone && !casterArea && !destArea && rules.chain && spell.chainTargets[i] > 1)
+            {
+                destArea = true;                                  // the first jump: around the target
+                if (spell.chainRadius > 0.0f) r = spell.chainRadius;                 // the server's own number
+                else if (!(r >= rules.minRadius)) r = rules.chainRadius;
+            }
             if (!cone && !casterArea && !destArea) continue;
             if (cone && !rules.cones) continue;
+            if (!(r >= rules.minRadius)) continue;
+            r = std::min(r, rules.maxRadius);
 
             Shape s;
             s.radius = r;
-            if (cone)            { s.kind = ShapeKind::Cone; s.anchor = Anchor::Caster; s.param = rules.coneAngle; }
+            if (cone)
+            {
+                const float angle = spell.coneAngle > 0.0f ? spell.coneAngle : rules.coneAngle;
+                s.anchor = Anchor::Caster;
+                if (angle >= 360.0f) s.kind = ShapeKind::Circle;                 // all around: just the circle
+                else { s.kind = ShapeKind::Cone; s.param = angle; }
+            }
             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
             else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
 
@@ -153,7 +166,7 @@ namespace wxl::spellarea
             const unsigned long id = std::strtoul(cells[0].c_str(), &end, 10);
             if (cells[0].empty() || *end != '\0')
             {
-                if (lineNo != 1 && !Lower(cells[0]).starts_with("spell"))
+                if (lineNo != 1 && Lower(cells[0]).compare(0, 5, "spell") != 0)
                     problems += "line " + std::to_string(lineNo) + ": the spell id '" + cells[0] + "' is not a number; skipped\n";
                 continue;   // the header line, or a bad one
             }
@@ -209,6 +222,164 @@ namespace wxl::spellarea
         return found;
     }
 
+    void ConeAngleTable::Parse(const std::string& text, std::string& problems)
+    {
+        m_rows.clear();
+        size_t pos = 0;
+        int lineNo = 0;
+        bool first = true;
+        while (pos <= text.size())
+        {
+            size_t eol = text.find('\n', pos);
+            if (eol == std::string::npos) eol = text.size();
+            std::string line = text.substr(pos, eol - pos);
+            pos = eol + 1;
+            ++lineNo;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            line = Trim(line);
+            if (line.empty() || line[0] == '#') continue;
+
+            const char sep = line.find('\t') != std::string::npos ? '\t' : line.find(';') != std::string::npos ? ';' : ',';
+            std::vector<std::string> cells;
+            size_t a = 0;
+            for (;;)
+            {
+                const size_t b = line.find(sep, a);
+                std::string cell = Trim(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                while (!cell.empty() && (cell.front() == '"' || cell.front() == '`')) cell.erase(cell.begin());
+                while (!cell.empty() && (cell.back() == '"' || cell.back() == '`')) cell.pop_back();
+                cells.push_back(cell);
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+
+            char* end = nullptr;
+            const unsigned long spell = std::strtoul(cells[0].c_str(), &end, 10);
+            const bool numeric = !cells[0].empty() && *end == '\0';
+            if (!numeric && first) { first = false; continue; }       // a header line, though the file should have none
+            first = false;
+
+            float degrees = 0;
+            if (!numeric || cells.size() < 2 || !ParseFloat(cells[1], degrees) || !(degrees > 0.0f) || degrees > 360.0f)
+            {
+                problems += "line " + std::to_string(lineNo) + ": expected a spell id and degrees above 0 up to 360; skipped\n";
+                continue;
+            }
+            bool found = false;
+            for (Row& r : m_rows)
+                if (r.spell == spell) { r.degrees = degrees; found = true; break; }   // the last line of a spell counts
+            if (!found) m_rows.push_back(Row{ static_cast<uint32_t>(spell), degrees });
+        }
+        std::sort(m_rows.begin(), m_rows.end(), [](const Row& x, const Row& y) { return x.spell < y.spell; });
+    }
+
+    bool ConeAngleTable::Find(uint32_t spellId, float& degrees) const
+    {
+        auto it = std::lower_bound(m_rows.begin(), m_rows.end(), spellId, [](const Row& r, uint32_t id) { return r.spell < id; });
+        if (it == m_rows.end() || it->spell != spellId) return false;
+        degrees = it->degrees;
+        return true;
+    }
+
+    void JumpDistanceTable::Parse(const std::string& text, std::string& problems)
+    {
+        m_rows.clear();
+        auto normalize = [](std::string name) {
+            std::string out;
+            for (char c : name)
+                if (c != '_' && c != ' ' && c != '`' && c != '"') out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return out;
+        };
+
+        int idCol = -1, distCol = -1;
+        bool sawHeader = false;
+        size_t pos = 0;
+        int lineNo = 0;
+        while (pos <= text.size())
+        {
+            size_t eol = text.find('\n', pos);
+            if (eol == std::string::npos) eol = text.size();
+            std::string line = text.substr(pos, eol - pos);
+            pos = eol + 1;
+            ++lineNo;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            line = Trim(line);
+            if (line.empty() || line[0] == '#' || line.rfind("--", 0) == 0) continue;
+
+            const char sep = line.find('\t') != std::string::npos ? '\t' : line.find(';') != std::string::npos ? ';' : ',';
+            std::vector<std::string> cells;
+            size_t a = 0;
+            for (;;)
+            {
+                const size_t b = line.find(sep, a);
+                std::string cell = Trim(line.substr(a, b == std::string::npos ? std::string::npos : b - a));
+                while (!cell.empty() && (cell.front() == '"' || cell.front() == '`' || cell.front() == '\'')) cell.erase(cell.begin());
+                while (!cell.empty() && (cell.back() == '"' || cell.back() == '`' || cell.back() == '\'')) cell.pop_back();
+                cells.push_back(cell);
+                if (b == std::string::npos) break;
+                a = b + 1;
+            }
+
+            char* end = nullptr;
+            const unsigned long id = std::strtoul(cells[0].c_str(), &end, 10);
+            const bool numericFirst = !cells[0].empty() && *end == '\0';
+
+            if (!numericFirst && !sawHeader && idCol < 0)
+            {
+                // the header line: find the columns by name
+                sawHeader = true;
+                for (size_t i = 0; i < cells.size(); ++i)
+                {
+                    const std::string n = normalize(cells[i]);
+                    if (idCol < 0 && (n == "id" || n == "spellid" || n == "spell")) idCol = static_cast<int>(i);
+                }
+                for (const char* key : { "distance", "radius", "jump" })
+                {
+                    for (size_t i = 0; i < cells.size() && distCol < 0; ++i)
+                        if (normalize(cells[i]).find(key) != std::string::npos && static_cast<int>(i) != idCol) distCol = static_cast<int>(i);
+                    if (distCol >= 0) break;
+                }
+                if (idCol < 0 || distCol < 0)
+                {
+                    std::string names;
+                    for (const std::string& c : cells) names += (names.empty() ? "" : ", ") + c;
+                    problems += "line " + std::to_string(lineNo) + ": no spell id / distance column in the header (" + names + "); the file is not used\n";
+                    return;
+                }
+                continue;
+            }
+            if (idCol < 0) { idCol = 0; distCol = 1; }      // no header: id, distance
+
+            if (static_cast<size_t>(std::max(idCol, distCol)) >= cells.size())
+            {
+                problems += "line " + std::to_string(lineNo) + ": too few columns; skipped\n";
+                continue;
+            }
+            char* e2 = nullptr;
+            const unsigned long spell = std::strtoul(cells[idCol].c_str(), &e2, 10);
+            float yards = 0;
+            if (cells[idCol].empty() || *e2 != '\0' || !ParseFloat(cells[distCol], yards) || !(yards > 0.0f))
+            {
+                problems += "line " + std::to_string(lineNo) + ": '" + cells[idCol] + "' / '" + cells[distCol] + "' is not a spell id and a distance above 0; skipped\n";
+                continue;
+            }
+            (void)id;
+            bool found = false;
+            for (Row& r : m_rows)
+                if (r.spell == spell) { r.yards = std::max(r.yards, yards); found = true; break; }
+            if (!found) m_rows.push_back(Row{ static_cast<uint32_t>(spell), yards });
+        }
+        std::sort(m_rows.begin(), m_rows.end(), [](const Row& x, const Row& y) { return x.spell < y.spell; });
+    }
+
+    bool JumpDistanceTable::Find(uint32_t spellId, float& yards) const
+    {
+        auto it = std::lower_bound(m_rows.begin(), m_rows.end(), spellId, [](const Row& r, uint32_t id) { return r.spell < id; });
+        if (it == m_rows.end() || it->spell != spellId) return false;
+        yards = it->yards;
+        return true;
+    }
+
     bool ParseColorHex(const char* text, float rgb[3])
     {
         if (!text) return false;
@@ -241,7 +412,14 @@ namespace wxl::spellarea
         const float pixel = 1.0f / static_cast<float>(size);
         const float R = 0.485f;
         const float kPi = 3.14159265358979f;
-        const float half = std::max(1.0f, std::min(180.0f, angleDeg)) * 0.5f * kPi / 180.0f;
+        const float half = std::max(1.0f, std::min(359.0f, angleDeg)) * 0.5f * kPi / 180.0f;
+        // signed distance (positive inside) to a wedge of half-angle `h` (up to 90 degrees) around the axis, for a point
+        // at `radius` and `theta` radians from that axis
+        auto wedge = [kPi](float radius, float theta, float h) {
+            if (theta <= h) return radius * std::sin(h - theta);
+            if (theta - h > kPi * 0.5f) return -radius;               // behind the apex: far from both sides
+            return radius * std::sin(h - theta);
+        };
         for (int row = 0; row < size; ++row)
             for (int col = 0; col < size; ++col)
             {
@@ -249,9 +427,8 @@ namespace wxl::spellarea
                 const float r = std::sqrt(x * x + y * y);
                 const float theta = std::atan2(std::fabs(x), y);      // angle from the front, 0..pi
                 float edge;                                           // signed distance to the straight sides
-                if (theta <= half) edge = r * std::sin(half - theta);
-                else if (theta - half > kPi * 0.5f) edge = -r;        // behind the apex: far from both sides
-                else edge = r * std::sin(half - theta);
+                if (half <= kPi * 0.5f) edge = wedge(r, theta, half);
+                else edge = -wedge(r, kPi - theta, kPi - half);       // wider than a half circle: the circle minus the wedge behind
                 const float d = std::min(R - r, edge);
                 argb[static_cast<size_t>(row) * size + col] = PackWhite(ShapeAlpha(d, pixel));
             }

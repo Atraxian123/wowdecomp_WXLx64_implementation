@@ -15,6 +15,7 @@
 #include "Engine/Source/WXLApi/EquipHost.h"
 #include "Engine/Source/WXLApi/ModelAccess.h"
 #include "Engine/Source/WXLApi/OutlineHost.h"
+#include "Engine/Source/WXLApi/SpellAreaHost.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
 #include <array>
@@ -242,6 +243,15 @@ namespace wxl::api
             &wxl::api::outlinehost::QuestTurnIns,
             // minimap tracking for the outline module (OutlineHost.cpp)
             &wxl::api::outlinehost::TrackedTargets,
+            // ground areas of spells for the spell area module (SpellAreaHost.cpp)
+            &wxl::api::spellareahost::DynamicObjects,
+            &wxl::api::spellareahost::Casters,
+            &wxl::api::spellareahost::Effects,
+            &wxl::api::spellareahost::PendingCast,
+            &wxl::api::spellareahost::ObjectPose,
+            &wxl::api::spellareahost::CreateTexture,
+            &wxl::api::spellareahost::Draw,
+            &wxl::api::spellareahost::SetRenderer,
         };
     }
 

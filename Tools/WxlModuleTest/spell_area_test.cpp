@@ -1,5 +1,5 @@
 // Spell area indicator, the engine-free part: shape rules, override file, textures, and the projection orientation.
-#include "Engine/Source/WXL/SpellAreaShapes.h"
+#include "Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h"
 
 #include <cmath>
 #include <cstdio>
@@ -74,6 +74,106 @@ int main()
         Check(Near(out[0].radius, rules.maxRadius), "a huge radius is capped");
     }
 
+    std::printf("2b. chain spells\n");
+    {
+        SpellEffects s;               // Chain Lightning style: a single enemy target, two chain targets, no radius
+        s.effect[0] = 2; s.targetA[0] = 6; s.chainTargets[0] = 2;
+        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest &&
+              Near(out[0].radius, 12.5f) && out[0].intent == Intent::Harmful, "chain: the circle of the first jump around the target, 12.5 yards");
+        SpellEffects h;               // Chain Heal style
+        h.effect[0] = 10; h.targetA[0] = 45; h.chainTargets[0] = 3;
+        Check(ShapesFromSpell(h, rules, out) == 1 && out[0].intent == Intent::Helpful && out[0].anchor == Anchor::Dest, "chain heal: helpful");
+        SpellEffects own;             // a chain effect that carries a radius uses it
+        own.effect[0] = 2; own.targetA[0] = 6; own.chainTargets[0] = 4; own.radius[0] = 8;
+        Check(ShapesFromSpell(own, rules, out) == 1 && Near(out[0].radius, 8), "chain: the spell's own radius wins");
+        ShapeRules custom = rules; custom.chainRadius = 20.0f;
+        Check(ShapesFromSpell(s, custom, out) == 1 && Near(out[0].radius, 20), "chain radius follows the rules");
+        custom.chain = false;
+        Check(ShapesFromSpell(s, custom, out) == 0, "chain can be switched off");
+        SpellEffects one;             // one target is not a chain
+        one.effect[0] = 2; one.targetA[0] = 6; one.chainTargets[0] = 1;
+        Check(ShapesFromSpell(one, rules, out) == 0, "a single target spell is not a chain");
+        SpellEffects both;            // an area effect that also lists chain targets stays one area circle
+        both.effect[0] = 2; both.targetA[0] = 22; both.targetB[0] = 15; both.radius[0] = 10; both.chainTargets[0] = 3;
+        Check(ShapesFromSpell(both, rules, out) == 1 && out[0].anchor == Anchor::Caster && Near(out[0].radius, 10), "an area is not turned into a chain circle");
+        SpellEffects big;             // the cap holds for the chain radius too
+        big.effect[0] = 2; big.targetA[0] = 6; big.chainTargets[0] = 2;
+        ShapeRules huge = rules; huge.chainRadius = 500.0f;
+        Check(ShapesFromSpell(big, huge, out) == 1 && Near(out[0].radius, huge.maxRadius), "chain radius is capped");
+    }
+
+    std::printf("2c. the server's jump distances\n");
+    {
+        SpellEffects s;
+        s.effect[0] = 2; s.targetA[0] = 6; s.chainTargets[0] = 2; s.radius[0] = 8;
+        s.chainRadius = 15.0f;
+        Check(ShapesFromSpell(s, rules, out) == 1 && Near(out[0].radius, 15.0f), "the table's jump distance comes before the effect's radius");
+        s.chainRadius = 0;
+        Check(ShapesFromSpell(s, rules, out) == 1 && Near(out[0].radius, 8.0f), "without it the effect's radius");
+        s.radius[0] = 0;
+        Check(ShapesFromSpell(s, rules, out) == 1 && Near(out[0].radius, 12.5f), "without either the default");
+        s.chainRadius = 70.0f;
+        Check(ShapesFromSpell(s, rules, out) == 1 && Near(out[0].radius, rules.maxRadius), "a table value is capped too");
+        SpellEffects direct;      // a table value does not make a non-chain spell a chain
+        direct.effect[0] = 2; direct.targetA[0] = 6; direct.chainTargets[0] = 1; direct.chainRadius = 15.0f;
+        Check(ShapesFromSpell(direct, rules, out) == 0, "the table does not turn a single target spell into a chain");
+
+        float y = 0; std::string problems;
+        JumpDistanceTable t;
+        t.Parse("ID\tMaxJumpDistance\tComment\n421\t12.5\tchain lightning\n1064\t10\tchain heal\n421\t15\tsecond row\n", problems);
+        Check(t.Rows() == 2 && t.Find(421, y) && Near(y, 15.0f) && t.Find(1064, y) && Near(y, 10.0f) && !t.Find(7, y) && problems.empty(), "mysql --batch style: header, tabs, duplicates keep the largest");
+        JumpDistanceTable c;
+        c.Parse("`spell_id`,`jump_distance`\r\n\"421\",\"12.5\"\r\n", problems);
+        Check(c.Rows() == 1 && c.Find(421, y) && Near(y, 12.5f), "csv export with quotes and backticks, CRLF");
+        JumpDistanceTable h;
+        h.Parse("# a comment\n421;11,5\n", problems);
+        Check(h.Rows() == 1 && h.Find(421, y) && Near(y, 11.5f), "no header, ';' separated, decimal comma: 11,5 is 11.5");
+        JumpDistanceTable h2;
+        h2.Parse("421,11.5\n1064,9\n", problems);
+        Check(h2.Rows() == 2 && h2.Find(1064, y) && Near(y, 9.0f), "no header: spell id, distance");
+        JumpDistanceTable r;
+        r.Parse("Entry,Radius,Flags\n421,20,0\n", problems);
+        Check(r.Rows() == 0 && problems.find("no spell id / distance column") != std::string::npos && problems.find("Entry") != std::string::npos, "unknown header: not used, the headers are listed");
+        JumpDistanceTable e;
+        problems.clear();
+        e.Parse("ID,Distance\n421,0\nabc,5\n1064,7\n", problems);
+        Check(e.Rows() == 1 && e.Find(1064, y) && problems.find("line 2") != std::string::npos && problems.find("line 3") != std::string::npos, "zero and non-numeric rows are reported and skipped");
+        Check(!JumpDistanceTable{}.Find(421, y), "an empty table lists nothing");
+    }
+
+    std::printf("2d. SpellCone.csv\n");
+    {
+        SpellEffects s;               // a spell the DBC only knows as "area around the caster"
+        s.effect[0] = 2; s.targetA[0] = 22; s.targetB[0] = 15; s.radius[0] = 10;
+        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Circle, "not listed: a circle");
+        s.coneAngle = 60.0f;
+        Check(ShapesFromSpell(s, rules, out) == 1 && out[0].kind == ShapeKind::Cone && Near(out[0].param, 60) && Near(out[0].radius, 10) && out[0].anchor == Anchor::Caster, "listed: the area around the caster is a cone of the listed angle");
+        SpellEffects c;               // a cone target type takes the listed angle over the default
+        c.effect[0] = 2; c.targetA[0] = 24; c.radius[0] = 12; c.coneAngle = 45.0f;
+        Check(ShapesFromSpell(c, rules, out) == 1 && Near(out[0].param, 45), "cone target type: the listed angle beats ConeAngle");
+        c.coneAngle = 360.0f;
+        Check(ShapesFromSpell(c, rules, out) == 1 && out[0].kind == ShapeKind::Circle, "360 degrees is a circle");
+        SpellEffects d;               // an area around the destination is not turned into a cone
+        d.effect[0] = 2; d.targetA[0] = 16; d.radius[0] = 8; d.coneAngle = 60.0f;
+        Check(ShapesFromSpell(d, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Dest, "a destination area stays a circle");
+        ShapeRules nocone = rules; nocone.cones = false;
+        Check(ShapesFromSpell(s, nocone, out) == 0, "cones off: a listed spell draws nothing rather than the wrong shape");
+
+        ConeAngleTable t;
+        std::string problems;
+        t.Parse("# spell id, degrees\n2643,60\n12345;90\n23456\t180\n2643,75\n", problems);
+        float deg = 0;
+        Check(t.Rows() == 3 && t.Find(2643, deg) && Near(deg, 75) && t.Find(12345, deg) && Near(deg, 90) && t.Find(23456, deg) && Near(deg, 180) && !t.Find(1, deg) && problems.empty(), "headless file: comma, semicolon, tab; the last line of a spell counts");
+        ConeAngleTable h;
+        h.Parse("SpellId,Degrees\r\n100,30\r\n", problems);
+        Check(h.Rows() == 1 && h.Find(100, deg) && Near(deg, 30) && problems.empty(), "a header line is skipped quietly");
+        ConeAngleTable b;
+        problems.clear();
+        b.Parse("100,0\n101,361\nabc,45\n102\n103,45,extra\n", problems);
+        Check(b.Rows() == 1 && b.Find(103, deg) && problems.find("line 1") != std::string::npos && problems.find("line 2") != std::string::npos &&
+              problems.find("line 3") != std::string::npos && problems.find("line 4") != std::string::npos, "bad rows (0, over 360, text, missing degrees) are reported and skipped");
+    }
+
     std::printf("3. override file\n");
     {
         OverrideTable t;
@@ -127,6 +227,11 @@ int main()
         Check(AlphaAt(t, N, 0, 0.485f) > 200, "cone: bright arc");
         RenderConeTexture(t, N, 180);
         Check(AlphaAt(t, N, 0.3f, 0.02f) > 40 && AlphaAt(t, N, 0.3f, -0.05f) == 0, "cone of 180 degrees is the front half");
+        RenderConeTexture(t, N, 270);
+        Check(AlphaAt(t, N, 0.3f, 0.0f) > 40 && AlphaAt(t, N, -0.3f, 0.0f) > 40, "cone of 270 degrees: both sides are in");
+        Check(AlphaAt(t, N, 0.0f, -0.3f) == 0, "cone of 270 degrees: the wedge straight behind is out");
+        Check(AlphaAt(t, N, 0.3f * std::sin(0.5f), -0.3f * std::cos(0.5f)) == 0 && AlphaAt(t, N, 0.3f * std::sin(1.2f), -0.3f * std::cos(1.2f)) > 40, "cone of 270 degrees: the wedge is 90 wide (45 each side of the back)");
+        Check(AlphaAt(t, N, 0.3f * std::sin(0.785f), -0.3f * std::cos(0.785f)) > 200, "cone of 270 degrees: bright edge where the wedge starts");
 
         RenderLineTexture(t, N, 0.2f);
         Check(AlphaAt(t, N, 0, 0.25f) > 40 && AlphaAt(t, N, 0, 0.25f) < 90, "line: fill along the middle");
