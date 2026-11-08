@@ -1,3 +1,39 @@
+# Personal notes
+This is fork of the decompiled made for personal enjoyment, left open for other people who want to get a 64 bits compiled client with some WXL modules ported in.
+Most of the implementation was made by Claude, so there might be a whole lot of spaghetti code in there.
+
+NOTE THAT THIS IS TO BE COMPILED AS 64 BITS
+
+Modules ported and credits:
+WXL 1.1 core API and Modern m2 (credits: iThorgrim https://github.com/iThorgrim and the rest of he people working on WXL)
+Equip Extension by .CSV (credits: 
+							https://github.com/Morfium-G For the original wxl-equipextension module
+							https://github.com/Furioz420 For the original .csv implementation
+							Myself)
+WXL Outlines (credits: https://github.com/WarcraftXL-Extensions/wxl-unit-outline)
+Modern Water (credits: https://github.com/jealous-sound/coa-vfog and https://github.com/manatactical/wxl-modern-water)
+Physics Engine (credits: https://github.com/TheDaveCalaz/wxl-equip-plus and Domino Physics Engine)
+
+Additional things:
+- Spell AoE indicators (WIP, but serviceable at the moment)
+- Item model physics through individual .phy2 files (you can extract .phy2 files by using this extractor https://github.com/Atraxian123/WoW_Phys_Extractor_Phy2 on unconverted RETAL models and placing them in thesame folder as the converted model)
+- Physics override by item or creature display ID
+- configurable items physics through WXLSettings.ini
+- underwater physics and buoyancy (while underwater, models behave with different physics constants)
+- native .png file compatibility (client will look for .blp, then fallback to .png, then to .tgs before giving a green texture)
+- native DXT5 .blp files compatibility for equipment skind instead of just paletted
+- automatic construction of "bakednpctextures" for npcs that use character models, but have no linked bakednpctexture in their creaturedisplayidextra.dbc
+- outlines for quest targets and tracked npcs and objects
+- opt-in for most of the modules
+- solved some crashes with overflowing of native m2 models materials that happened on 64 bits client.
+
+all configuration files are in the <root>/WXL folder
+
+KNOWN ISSUES:
+- Modern water sometimes disappears when no reflection is present and no creature model is rendered underwater.
+- Outlines sometimes screw up the rendering of the image. Just close the client and reopen it and it should be fine.
+- Sometimes it crashes when exiting the game. Cause unknown, it might be because I filled my client with gigabites of random patches.
+
 # wowdecomp
 
 A C++ decompilation of the World of Warcraft 3.3.5a client (`Wow.exe`, build 12340, June 2010).
