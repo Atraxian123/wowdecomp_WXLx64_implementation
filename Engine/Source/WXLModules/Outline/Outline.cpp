@@ -229,6 +229,8 @@ namespace wxl::outline
             float trackedRange = 80.0f;     //   TrackedRange: yards from the player, 0 = every visible one
             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
             float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
+            bool  transparentUnits = false; // [Outline] TransparentUnits: also outline see-through batches (ghosts, spirits)
+            float transparentAlphaRef = 0.05f; // [Outline] TransparentAlphaRef: texture alpha below this is not outlined on them
             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
             float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
@@ -244,7 +246,8 @@ namespace wxl::outline
             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
               questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
-              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange)
+              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
+              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef)
         {
             depthTol_ = o.depthTolerance;
             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
@@ -308,6 +311,8 @@ namespace wxl::outline
         bool                trackedObjects_, trackedCreatures_, trackedNpcs_;
         bool                trackedThroughWalls_;
         float               trackedRange_;
+        bool                transparentUnits_;
+        float               transparentAlphaRef_;
         float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
         Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
         int                 trackedCount_ = 0;
@@ -763,7 +768,16 @@ namespace wxl::outline
         if (!fillPS_ || !mask_.surface || !stampSave_) return;
         const int idx = FindTarget(a.model);
         if (idx < 0) return;
-        if (!wxl::module::Api()->outlineBatchState(&alphaRef_)) return;
+        // 1 = a solid batch, 2 = a see-through one (alpha-blended, additive, or no depth write: ghosts and spirits).
+        // Those are stamped only when [Outline] TransparentUnits=1, and with their own alpha reference: the engine's
+        // cutout value means nothing for a blended batch.
+        const int batchState = wxl::module::Api()->outlineBatchState(&alphaRef_);
+        if (batchState == 0) return;
+        if (batchState == 2)
+        {
+            if (!transparentUnits_) return;
+            alphaRef_ = transparentAlphaRef_;
+        }
         if (!DrawingIntoFrame(dev, mask_.width, mask_.height)) return;
         StampSilhouette(dev, a, idx);
     }
@@ -847,13 +861,16 @@ namespace wxl::outline
         o.trackedThroughWalls = IniInt("Outline", "TrackedThroughWalls", o.questThroughWalls ? 1 : 0) != 0;
         o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
         if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
+        o.transparentUnits = IniInt("Outline", "TransparentUnits", 0) != 0;
+        o.transparentAlphaRef = IniFloat("Outline", "TransparentAlphaRef", 0.05f);
+        if (!(o.transparentAlphaRef >= 0.0f) || o.transparentAlphaRef > 1.0f) o.transparentAlphaRef = 0.05f;
         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
         if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
 
         static Outline s_outline(o);
-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s (spread %.2f, intensity %.2f)",
+        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s, transparent units %s (spread %.2f, intensity %.2f)",
                     o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
-                    o.tracked ? "on" : "off", o.spread, o.intensity);
+                    o.tracked ? "on" : "off", o.transparentUnits ? "on" : "off", o.spread, o.intensity);
         return true;
     }
 }

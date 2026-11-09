@@ -572,7 +572,9 @@ typedef struct WxlApi
      * cache and what is visible now), up to `max`, returned as the count. The scan is not cheap: call it on a timer. */
     uint32_t (*outlineQuestTargets)(const void** models, uint32_t max);
     /* 1 when the model batch about to be drawn may be stamped into an outline mask (an opaque or alpha-tested batch
-     * that writes depth); *alphaRef receives the cutout reference (0..1) the engine is using for it. */
+     * that writes depth); 2 when it is a see-through batch (alpha-blended, additive, or drawn without a depth write)
+     * that the caller may stamp if it chooses to; 0 when the engine has no device. *alphaRef receives the cutout
+     * reference (0..1) the engine is using for it. */
     int (*outlineBatchState)(float* alphaRef);
 
     /* ---- unit state, added for the physics module: check WXL_API_HAS(api, instanceSwimming) once ---- */

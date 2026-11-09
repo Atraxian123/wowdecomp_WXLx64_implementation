@@ -425,9 +425,10 @@ void CM2SceneRender::SetupMaterial() {
 // VERIFY: aeedaf63 manual
 // OFFSET: 0x008203B0
 void CM2SceneRender::DrawBatch() {
-    // WXL: names the model for the device's OnM2BatchDraw emit. Only the opaque pass: that is where a unit's solid
-    // geometry (alpha-key cutouts included) draws; the later passes carry blended effects, which are not silhouette.
-    wxl::events::ScopedM2Model wxlDrawModel(this->m_pass == M2PASS_0 ? this->m_curModel : nullptr);
+    // WXL: names the model for the device's OnM2BatchDraw emit. By default only the opaque pass: that is where a unit's
+    // solid geometry (alpha-key cutouts included) draws; the later passes carry blended effects, which are not
+    // silhouette. [Outline] TransparentUnits=1 names it in every pass, so see-through units (ghosts) can be outlined.
+    wxl::events::ScopedM2Model wxlDrawModel(this->m_pass == M2PASS_0 || wxl::events::BlendedM2BatchesWanted() ? this->m_curModel : nullptr);
 
     DebugLog("Batch: model=%s index=%d", this->m_curModel->m_shared->m_fileNameWithoutPath, this->m_curElement->m_index);
 

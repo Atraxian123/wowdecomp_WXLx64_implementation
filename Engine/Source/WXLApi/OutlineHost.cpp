@@ -320,6 +320,9 @@ namespace wxl::api::outlinehost
 
     // What the engine is doing for the batch it just drew: the blend mode and the depth write say whether it is an
     // opaque (or alpha-tested) batch, the alpha reference is the cutout the batch used.
+    // Returns 1 for an opaque or alpha-tested batch that writes depth, 2 for any other batch (alpha-blended, additive
+    // or drawn without a depth write: ghosts, spirits and other see-through models), 0 when there is no device. A
+    // caller that only wants solid batches treats 2 as "skip".
     int BatchState(float* alphaRef)
     {
         if (alphaRef)
@@ -332,7 +335,7 @@ namespace wxl::api::outlinehost
         if (!g_theGxDevicePtr) return 0;
         const int32_t blend  = g_theGxDevicePtr->m_hwRenderStates[GxRs_BlendingMode].m_data.i[0];
         const int32_t zwrite = g_theGxDevicePtr->m_hwRenderStates[GxRs_DepthWrite].m_data.i[0];
-        return blend <= GxBlend_AlphaKey && zwrite != 0 ? 1 : 0;
+        return blend <= GxBlend_AlphaKey && zwrite != 0 ? 1 : 2;
     }
 }
 

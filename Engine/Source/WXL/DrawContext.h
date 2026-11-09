@@ -18,6 +18,11 @@ namespace wxl::events
     /// The model being drawn, or null outside a DrawBatch.
     inline void* CurrentM2Model() { return CurrentM2ModelSlot(); }
 
+    /// True when WXLSetup.ini [Outline] TransparentUnits=1. DrawBatch then names the model in every pass instead of
+    /// only the opaque one, so the unit outline also receives the batches of blended, see-through models (ghosts,
+    /// spirits), which the renderer draws in the later passes. Read once; defined in DrawContext.cpp.
+    bool BlendedM2BatchesWanted();
+
     class ScopedM2Model
     {
     public:

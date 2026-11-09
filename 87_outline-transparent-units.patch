@@ -1,0 +1,135 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index cbd9e03..60c7c2d 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -572,7 +572,9 @@ typedef struct WxlApi
+      * cache and what is visible now), up to `max`, returned as the count. The scan is not cheap: call it on a timer. */
+     uint32_t (*outlineQuestTargets)(const void** models, uint32_t max);
+     /* 1 when the model batch about to be drawn may be stamped into an outline mask (an opaque or alpha-tested batch
+-     * that writes depth); *alphaRef receives the cutout reference (0..1) the engine is using for it. */
++     * that writes depth); 2 when it is a see-through batch (alpha-blended, additive, or drawn without a depth write)
++     * that the caller may stamp if it chooses to; 0 when the engine has no device. *alphaRef receives the cutout
++     * reference (0..1) the engine is using for it. */
+     int (*outlineBatchState)(float* alphaRef);
+ 
+     /* ---- unit state, added for the physics module: check WXL_API_HAS(api, instanceSwimming) once ---- */
+diff --git a/Engine/Source/WXLApi/OutlineHost.cpp b/Engine/Source/WXLApi/OutlineHost.cpp
+index 88eaefa..d4fdf84 100644
+--- a/Engine/Source/WXLApi/OutlineHost.cpp
++++ b/Engine/Source/WXLApi/OutlineHost.cpp
+@@ -320,6 +320,9 @@ namespace wxl::api::outlinehost
+ 
+     // What the engine is doing for the batch it just drew: the blend mode and the depth write say whether it is an
+     // opaque (or alpha-tested) batch, the alpha reference is the cutout the batch used.
++    // Returns 1 for an opaque or alpha-tested batch that writes depth, 2 for any other batch (alpha-blended, additive
++    // or drawn without a depth write: ghosts, spirits and other see-through models), 0 when there is no device. A
++    // caller that only wants solid batches treats 2 as "skip".
+     int BatchState(float* alphaRef)
+     {
+         if (alphaRef)
+@@ -332,7 +335,7 @@ namespace wxl::api::outlinehost
+         if (!g_theGxDevicePtr) return 0;
+         const int32_t blend  = g_theGxDevicePtr->m_hwRenderStates[GxRs_BlendingMode].m_data.i[0];
+         const int32_t zwrite = g_theGxDevicePtr->m_hwRenderStates[GxRs_DepthWrite].m_data.i[0];
+-        return blend <= GxBlend_AlphaKey && zwrite != 0 ? 1 : 0;
++        return blend <= GxBlend_AlphaKey && zwrite != 0 ? 1 : 2;
+     }
+ }
+ 
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+index a5297d9..09b58f8 100644
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -229,6 +229,8 @@ namespace wxl::outline
+             float trackedRange = 80.0f;     //   TrackedRange: yards from the player, 0 = every visible one
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
++            bool  transparentUnits = false; // [Outline] TransparentUnits: also outline see-through batches (ghosts, spirits)
++            float transparentAlphaRef = 0.05f; // [Outline] TransparentAlphaRef: texture alpha below this is not outlined on them
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+             float neutralColor[4]  = { 1.0f, 1.0f,  0.0f, 1.0f };
+@@ -244,7 +246,8 @@ namespace wxl::outline
+             : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+               questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
+               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+-              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange)
++              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
++              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef)
+         {
+             depthTol_ = o.depthTolerance;
+             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
+@@ -308,6 +311,8 @@ namespace wxl::outline
+         bool                trackedObjects_, trackedCreatures_, trackedNpcs_;
+         bool                trackedThroughWalls_;
+         float               trackedRange_;
++        bool                transparentUnits_;
++        float               transparentAlphaRef_;
+         float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
+         Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
+         int                 trackedCount_ = 0;
+@@ -763,7 +768,16 @@ namespace wxl::outline
+         if (!fillPS_ || !mask_.surface || !stampSave_) return;
+         const int idx = FindTarget(a.model);
+         if (idx < 0) return;
+-        if (!wxl::module::Api()->outlineBatchState(&alphaRef_)) return;
++        // 1 = a solid batch, 2 = a see-through one (alpha-blended, additive, or no depth write: ghosts and spirits).
++        // Those are stamped only when [Outline] TransparentUnits=1, and with their own alpha reference: the engine's
++        // cutout value means nothing for a blended batch.
++        const int batchState = wxl::module::Api()->outlineBatchState(&alphaRef_);
++        if (batchState == 0) return;
++        if (batchState == 2)
++        {
++            if (!transparentUnits_) return;
++            alphaRef_ = transparentAlphaRef_;
++        }
+         if (!DrawingIntoFrame(dev, mask_.width, mask_.height)) return;
+         StampSilhouette(dev, a, idx);
+     }
+@@ -847,13 +861,16 @@ namespace wxl::outline
+         o.trackedThroughWalls = IniInt("Outline", "TrackedThroughWalls", o.questThroughWalls ? 1 : 0) != 0;
+         o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
+         if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
++        o.transparentUnits = IniInt("Outline", "TransparentUnits", 0) != 0;
++        o.transparentAlphaRef = IniFloat("Outline", "TransparentAlphaRef", 0.05f);
++        if (!(o.transparentAlphaRef >= 0.0f) || o.transparentAlphaRef > 1.0f) o.transparentAlphaRef = 0.05f;
+         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
+         if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
+ 
+         static Outline s_outline(o);
+-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s (spread %.2f, intensity %.2f)",
++        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s, transparent units %s (spread %.2f, intensity %.2f)",
+                     o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
+-                    o.tracked ? "on" : "off", o.spread, o.intensity);
++                    o.tracked ? "on" : "off", o.transparentUnits ? "on" : "off", o.spread, o.intensity);
+         return true;
+     }
+ }
+diff --git a/Engine/Source/WXLModules/Outline/README.md b/Engine/Source/WXLModules/Outline/README.md
+index 3a341b9..850f545 100644
+--- a/Engine/Source/WXLModules/Outline/README.md
++++ b/Engine/Source/WXLModules/Outline/README.md
+@@ -18,6 +18,8 @@ Tracked=1          ; also outline what the minimap tracks (nodes, tracked creatu
+ TrackedRange=80    ; yards from you, 0 = every visible one
+ QuestThroughWalls=0
+ HideBehindObjects=0  ; 1 = no outline shows through anything in front
++TransparentUnits=0   ; 1 = also outline see-through models (ghosts, spirits); they are skipped by default
++TransparentAlphaRef=0.05  ; texture alpha below this is left out of a see-through model's outline, 0..1
+ Spread=1.5
+ Intensity=2.0
+ ```
+diff --git a/Example config files/WXLSetup.ini b/Example config files/WXLSetup.ini
+index b9b4438..4b10ee4 100644
+--- a/Example config files/WXLSetup.ini	
++++ b/Example config files/WXLSetup.ini	
+@@ -167,6 +167,10 @@ QuestThroughWalls=1
+ ; 1 = show through walls
+ HideBehindObjects=0  
+ ; 0 = current behavior (default)
++TransparentUnits=0  
++; 1 = also outline see-through models (ghosts, spirits); 0 = skip them (default)
++TransparentAlphaRef=0.05  
++; texture alpha below this is left out of a see-through model's outline (0..1)
+ QuestTurnIn=1            
+ ; new, default 0
+ QuestTurnInColor=FFD200  

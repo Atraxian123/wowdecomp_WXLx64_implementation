@@ -18,6 +18,8 @@ Tracked=1          ; also outline what the minimap tracks (nodes, tracked creatu
 TrackedRange=80    ; yards from you, 0 = every visible one
 QuestThroughWalls=0
 HideBehindObjects=0  ; 1 = no outline shows through anything in front
+TransparentUnits=0   ; 1 = also outline see-through models (ghosts, spirits); they are skipped by default
+TransparentAlphaRef=0.05  ; texture alpha below this is left out of a see-through model's outline, 0..1
 Spread=1.5
 Intensity=2.0
 ```
