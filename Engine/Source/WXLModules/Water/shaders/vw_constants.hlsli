@@ -152,6 +152,12 @@ float ReflectionStrength()
     return cSurfaceResponse.z;
 }
 
+// Yards from the camera past which scene reflections fade out; 0 = no limit.
+float SceneReflectionRange()
+{
+    return cWaveFoam.y;
+}
+
 float SpecularStrength()
 {
     return cSurfaceResponse.w;

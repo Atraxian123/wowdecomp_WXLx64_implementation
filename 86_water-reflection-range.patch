@@ -1,0 +1,82 @@
+diff --git a/Engine/Source/WXLModules/Water/config.cpp b/Engine/Source/WXLModules/Water/config.cpp
+index f4bf48d..eb07f9e 100644
+--- a/Engine/Source/WXLModules/Water/config.cpp
++++ b/Engine/Source/WXLModules/Water/config.cpp
+@@ -83,6 +83,7 @@ const FloatSetting kWaterFloatSettings[] = {
+     {"WaterWind", &Config::waterWind, 0.5f, 10.0f},
+     {"WaterFoam", &Config::waterFoam, 0.0f, 2.0f},
+     {"WaterReflections", &Config::waterReflections, 0.0f, 2.0f},
++    {"WaterReflectionRange", &Config::waterReflectionRange, 0.0f, 500.0f},
+     {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
+     {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
+     {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},
+diff --git a/Engine/Source/WXLModules/Water/config.h b/Engine/Source/WXLModules/Water/config.h
+index 34e81fe..831f566 100644
+--- a/Engine/Source/WXLModules/Water/config.h
++++ b/Engine/Source/WXLModules/Water/config.h
+@@ -69,6 +69,7 @@ struct Config
+     float waterWind = 3.0f;
+     float waterFoam = 1.0f;
+     float waterReflections = 0.75f;
++    float waterReflectionRange = 0.0f;
+     float waterSpecular = 1.0f;
+     float waterClarity = 0.7f;
+     float waterZoneColors = 0.7f;
+diff --git a/Engine/Source/WXLModules/Water/shaders/vw_constants.hlsli b/Engine/Source/WXLModules/Water/shaders/vw_constants.hlsli
+index 6a36d13..31b1196 100644
+--- a/Engine/Source/WXLModules/Water/shaders/vw_constants.hlsli
++++ b/Engine/Source/WXLModules/Water/shaders/vw_constants.hlsli
+@@ -152,6 +152,12 @@ float ReflectionStrength()
+     return cSurfaceResponse.z;
+ }
+ 
++// Yards from the camera past which scene reflections fade out; 0 = no limit.
++float SceneReflectionRange()
++{
++    return cWaveFoam.y;
++}
++
+ float SpecularStrength()
+ {
+     return cSurfaceResponse.w;
+diff --git a/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl b/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
+index 64a0f6b..70c201b 100644
+--- a/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
++++ b/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
+@@ -74,6 +74,8 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
+     float3 R = ReflectedDirection(V, N);
+     float2 hitUv;
+     float4 screenReflection = TraceScreenReflection(w, pixel, R, hitUv);
++    [branch] if (SceneReflectionRange() > 0)
++        screenReflection.a *= 1 - smoothstep(0.5 * SceneReflectionRange(), SceneReflectionRange(), w.waterZ);
+     float3 sky = 0;
+     [branch] if (screenReflection.a < 1)
+         sky = FoggedSkyReflection(w, R, SkyColour(R.z));
+diff --git a/Engine/Source/WXLModules/Water/water_renderer.cpp b/Engine/Source/WXLModules/Water/water_renderer.cpp
+index d98c53b..81d8780 100644
+--- a/Engine/Source/WXLModules/Water/water_renderer.cpp
++++ b/Engine/Source/WXLModules/Water/water_renderer.cpp
+@@ -1262,7 +1262,7 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
+                        preset.depthFadeFoam[2], 0.0f};
+     c.shoreFoam = {std::max(preset.shoreFoam[0], 0.0f) * foam, preset.shoreFoam[1], preset.shoreFoam[2],
+                    kShoreDistancePerDepth};
+-    c.waveFoam = {std::max(preset.waveFoam[0], 0.0f) * foam, 0.0f, 0.0f, 0.0f};
++    c.waveFoam = {std::max(preset.waveFoam[0], 0.0f) * foam, std::max(m_cfg.waterReflectionRange, 0.0f), 0.0f, 0.0f};
+     c.waveFoamScaling = {preset.waveFoamScaling[0], preset.waveFoamScaling[1], preset.waveFoamScaling[2], 0.0f};
+     c.surfaceResponse = {preset.roughness[0], preset.roughness[1], preset.roughness[2] * m_cfg.waterReflections,
+                          m_cfg.waterSpecular};
+diff --git a/Engine/Source/WXLModules/Water/wxl-modern-water.ini b/Engine/Source/WXLModules/Water/wxl-modern-water.ini
+index e088b6f..d139b1b 100644
+--- a/Engine/Source/WXLModules/Water/wxl-modern-water.ini
++++ b/Engine/Source/WXLModules/Water/wxl-modern-water.ini
+@@ -33,6 +33,10 @@ WaterWind=3.0
+ WaterFoam=1.0
+ ; Reflections of the sky and the scene, 0..2; 0 = none
+ WaterReflections=0.75
++; Distance in yards from the camera beyond which the water stops reflecting the scene (your character, trees,
++; shores) and shows only the sky. The scene reflection fades out over the second half of this distance.
++; 0 = no limit. Try 30..60 to keep reflections to the water close to you.
++WaterReflectionRange=0
+ ; Highlight of the sun or moon on the water, 0..4; 0 = none
+ WaterSpecular=1.0
+ ; How far you see into the water, 0.25..4; larger is clearer

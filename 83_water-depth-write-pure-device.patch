@@ -1,0 +1,37 @@
+diff --git a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+index 98a388e..1daa28a 100644
+--- a/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
++++ b/Engine/Source/WXLModules/Water/d3d9_wrap.cpp
+@@ -598,9 +598,21 @@ private:
+     {
+         if (active == overrideActive)
+             return;
+-        if (active && !DepthWriteOverridden() &&
+-            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
+-            return;
++        if (active && !DepthWriteOverridden())
++        {
++            // A device created with D3DCREATE_PUREDEVICE rejects Get* calls. Bailing out here left the water
++            // draws without a forced Z-write, so the water surface never reached the depth copy and the
++            // water faded to the scene. The adopted-device hook already tracks every Z-write the client
++            // sends, so fall back to that value instead of giving up.
++            DWORD current = m_clientRequestedDepthWrite;
++            if (SUCCEEDED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &current)))
++                m_clientRequestedDepthWrite = current;
++            else if (!m_loggedDepthWriteQueryFailed)
++            {
++                m_loggedDepthWriteQueryFailed = true;
++                VF_LOG_INFO("water: GetRenderState(ZWRITEENABLE) failed (pure device); using the Z-write tracked from the client");
++            }
++        }
+         overrideActive = active;
+         if (&overrideActive == &m_waterForcesDepthWrite)
+             g_waterDepthWriteForced = active;
+@@ -611,6 +623,7 @@ private:
+ 
+     LONG m_ref = 1;
+     DWORD m_clientRequestedDepthWrite = TRUE;
++    bool m_loggedDepthWriteQueryFailed = false;
+     bool m_forceDepthWrite = false;
+     bool m_suppressDepthWrite = false;
+     bool m_waterForcesDepthWrite = false;

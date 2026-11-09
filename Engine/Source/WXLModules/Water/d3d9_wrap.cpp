@@ -2,6 +2,7 @@
 
 #include "client_ripple_sprites.h"
 #include "log.h"
+#include <cstring>
 #include "msaa_depth.h"
 #include "overlay.h"
 #include "renderer.h"
@@ -80,6 +81,9 @@ bool g_waterDepthWriteForced = false;
 // True while OverrideDepthWrite applies its own value, so the adopted-device hook does not mistake
 // that write for a client request and clobber the client's remembered Z-write.
 bool g_depthWriteOverrideApplying = false;
+// Diagnostics: Z-write requests the client made through the hook while the water pass forced Z-write on.
+unsigned g_forcedZWriteRequests = 0;
+unsigned g_forcedZWriteRequestsOff = 0;
 
 void Register(FogDevice* device)
 {
@@ -598,12 +602,28 @@ private:
     {
         if (active == overrideActive)
             return;
-        if (active && !DepthWriteOverridden() &&
-            FAILED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &m_clientRequestedDepthWrite)))
-            return;
+        if (active && !DepthWriteOverridden())
+        {
+            // A device created with D3DCREATE_PUREDEVICE rejects Get* calls. Bailing out here left the water
+            // draws without a forced Z-write, so the water surface never reached the depth copy and the
+            // water faded to the scene. The adopted-device hook already tracks every Z-write the client
+            // sends, so fall back to that value instead of giving up.
+            DWORD current = m_clientRequestedDepthWrite;
+            if (SUCCEEDED(m_real->GetRenderState(D3DRS_ZWRITEENABLE, &current)))
+                m_clientRequestedDepthWrite = current;
+            else if (!m_loggedDepthWriteQueryFailed)
+            {
+                m_loggedDepthWriteQueryFailed = true;
+                VF_LOG_INFO("water: GetRenderState(ZWRITEENABLE) failed (pure device); using the Z-write tracked from the client");
+            }
+        }
         overrideActive = active;
         if (&overrideActive == &m_waterForcesDepthWrite)
+        {
             g_waterDepthWriteForced = active;
+            if (active)
+                g_forcedZWriteRequests = g_forcedZWriteRequestsOff = 0;
+        }
         g_depthWriteOverrideApplying = true;
         m_real->SetRenderState(D3DRS_ZWRITEENABLE, DepthWriteToApply());
         g_depthWriteOverrideApplying = false;
@@ -611,6 +631,7 @@ private:
 
     LONG m_ref = 1;
     DWORD m_clientRequestedDepthWrite = TRUE;
+    bool m_loggedDepthWriteQueryFailed = false;
     bool m_forceDepthWrite = false;
     bool m_suppressDepthWrite = false;
     bool m_waterForcesDepthWrite = false;
@@ -1232,6 +1253,27 @@ bool FogDevice::BeginWater(const FrameInputs& in, const WaterInputs& water, cons
 
 WaterPassEnd FogDevice::EndWater()
 {
+    // Diagnostics: what the device holds for depth at the end of the water draws. Logged only when it changes,
+    // so the line shows up exactly when the water goes from rendering to vanishing and back.
+    if (m_waterForcesDepthWrite)
+    {
+        static DWORD lastSeen[7] = {0xFFFFFFFFu, 0, 0, 0, 0, 0, 0};
+        DWORD now[7] = {0, 0, 0, 0, 0, 0, 0};
+        const HRESULT hrWrite = m_real->GetRenderState(D3DRS_ZWRITEENABLE, &now[0]);
+        m_real->GetRenderState(D3DRS_ZENABLE, &now[1]);
+        m_real->GetRenderState(D3DRS_ZFUNC, &now[2]);
+        m_real->GetRenderState(D3DRS_STENCILENABLE, &now[3]);
+        now[4] = g_forcedZWriteRequests;
+        now[5] = g_forcedZWriteRequestsOff;
+        now[6] = g_waterDepthWriteForced ? 1u : 0u;
+        if (memcmp(lastSeen, now, sizeof(now)) != 0)
+        {
+            memcpy(lastSeen, now, sizeof(now));
+            VF_LOG_INFO("water pass end: device zwrite=%u (query %s) zenable=%u zfunc=%u stencil=%u; client zwrite requests "
+                        "while forced %u (%u asked for off); forced flag %u",
+                        now[0], SUCCEEDED(hrWrite) ? "ok" : "failed", now[1], now[2], now[3], now[4], now[5], now[6]);
+        }
+    }
     OverrideDepthWrite(m_waterForcesDepthWrite, false);
     WaterPassEnd end;
     end.shaded = m_water.End(m_real, Depth());
@@ -1287,7 +1329,12 @@ HRESULT STDMETHODCALLTYPE AdoptedSetRenderState(IDirect3DDevice9* self, D3DRENDE
         if (g_adoptedDevice && !g_depthWriteOverrideApplying)
             g_adoptedDevice->NoteClientDepthWrite(value);
         if (g_waterDepthWriteForced)
+        {
+            ++g_forcedZWriteRequests;
+            if (!value)
+                ++g_forcedZWriteRequestsOff;
             value = TRUE;
+        }
     }
     return g_origDeviceSetRenderState(self, state, value);
 }

@@ -55,6 +55,10 @@ namespace wxl::waterhooks
             if (m_tagged && Table().untagDraw)
                 Table().untagDraw();
         }
+        /// True when the modern water module tagged this draw, i.e. it will replace it and needs the water surface
+        /// written into the depth buffer.
+        bool Tagged() const { return m_tagged; }
+
         ScopedDrawTag(const ScopedDrawTag&)            = delete;
         ScopedDrawTag& operator=(const ScopedDrawTag&) = delete;
 

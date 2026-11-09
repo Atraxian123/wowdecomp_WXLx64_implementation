@@ -149,7 +149,9 @@ void Liquid::CMaterialWater::Render(Liquid::IEnvironment* environment, Liquid::I
     g_theGxDevicePtr->RsSet(GxRs_Culling, 0);
     g_theGxDevicePtr->RsSet(GxRs_BlendingMode, 2);
     GxUpdateAlphaRef(GxRs_AlphaRef);
-    GxRsSet(GxRs_DepthWrite, g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
+    // WXL: the modern water reads the water surface back from the depth buffer, so a tagged draw has to write it.
+    // Asking through the client's own render states keeps its state cache and the hardware in step.
+    GxRsSet(GxRs_DepthWrite, wxlWaterTag.Tagged() || g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
     g_theGxDevicePtr->RsSet(GxRs_Fog, 1);
 
     Liquid::s_vsConstants.m_projection = g_theGxDevicePtr->m_projNative;
@@ -230,7 +232,9 @@ void Liquid::CMaterialWaterNoSpec::Render(Liquid::IEnvironment* environment, Liq
     g_theGxDevicePtr->RsSet(GxRs_Culling, 0);
     g_theGxDevicePtr->RsSet(GxRs_BlendingMode, 2);
     GxUpdateAlphaRef(GxRs_AlphaRef);
-    GxRsSet(GxRs_DepthWrite, g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
+    // WXL: the modern water reads the water surface back from the depth buffer, so a tagged draw has to write it.
+    // Asking through the client's own render states keeps its state cache and the hardware in step.
+    GxRsSet(GxRs_DepthWrite, wxlWaterTag.Tagged() || g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
     g_theGxDevicePtr->RsSet(GxRs_Fog, 1);
 
     Liquid::s_vsConstants.m_projection = g_theGxDevicePtr->m_projNative;

@@ -54,7 +54,7 @@ const FloatSetting kLookFloatSettings[] = {
 
 const IntSetting kWaterIntSettings[] = {
     {"WaterQuality", &Config::waterQuality, 1, 3},
-    {"WaterDebugView", &Config::waterDebugView, 0, 6},
+    {"WaterDebugView", &Config::waterDebugView, 0, 8},
 };
 
 const FloatSetting kFloatSettings[] = {
@@ -83,6 +83,7 @@ const FloatSetting kWaterFloatSettings[] = {
     {"WaterWind", &Config::waterWind, 0.5f, 10.0f},
     {"WaterFoam", &Config::waterFoam, 0.0f, 2.0f},
     {"WaterReflections", &Config::waterReflections, 0.0f, 2.0f},
+    {"WaterReflectionRange", &Config::waterReflectionRange, 0.0f, 500.0f},
     {"WaterSpecular", &Config::waterSpecular, 0.0f, 4.0f},
     {"WaterClarity", &Config::waterClarity, 0.25f, 4.0f},
     {"WaterZoneColors", &Config::waterZoneColors, 0.0f, 1.0f},

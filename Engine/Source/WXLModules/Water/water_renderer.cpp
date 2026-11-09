@@ -1262,7 +1262,7 @@ void WaterRenderer::FillClassConstants(ShadingConstants& c, const WaterPreset& p
                        preset.depthFadeFoam[2], 0.0f};
     c.shoreFoam = {std::max(preset.shoreFoam[0], 0.0f) * foam, preset.shoreFoam[1], preset.shoreFoam[2],
                    kShoreDistancePerDepth};
-    c.waveFoam = {std::max(preset.waveFoam[0], 0.0f) * foam, 0.0f, 0.0f, 0.0f};
+    c.waveFoam = {std::max(preset.waveFoam[0], 0.0f) * foam, std::max(m_cfg.waterReflectionRange, 0.0f), 0.0f, 0.0f};
     c.waveFoamScaling = {preset.waveFoamScaling[0], preset.waveFoamScaling[1], preset.waveFoamScaling[2], 0.0f};
     c.surfaceResponse = {preset.roughness[0], preset.roughness[1], preset.roughness[2] * m_cfg.waterReflections,
                          m_cfg.waterSpecular};

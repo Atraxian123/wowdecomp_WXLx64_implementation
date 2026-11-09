@@ -1,0 +1,41 @@
+diff --git a/Engine/Source/WXL/WaterHooks.h b/Engine/Source/WXL/WaterHooks.h
+index 1f4b5ce..62eec9e 100644
+--- a/Engine/Source/WXL/WaterHooks.h
++++ b/Engine/Source/WXL/WaterHooks.h
+@@ -55,6 +55,10 @@ namespace wxl::waterhooks
+             if (m_tagged && Table().untagDraw)
+                 Table().untagDraw();
+         }
++        /// True when the modern water module tagged this draw, i.e. it will replace it and needs the water surface
++        /// written into the depth buffer.
++        bool Tagged() const { return m_tagged; }
++
+         ScopedDrawTag(const ScopedDrawTag&)            = delete;
+         ScopedDrawTag& operator=(const ScopedDrawTag&) = delete;
+ 
+diff --git a/WoW/Source/LiquidSystem/MaterialWater.cpp b/WoW/Source/LiquidSystem/MaterialWater.cpp
+index 610918e..8ac9b0c 100644
+--- a/WoW/Source/LiquidSystem/MaterialWater.cpp
++++ b/WoW/Source/LiquidSystem/MaterialWater.cpp
+@@ -149,7 +149,9 @@ void Liquid::CMaterialWater::Render(Liquid::IEnvironment* environment, Liquid::I
+     g_theGxDevicePtr->RsSet(GxRs_Culling, 0);
+     g_theGxDevicePtr->RsSet(GxRs_BlendingMode, 2);
+     GxUpdateAlphaRef(GxRs_AlphaRef);
+-    GxRsSet(GxRs_DepthWrite, g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
++    // WXL: the modern water reads the water surface back from the depth buffer, so a tagged draw has to write it.
++    // Asking through the client's own render states keeps its state cache and the hardware in step.
++    GxRsSet(GxRs_DepthWrite, wxlWaterTag.Tagged() || g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
+     g_theGxDevicePtr->RsSet(GxRs_Fog, 1);
+ 
+     Liquid::s_vsConstants.m_projection = g_theGxDevicePtr->m_projNative;
+@@ -230,7 +232,9 @@ void Liquid::CMaterialWaterNoSpec::Render(Liquid::IEnvironment* environment, Liq
+     g_theGxDevicePtr->RsSet(GxRs_Culling, 0);
+     g_theGxDevicePtr->RsSet(GxRs_BlendingMode, 2);
+     GxUpdateAlphaRef(GxRs_AlphaRef);
+-    GxRsSet(GxRs_DepthWrite, g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
++    // WXL: the modern water reads the water surface back from the depth buffer, so a tagged draw has to write it.
++    // Asking through the client's own render states keeps its state cache and the hardware in step.
++    GxRsSet(GxRs_DepthWrite, wxlWaterTag.Tagged() || g_theGxDevicePtr->Caps().m_maxClipPlanes == 0);
+     g_theGxDevicePtr->RsSet(GxRs_Fog, 1);
+ 
+     Liquid::s_vsConstants.m_projection = g_theGxDevicePtr->m_projNative;

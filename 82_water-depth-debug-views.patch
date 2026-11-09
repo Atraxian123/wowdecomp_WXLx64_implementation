@@ -1,0 +1,31 @@
+diff --git a/Engine/Source/WXLModules/Water/config.cpp b/Engine/Source/WXLModules/Water/config.cpp
+index 4b4d781..f4bf48d 100644
+--- a/Engine/Source/WXLModules/Water/config.cpp
++++ b/Engine/Source/WXLModules/Water/config.cpp
+@@ -54,7 +54,7 @@ const FloatSetting kLookFloatSettings[] = {
+ 
+ const IntSetting kWaterIntSettings[] = {
+     {"WaterQuality", &Config::waterQuality, 1, 3},
+-    {"WaterDebugView", &Config::waterDebugView, 0, 6},
++    {"WaterDebugView", &Config::waterDebugView, 0, 8},
+ };
+ 
+ const FloatSetting kFloatSettings[] = {
+diff --git a/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl b/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
+index 578d49e..64a0f6b 100644
+--- a/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
++++ b/Engine/Source/WXLModules/Water/shaders/vw_water.hlsl
+@@ -44,6 +44,13 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
+ {
+     float2 pixel = pixelIndex + 0.5;
+     WaterPixel w = ReconstructWaterPixel(pixel);
++    // WaterDebugView 7 = depth of the scene copy (taken before the water draws), 8 = depth after the water draws.
++    // Each is drawn as repeating grey bands (one band per 20 yards of view depth) so the two can be compared.
++    [branch] if (WaterDebugView() > 6.5)
++    {
++        float z = WaterDebugView() < 7.5 ? CopiedViewDepth(sSceneDepth, w.uv) : w.waterZ;
++        return float4(frac(z * 0.05).xxx, 1);
++    }
+     RippleSample ripples = SampleRipples(w);
+     WaveState waves = SampleWaves(w, ripples.slope);
+     float4 foamAlbedo = FoamAlbedo(w, waves);

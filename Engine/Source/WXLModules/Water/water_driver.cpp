@@ -260,7 +260,7 @@ void PassBeginUnsafe(const void* liquidRenderer)
         return;
     if (!engine::TransparentLiquidsQueued(liquidRenderer))
     {
-        RecordIdle("no water in view");
+        RecordIdle("no water in view (client queued no transparent liquid)");
         return;
     }
     FogDevice* device = GameFogDevice();
@@ -295,7 +295,7 @@ void PassEndUnsafe()
         RecordDrawn(end.shadedClasses, end.flatWaves);
     }
     else if (!g_classesThisPass)
-        RecordIdle("no water in view");
+        RecordIdle("no water in view (liquid queued, but no draw classified as water)");
     else
         RecordSkip(end.skipReason && *end.skipReason ? end.skipReason : "the water pass shaded nothing");
 }

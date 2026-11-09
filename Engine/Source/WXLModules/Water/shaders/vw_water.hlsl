@@ -44,6 +44,13 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
 {
     float2 pixel = pixelIndex + 0.5;
     WaterPixel w = ReconstructWaterPixel(pixel);
+    // WaterDebugView 7 = depth of the scene copy (taken before the water draws), 8 = depth after the water draws.
+    // Each is drawn as repeating grey bands (one band per 20 yards of view depth) so the two can be compared.
+    [branch] if (WaterDebugView() > 6.5)
+    {
+        float z = WaterDebugView() < 7.5 ? CopiedViewDepth(sSceneDepth, w.uv) : w.waterZ;
+        return float4(frac(z * 0.05).xxx, 1);
+    }
     RippleSample ripples = SampleRipples(w);
     WaveState waves = SampleWaves(w, ripples.slope);
     float4 foamAlbedo = FoamAlbedo(w, waves);
@@ -67,6 +74,8 @@ float4 main(float2 pixelIndex : VPOS) : COLOR0
     float3 R = ReflectedDirection(V, N);
     float2 hitUv;
     float4 screenReflection = TraceScreenReflection(w, pixel, R, hitUv);
+    [branch] if (SceneReflectionRange() > 0)
+        screenReflection.a *= 1 - smoothstep(0.5 * SceneReflectionRange(), SceneReflectionRange(), w.waterZ);
     float3 sky = 0;
     [branch] if (screenReflection.a < 1)
         sky = FoggedSkyReflection(w, R, SkyColour(R.z));
