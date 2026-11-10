@@ -3,6 +3,7 @@
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "Engine/Source/WXL/Event.h"
 #include "Engine/Source/WXL/Log.h"
+#include "Engine/Source/WXL/ModuleRegistry.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
@@ -66,6 +67,12 @@ namespace wxl::equip
             return false;
         }
 
+        // "Is this name a virtual path that was really minted?": this table's own keys, or any module's.
+        bool IsMintedVirtualKey(const char* name)
+        {
+            return wxl::scripts::equipextension::VPathIsVirtualKey(name) || wxl::registry::IsVirtualKey(name) != 0;
+        }
+
         // Where do the sidecars live right now? Answers "does it actually see my CSVs" before any model
         // loads. Only the working directory can be checked this early: game archives are not mounted yet.
         void ReportSidecarsOnDisk()
@@ -107,6 +114,7 @@ namespace wxl::equip
         wxl::LogCat("EQUIP", "Init: installing native reader and virtual path provider");
         wxl::storage::SetNativeReader(&ReadThroughSFile);
         wxl::storage::SetNativeExists(&ExistsThroughSFile);
+        wxl::storage::SetVirtualKeyCheck(&IsMintedVirtualKey);
         wxl::scripts::equipextension::VPathRegister();
         // The equip extension, weapon, creature and physics are modules (WXL\Modules\wxl_equip.dll, wxl_weapon.dll,
         // wxl_creature.dll, wxl_physics.dll), loaded by wxl::api::LoadModules() right after this. wxl_equip.dll

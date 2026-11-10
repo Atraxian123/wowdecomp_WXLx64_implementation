@@ -213,6 +213,12 @@ class CParticleEmitter2 {
     /* 0218 */ CAaBox m_worldBounds;
     /* 0230 */ uint32_t unused_0230;
 
+    // WXL: the extra texture layers of a multi-textured emitter (see WXL/ParticleCsv.h). m_texture is layer 0; these
+    // are layers 1 and 2, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
+    // ordinary emitter, which then draws exactly as before.
+    static constexpr uint32_t kLayerTextureCount = 2;
+    CTexture* m_layerTextures[kLayerTextureCount];
+
     virtual void Sync();
     virtual void CreateParticle(CParticle2& particle, float time, const C44Matrix& transform);
     virtual void CreateParticle(CParticle2_Model& particle, float time, const C44Matrix& transform);
@@ -269,6 +275,9 @@ class CParticleEmitter2 {
     void SetSimpleScaleKeys();
     void SetSimpleTailCellKeys();
     void SetTexture(CTexture* texture);
+    void SetLayerTexture(uint32_t layer, CTexture* texture);
+    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
+    void RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     void SetTextureDimensions(uint32_t rows, uint32_t cols);
     void SetTwinkleScale(const CRange& scale);
     void SetZsource(float zsource);

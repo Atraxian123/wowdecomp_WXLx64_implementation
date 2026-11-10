@@ -749,6 +749,7 @@ void CM2SceneRender::RenderBatchedParticle(CParticleEmitter2* emitter, CGxBuf* b
     this->SetupLighting();
     this->SetupMaterial();
     CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
+    emitter->RenderLayers(buf, format, vertexCount, indexCount);   // WXL: a multi-textured emitter's extra layers
 }
 
 // VERIFY: 1504273d manual
@@ -765,6 +766,8 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
     uint32_t live = emitter->m_liveList.m_count;
     uint32_t maxVertices = 0x100000 / vertexSize;
     CTexture* texture = emitter->m_texture;
+    CTexture* const layer0 = emitter->m_layerTextures[0];   // WXL: emitters batch only with the same extra layers
+    CTexture* const layer1 = emitter->m_layerTextures[1];
     uint32_t particles = 0x4000 / emitter->m_vertsPerParticle;
 
     if (particles >= live) {
@@ -814,6 +817,10 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
         }
 
         if ((reinterpret_cast<intptr_t>(otherEmitter->m_texture) - reinterpret_cast<intptr_t>(texture)) >> 2) {
+            break;
+        }
+
+        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1) {
             break;
         }
 

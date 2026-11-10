@@ -16,6 +16,7 @@ namespace wxl::storage
 
         NativeReadFn   g_nativeReader = nullptr;
         NativeExistsFn g_nativeExists = nullptr;
+        VirtualKeyFn g_virtualKeyCheck = nullptr;
     }
 
     void RegisterProvider(ProviderFn fn)
@@ -68,6 +69,16 @@ namespace wxl::storage
     void SetNativeExists(NativeExistsFn fn)
     {
         g_nativeExists = fn;
+    }
+
+    void SetVirtualKeyCheck(VirtualKeyFn fn)
+    {
+        g_virtualKeyCheck = fn;
+    }
+
+    bool IsVirtualKey(const char* name)
+    {
+        return g_virtualKeyCheck && name && *name && g_virtualKeyCheck(name);
     }
 
     bool ExistsNative(const char* name)

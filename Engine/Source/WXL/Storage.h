@@ -42,6 +42,12 @@ namespace wxl::storage
     void SetNativeReader(NativeReadFn fn);
     bool ReadNative(const char* name, std::vector<uint8_t>& out);
 
+    /// "Is this name a virtual path a module minted?", for callers in WXLCore, which cannot reach the module that owns the
+    /// table. Installed next to the native reader. Without one installed nothing is virtual.
+    using VirtualKeyFn = bool (*)(const char* name);
+    void SetVirtualKeyCheck(VirtualKeyFn fn);
+    bool IsVirtualKey(const char* name);
+
     /// Existence probe installed next to the native reader: opens the name the way the client does and closes it
     /// again without reading. Providers see this open too (a virtual file "exists").
     using NativeExistsFn = bool (*)(const char* name);

@@ -1,0 +1,775 @@
+diff --git a/Engine/Source/Model2/CM2SceneRender.cpp b/Engine/Source/Model2/CM2SceneRender.cpp
+index add740e..7141de5 100644
+--- a/Engine/Source/Model2/CM2SceneRender.cpp
++++ b/Engine/Source/Model2/CM2SceneRender.cpp
+@@ -749,6 +749,7 @@ void CM2SceneRender::RenderBatchedParticle(CParticleEmitter2* emitter, CGxBuf* b
+     this->SetupLighting();
+     this->SetupMaterial();
+     CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
++    emitter->RenderLayers(buf, format, vertexCount, indexCount);   // WXL: a multi-textured emitter's extra layers
+ }
+ 
+ // VERIFY: 1504273d manual
+@@ -765,6 +766,8 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
+     uint32_t live = emitter->m_liveList.m_count;
+     uint32_t maxVertices = 0x100000 / vertexSize;
+     CTexture* texture = emitter->m_texture;
++    CTexture* const layer0 = emitter->m_layerTextures[0];   // WXL: emitters batch only with the same extra layers
++    CTexture* const layer1 = emitter->m_layerTextures[1];
+     uint32_t particles = 0x4000 / emitter->m_vertsPerParticle;
+ 
+     if (particles >= live) {
+@@ -817,6 +820,10 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
+             break;
+         }
+ 
++        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1) {
++            break;
++        }
++
+         if (otherVertices + vertices > maxVertices) {
+             break;
+         }
+diff --git a/Engine/Source/Model2/M2Model.cpp b/Engine/Source/Model2/M2Model.cpp
+index 3f96f20..50e06ae 100644
+--- a/Engine/Source/Model2/M2Model.cpp
++++ b/Engine/Source/Model2/M2Model.cpp
+@@ -39,10 +39,36 @@
+ #include "WoW/Source/DB/DBClient/DBClient.h"
+ #include "WoW/Source/Object/ObjectClient/Types.h"
+ #include "Engine/Source/WXL/Hooks.h"
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/ParticleCsv.h"
++#include "Engine/Source/WXL/Storage.h"
++#include "Engine/Source/Base/Status.h"
+ 
+ // STATIC: 0x00A45570
+ static const uint32_t s_ribbonBlendModes[] = { 0, 1, 2, 10, 3, 4, 5 };
+ 
++// WXL: loads one texture of a multi-textured particle emitter that a CSV names (see WXL/ParticleCsv.h), with the flags
++// the model's own textures get. Null when the file is not there, so the emitter keeps what it has instead of drawing
++// nothing. The caller owns the returned handle.
++static CTexture* LoadCsvParticleTexture(const char* path, uint32_t sharedFlags) {
++    if (!wxl::storage::ExistsNative(path)) {
++        return nullptr;
++    }
++
++    CGxTexFlags texFlags;
++    texFlags.m_filter = GxTex_LinearMipLinear;
++    texFlags.m_wrapU = 1;
++    texFlags.m_wrapV = 1;
++
++    uint32_t flags = (sharedFlags & 4) ? 2 : 0;
++
++    if (sharedFlags & 0x40) {
++        flags |= 0x30;
++    }
++
++    return TextureCreate(path, texFlags, &GetGlobalStatusObj(), flags);
++}
++
+ // STATIC: 0x00D4118C
+ void (*CM2Model::s_transformVertices[5])(CM2Model*, M2SkinSection*, uint8_t*, int32_t);
+ 
+@@ -7283,6 +7309,10 @@ int32_t CM2Model::InitializeLoaded() {
+ 
+         uint8_t* emitterMemory = memory + emitterOffset;
+ 
++        // WXL: this model's multi-textured emitters, when [Particles] MultiTextureCsv=1 and a CSV sits beside the model
++        // (or beside the original of a virtual-path model). Null otherwise, and every emitter is built as before.
++        const std::shared_ptr<const wxl::particlecsv::Table> wxlParticleCsv = wxl::particlecsv::For(this->m_shared->m_fileName);
++
+         for (uint32_t i = 0; i < data->m_particles.m_count; i++) {
+             M2Particle* particleData = &data->m_particles[i];
+             M2ModelParticle* particle = &this->m_particles[i];
+@@ -7468,7 +7498,47 @@ int32_t CM2Model::InitializeLoaded() {
+                 emitter->SetChooseRandomTexture(1);
+             }
+ 
+-            emitter->SetMaterial(material, this->m_shared->m_textures[particleData->m_textureIndex]);
++            // WXL: a multi-textured emitter takes every texture the CSV names for it and blends them additively. One that
++            // the CSV does not mark, or whose textures cannot be found (fewer than two), keeps the stock material.
++            CTexture* wxlLayers[wxl::particlecsv::kMaxLayers] = {};
++            uint32_t wxlLayerCount = 0;
++
++            if (const wxl::particlecsv::Emitter* wxlMulti = wxlParticleCsv ? wxlParticleCsv->Find(i) : nullptr) {
++                for (uint32_t slot = 0; slot < wxl::particlecsv::kMaxLayers; slot++) {
++                    if (wxlMulti->texture[slot].empty()) {
++                        continue;
++                    }
++
++                    if (CTexture* layer = LoadCsvParticleTexture(wxlMulti->texture[slot].c_str(), this->m_shared->m_flags)) {
++                        wxlLayers[wxlLayerCount++] = layer;
++                    }
++                }
++
++                if (wxlLayerCount >= 2) {
++                    // stock M2 blend 4 ("add"): no alpha test, the layers sum in the frame buffer
++                    material.m_blendMode = 3;
++                    material.m_flags &= ~4u;
++                    wxl::LogCat("PARTICLE", "%s: emitter %u draws %u textures additively", this->m_shared->m_fileName, i, wxlLayerCount);
++                } else {
++                    for (uint32_t l = 0; l < wxlLayerCount; l++) {
++                        HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));
++                    }
++
++                    wxlLayerCount = 0;
++                    wxl::LogCat("PARTICLE", "%s: emitter %u is multi-textured in the CSV but fewer than two of its textures exist; drawn normally", this->m_shared->m_fileName, i);
++                }
++            }
++
++            emitter->SetMaterial(material, wxlLayerCount ? wxlLayers[0] : this->m_shared->m_textures[particleData->m_textureIndex]);
++
++            for (uint32_t l = 1; l < wxlLayerCount; l++) {
++                emitter->SetLayerTexture(l - 1, wxlLayers[l]);
++            }
++
++            for (uint32_t l = 0; l < wxlLayerCount; l++) {
++                HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));   // the emitter holds its own references
++            }
++
+             emitter->m_params.m_colorTrack = &particleData->m_colorTrack;
+             emitter->m_params.m_scaleTrack = &particleData->m_scaleTrack;
+             emitter->m_params.m_alphaTrack = &particleData->m_alphaTrack;
+diff --git a/Engine/Source/Services/ParticleSystem2.cpp b/Engine/Source/Services/ParticleSystem2.cpp
+index acb9194..6b35e6f 100644
+--- a/Engine/Source/Services/ParticleSystem2.cpp
++++ b/Engine/Source/Services/ParticleSystem2.cpp
+@@ -276,6 +276,49 @@ void CParticleEmitter2::SetTexture(CTexture* texture) {
+     this->m_texture = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(texture)));
+ }
+ 
++// WXL: layer 1 or 2 of a multi-textured emitter. A null texture clears the layer.
++void CParticleEmitter2::SetLayerTexture(uint32_t layer, CTexture* texture) {
++    if (layer >= kLayerTextureCount) {
++        return;
++    }
++
++    if (this->m_layerTextures[layer]) {
++        HandleClose(reinterpret_cast<HOBJECT>(this->m_layerTextures[layer]));
++        this->m_layerTextures[layer] = nullptr;
++    }
++
++    if (texture) {
++        this->m_layerTextures[layer] = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(texture)));
++    }
++}
++
++// WXL: draws the vertices already built for this emitter once more for each extra texture layer. The shader, the
++// lighting and the blend state are still the ones the first draw set up; only texture 0 changes. A layer whose
++// texture is not loaded yet is skipped, and the base texture is put back afterwards.
++void CParticleEmitter2::RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
++    bool drawn = false;
++
++    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
++        if (!this->m_layerTextures[i]) {
++            continue;
++        }
++
++        CGxTex* gxTex = TextureGetGxTex(this->m_layerTextures[i], 0, nullptr);
++
++        if (!gxTex) {
++            continue;
++        }
++
++        g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
++        CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
++        drawn = true;
++    }
++
++    if (drawn) {
++        g_theGxDevicePtr->RsSet(GxRs_Texture0, TextureGetGxTex(this->m_texture, 0, nullptr));
++    }
++}
++
+ // VERIFY: a4b2b0e5 manual
+ // OFFSET: 0x00978C70
+ void CParticleEmitter2::SetTextureDimensions(uint32_t rows, uint32_t cols) {
+@@ -1484,6 +1527,13 @@ CParticleEmitter2::~CParticleEmitter2() {
+         this->m_texture = nullptr;
+     }
+ 
++    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
++        if (this->m_layerTextures[i]) {
++            HandleClose(reinterpret_cast<HOBJECT>(this->m_layerTextures[i]));
++            this->m_layerTextures[i] = nullptr;
++        }
++    }
++
+     if (this->m_model) {
+         this->m_model->Release();
+         this->m_model = nullptr;
+@@ -2177,6 +2227,8 @@ CParticleEmitter2::CParticleEmitter2() : m_random(0) {
+     this->m_indicesPerParticle = 0;
+     this->m_alphaScale = 1.0f;
+     this->m_texture = nullptr;
++    this->m_layerTextures[0] = nullptr;
++    this->m_layerTextures[1] = nullptr;
+     this->unused_012C = 0;
+     this->m_twinkleFPS = 10.0f;
+     this->m_flags = 0x6;
+@@ -2383,6 +2435,7 @@ void CParticleEmitter2::RenderParticles(const C44Matrix* frameOfReference, void*
+ 
+         if (this->m_renderedParticles) {
+             CParticleEmitter2::RenderParticleVertices(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
++            this->RenderLayers(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
+             g_theGxDevicePtr->XformSetView(view);
+         }
+     }
+@@ -2623,6 +2676,13 @@ CParticleEmitter2::CParticleEmitter2(const CParticleEmitter2& source, int32_t co
+     }
+ 
+     this->m_texture = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(source.m_texture)));
++
++    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
++        this->m_layerTextures[i] = source.m_layerTextures[i]
++            ? reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(source.m_layerTextures[i])))
++            : nullptr;
++    }
++
+     this->m_flags &= ~0x80;
+ 
+     if (!copyParticles || (!source.m_freeList.m_count && !source.m_liveList.m_count)) {
+diff --git a/Engine/Source/Services/ParticleSystem2.h b/Engine/Source/Services/ParticleSystem2.h
+index 1f33e08..751d774 100644
+--- a/Engine/Source/Services/ParticleSystem2.h
++++ b/Engine/Source/Services/ParticleSystem2.h
+@@ -213,6 +213,12 @@ class CParticleEmitter2 {
+     /* 0218 */ CAaBox m_worldBounds;
+     /* 0230 */ uint32_t unused_0230;
+ 
++    // WXL: the extra texture layers of a multi-textured emitter (see WXL/ParticleCsv.h). m_texture is layer 0; these
++    // are layers 1 and 2, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
++    // ordinary emitter, which then draws exactly as before.
++    static constexpr uint32_t kLayerTextureCount = 2;
++    CTexture* m_layerTextures[kLayerTextureCount];
++
+     virtual void Sync();
+     virtual void CreateParticle(CParticle2& particle, float time, const C44Matrix& transform);
+     virtual void CreateParticle(CParticle2_Model& particle, float time, const C44Matrix& transform);
+@@ -269,6 +275,9 @@ class CParticleEmitter2 {
+     void SetSimpleScaleKeys();
+     void SetSimpleTailCellKeys();
+     void SetTexture(CTexture* texture);
++    void SetLayerTexture(uint32_t layer, CTexture* texture);
++    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
++    void RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+     void SetTextureDimensions(uint32_t rows, uint32_t cols);
+     void SetTwinkleScale(const CRange& scale);
+     void SetZsource(float zsource);
+diff --git a/Engine/Source/WXL/ParticleCsv.cpp b/Engine/Source/WXL/ParticleCsv.cpp
+new file mode 100644
+index 0000000..7366134
+--- /dev/null
++++ b/Engine/Source/WXL/ParticleCsv.cpp
+@@ -0,0 +1,325 @@
++// Per-model multi-textured particle emitter tables. See ParticleCsv.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++
++#include "Engine/Source/WXL/ParticleCsv.h"
++
++#include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/Storage.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++
++namespace wxl::particlecsv
++{
++    namespace
++    {
++        constexpr size_t kMaxCached = 4096;      // models remembered (hits and misses); cleared when full
++        constexpr uint32_t kMaxEmitterId = 4096; // a model has a handful of emitters; anything above is a bad row
++
++        // WXLSetup.ini sits in the WXL folder beside the client executable; a copy left beside the executable (the
++        // old place) is still read. The lookup is repeated here because WXLCore keeps no shared ini helper, as in
++        // DrawContext.cpp and Culling.cpp. Missing file, section or key: the default.
++        int IniInt(const char* section, const char* key, int def)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
++            if (n == 0 || n >= sizeof(path)) return def;
++            char* slash = std::strrchr(path, '\\');
++            const char* name = "WXLSetup.ini";
++            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
++            std::strcpy(slash + 1, name);
++            char inWxl[MAX_PATH] = {};
++            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
++            {
++                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
++                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
++            }
++            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
++#else
++            (void)section; (void)key;
++            return def;
++#endif
++        }
++
++        std::string Lower(std::string s)
++        {
++            for (char& c : s) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
++            return s;
++        }
++
++        std::string Trim(const std::string& s)
++        {
++            size_t b = 0, e = s.size();
++            while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
++            while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r' || s[e - 1] == '\n')) --e;
++            return s.substr(b, e - b);
++        }
++
++        // One CSV line into fields: commas separate, a double-quoted field may hold commas and "" for a quote.
++        std::vector<std::string> SplitLine(const std::string& line)
++        {
++            std::vector<std::string> out;
++            std::string cur;
++            bool quoted = false;
++            for (size_t i = 0; i < line.size(); ++i)
++            {
++                const char c = line[i];
++                if (quoted)
++                {
++                    if (c == '"')
++                    {
++                        if (i + 1 < line.size() && line[i + 1] == '"') { cur += '"'; ++i; }
++                        else quoted = false;
++                    }
++                    else cur += c;
++                }
++                else if (c == '"') quoted = true;
++                else if (c == ',') { out.push_back(Trim(cur)); cur.clear(); }
++                else cur += c;
++            }
++            out.push_back(Trim(cur));
++            return out;
++        }
++
++        bool ParseUInt(const std::string& s, uint32_t& out)
++        {
++            if (s.empty()) return false;
++            uint64_t v = 0;
++            for (char c : s)
++            {
++                if (c < '0' || c > '9') return false;
++                v = v * 10 + uint64_t(c - '0');
++                if (v > 0xFFFFFFFFull) return false;
++            }
++            out = uint32_t(v);
++            return true;
++        }
++
++        bool IsYes(const std::string& s)
++        {
++            const std::string v = Lower(s);
++            return v == "yes" || v == "y" || v == "true" || v == "1";
++        }
++
++        // Header text to a column role, ignoring case, spaces and underscores. -1: not a column we use.
++        int ColumnRole(const std::string& header)
++        {
++            std::string k;
++            for (char c : Lower(header)) if (c != ' ' && c != '_' && c != '-') k += c;
++            if (k == "emitterid" || k == "emitter") return 0;
++            if (k == "particletextureid" || k == "textureid" || k == "textureslot" || k == "slot") return 1;
++            if (k == "texturepath" || k == "texture" || k == "path") return 2;
++            if (k == "multitextured" || k == "multitexture") return 3;
++            if (k == "blending" || k == "blend" || k == "blendmode") return 4;
++            return -1;
++        }
++
++        bool EndsWith(const std::string& s, const char* tail)
++        {
++            const size_t n = std::strlen(tail);
++            return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
++        }
++
++        void AddUnique(std::vector<std::string>& v, std::string s)
++        {
++            if (std::find(v.begin(), v.end(), s) == v.end()) v.push_back(std::move(s));
++        }
++
++        std::mutex g_lock;
++        std::unordered_map<std::string, std::shared_ptr<const Table>> g_cache;   // null value: looked, none there
++    }
++
++    uint32_t Emitter::NamedSlots() const
++    {
++        uint32_t n = 0;
++        for (const std::string& t : texture) if (!t.empty()) ++n;
++        return n;
++    }
++
++    const Emitter* Table::Find(uint32_t emitterId) const
++    {
++        const auto it = emitters.find(emitterId);
++        return it != emitters.end() && it->second.Usable() ? &it->second : nullptr;
++    }
++
++    size_t Table::UsableCount() const
++    {
++        size_t n = 0;
++        for (const auto& e : emitters) if (e.second.Usable()) ++n;
++        return n;
++    }
++
++    std::string NormalizePath(const char* path)
++    {
++        std::string s = path ? path : "";
++        for (char& c : s)
++        {
++            if (c == '/') c = '\\';
++            else if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
++        }
++        return s;
++    }
++
++    std::vector<std::string> Candidates(const char* modelPath, bool isVirtualKey)
++    {
++        std::vector<std::string> out;
++        const std::string p = NormalizePath(modelPath);
++        if (p.empty()) return out;
++
++        // the path without its extension (a dot inside a folder name is not an extension)
++        const size_t slash = p.find_last_of('\\');
++        const size_t dot = p.find_last_of('.');
++        const std::string base = (dot != std::string::npos && (slash == std::string::npos || dot > slash)) ? p.substr(0, dot) : p;
++        if (base.empty()) return out;
++
++        // 1. the model itself
++        AddUnique(out, base + ".csv");
++
++        // 2. a collection key: <stem>_wxl_...  -> the stem is the original model's path
++        const size_t wxl = base.find("_wxl_");
++        if (wxl != std::string::npos && wxl > 0)
++            AddUnique(out, base.substr(0, wxl) + ".csv");
++
++        // 3. a global key: <stem>[_oh]_<displayId>  -> the stem, with and without the offhand tag
++        size_t digits = base.size();
++        while (digits > 0 && base[digits - 1] >= '0' && base[digits - 1] <= '9') --digits;
++        if (isVirtualKey && digits < base.size() && digits > 1 && base[digits - 1] == '_' &&
++            (slash == std::string::npos || digits - 1 > slash + 1))
++        {
++            const std::string stem = base.substr(0, digits - 1);
++            AddUnique(out, stem + ".csv");
++            if (EndsWith(stem, "_oh") && stem.size() > 3)
++                AddUnique(out, stem.substr(0, stem.size() - 3) + ".csv");
++        }
++        return out;
++    }
++
++    std::shared_ptr<Table> Parse(const char* text, size_t size, std::string* why)
++    {
++        auto fail = [&](const char* reason) -> std::shared_ptr<Table> { if (why) *why = reason; return nullptr; };
++        if (!text || size == 0) return fail("empty file");
++
++        // a UTF-8 byte order mark from a spreadsheet export
++        if (size >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
++        {
++            text += 3;
++            size -= 3;
++        }
++
++        int column[5] = {0, 1, 2, 3, 4};   // role -> column index; the documented order unless a header says otherwise
++        auto table = std::make_shared<Table>();
++        bool first = true;
++        size_t pos = 0;
++        uint32_t rows = 0;
++        while (pos < size)
++        {
++            size_t end = pos;
++            while (end < size && text[end] != '\n') ++end;
++            const std::string line = Trim(std::string(text + pos, end - pos));
++            pos = end + 1;
++            if (line.empty()) continue;
++
++            const std::vector<std::string> f = SplitLine(line);
++            uint32_t probe = 0;
++            if (first)
++            {
++                first = false;
++                if (!ParseUInt(f[0], probe))   // not a number: a header row
++                {
++                    int found[5] = {-1, -1, -1, -1, -1};
++                    for (size_t i = 0; i < f.size(); ++i)
++                    {
++                        const int role = ColumnRole(f[i]);
++                        if (role >= 0 && found[role] < 0) found[role] = int(i);
++                    }
++                    for (int r = 0; r < 5; ++r) if (found[r] >= 0) column[r] = found[r];
++                    continue;
++                }
++            }
++
++            auto field = [&](int role) -> const std::string& {
++                static const std::string none;
++                const int c = column[role];
++                return c >= 0 && size_t(c) < f.size() ? f[size_t(c)] : none;
++            };
++
++            uint32_t id = 0, slot = 0;
++            if (!ParseUInt(field(0), id) || id > kMaxEmitterId) continue;
++            if (!ParseUInt(field(1), slot) || slot >= kMaxLayers) continue;
++            std::string path = field(2);
++            if (path.empty()) continue;
++            for (char& c : path) if (c == '/') c = '\\';
++
++            Emitter& e = table->emitters[id];
++            e.texture[slot] = path;
++            if (IsYes(field(3))) e.multiTextured = true;
++            uint32_t blend = 0;
++            if (ParseUInt(field(4), blend)) e.blending = int(blend);
++            ++rows;
++        }
++        if (rows == 0) return fail("no row with an emitter ID, a texture slot 0..2 and a path");
++        return table;
++    }
++
++    bool Enabled()
++    {
++        static const bool on = [] {
++            const bool v = IniInt("Particles", "MultiTextureCsv", 0) != 0;
++            if (v) wxl::LogCat("PARTICLE", "multi-textured particle CSVs: on ([Particles] MultiTextureCsv=1)");
++            return v;
++        }();
++        return on;
++    }
++
++    std::shared_ptr<const Table> For(const char* modelPath)
++    {
++        if (!Enabled() || !modelPath || !*modelPath) return nullptr;
++        const std::string key = NormalizePath(modelPath);
++
++        {
++            std::lock_guard<std::mutex> g(g_lock);
++            const auto it = g_cache.find(key);
++            if (it != g_cache.end()) return it->second;
++        }
++
++        // Not seen before: read with no lock held (archive reads can be slow, and loader threads must not queue
++        // behind them). Two threads may both read the same model; the answers are identical.
++        std::shared_ptr<const Table> found;
++        std::string why;
++        for (const std::string& cand : Candidates(modelPath, wxl::storage::IsVirtualKey(modelPath)))
++        {
++            std::vector<uint8_t> bytes;
++            if (!wxl::storage::ReadNativeQuiet(cand.c_str(), bytes) || bytes.empty()) continue;
++            std::string reason;
++            std::shared_ptr<Table> t = Parse(reinterpret_cast<const char*>(bytes.data()), bytes.size(), &reason);
++            if (!t)
++            {
++                why = cand + ": " + reason;   // keep looking; report it if nothing better turns up
++                continue;
++            }
++            t->source = cand;
++            found = std::move(t);
++            break;
++        }
++
++        if (found)
++            wxl::LogCat("PARTICLE", "%s: %s -> %u of %u emitter(s) multi-textured", key.c_str(), found->source.c_str(),
++                        unsigned(found->UsableCount()), unsigned(found->emitters.size()));
++        else if (!why.empty())
++            wxl::LogCat("PARTICLE", "%s: ignored, %s", key.c_str(), why.c_str());
++
++        std::lock_guard<std::mutex> g(g_lock);
++        if (g_cache.size() >= kMaxCached) g_cache.clear();
++        g_cache[key] = found;
++        return found;
++    }
++}
+diff --git a/Engine/Source/WXL/ParticleCsv.h b/Engine/Source/WXL/ParticleCsv.h
+new file mode 100644
+index 0000000..acf4c11
+--- /dev/null
++++ b/Engine/Source/WXL/ParticleCsv.h
+@@ -0,0 +1,84 @@
++// Per-model multi-textured particle emitter tables, read from a CSV beside the model. Opt-in.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// The client's particle emitter has one texture. Retail models can have emitters that blend three, and the
++// converted .m2 keeps only one of them. When WXLSetup.ini says
++//
++//     [Particles]
++//     MultiTextureCsv=1
++//
++// the model loader looks for a CSV named like the model, in the model's folder, and for every emitter the CSV marks
++// as multi-textured it gives the emitter all of that emitter's textures, drawn on top of each other with additive
++// blending. An emitter the CSV does not mark, a model without a CSV, and the setting off all render as before.
++//
++// File format (one row per texture of an emitter; the header names are matched case-insensitively, and without it
++// the columns are taken in this order):
++//
++//     Emitter ID,Particle texture ID,Texture path,Multitextured,Blending
++//     1,0,spells/fairydust2offsettwinkle_2x2_a.blp,Yes,4
++//     1,1,spells/white8x8.blp,Yes,4
++//     1,2,spells/grey50percentsquare16x16.blp,Yes,4
++//     2,0,spells/bubble_soft_distortion.blp,No,4
++//
++// "Emitter ID" is the emitter's index in the model's particle emitter list, "Particle texture ID" its texture slot
++// (0..2). Only the rows of a "Yes" emitter with at least two texture paths are used.
++//
++// The file is looked for at <model path without extension>.csv. A model that comes from a virtual path (a collection
++// key <stem>_wxl_..._cmo<hex>.m2, or a global key <stem>[_oh]_<displayId>.m2) uses the CSV of the original model:
++// <stem>.csv, in the original model's folder.
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <map>
++#include <memory>
++#include <string>
++#include <vector>
++
++namespace wxl::particlecsv
++{
++    constexpr uint32_t kMaxLayers = 3;   // the texture slots of one emitter
++
++    struct Emitter
++    {
++        std::string texture[kMaxLayers];   // path per slot, '\\' separators; empty when the CSV names none
++        bool        multiTextured = false; // the CSV's Multitextured column
++        int         blending = 0;          // the CSV's Blending column (the M2 blend mode as extracted); informational
++        uint32_t    NamedSlots() const;    // how many slots have a path
++        bool        Usable() const { return multiTextured && NamedSlots() >= 2; }
++    };
++
++    class Table
++    {
++    public:
++        std::map<uint32_t, Emitter> emitters;   // by emitter ID
++        std::string                 source;     // the file it was read from
++
++        /// The emitter's entry when it is a usable multi-textured one, else null (not listed, not multi-textured,
++        /// or fewer than two textures named): such an emitter renders normally.
++        const Emitter* Find(uint32_t emitterId) const;
++        size_t         UsableCount() const;
++    };
++
++    /// WXLSetup.ini [Particles] MultiTextureCsv (default 0). Read once.
++    bool Enabled();
++
++    /// The table for a model, or null when the setting is off or no CSV exists for it (not an error: the model
++    /// simply renders as before). Results, hits and misses alike, are cached by path. Thread-safe.
++    std::shared_ptr<const Table> For(const char* modelPath);
++
++    /// Parses CSV text. Null, with a reason in *why when given, when it holds no usable row at all.
++    std::shared_ptr<Table> Parse(const char* text, size_t size, std::string* why = nullptr);
++
++    /// The CSV paths to try for a model path, most specific first, no duplicates.
++    ///   1. the path with its extension replaced by .csv (a normal model, or a virtual path with a file of its own);
++    ///   2. a collection key <stem>_wxl_...  ->  <stem>.csv
++    ///   3. a global key <stem>[_oh]_<displayId>  ->  <stem>.csv, and without a trailing _oh
++    /// Step 3 is a guess from the shape of the name, and real models have that shape too (retail variants
++    /// staff_01.m2, staff_02.m2 are different models), so it is only taken when isVirtualKey says the name is a
++    /// virtual path that was really minted.
++    std::vector<std::string> Candidates(const char* modelPath, bool isVirtualKey);
++
++    /// Lower case, '\\' separators: the form the archives and the cache key use.
++    std::string NormalizePath(const char* path);
++}
+diff --git a/Engine/Source/WXL/Storage.cpp b/Engine/Source/WXL/Storage.cpp
+index a5b9e96..804ae0a 100644
+--- a/Engine/Source/WXL/Storage.cpp
++++ b/Engine/Source/WXL/Storage.cpp
+@@ -16,6 +16,7 @@ namespace wxl::storage
+ 
+         NativeReadFn   g_nativeReader = nullptr;
+         NativeExistsFn g_nativeExists = nullptr;
++        VirtualKeyFn g_virtualKeyCheck = nullptr;
+     }
+ 
+     void RegisterProvider(ProviderFn fn)
+@@ -70,6 +71,16 @@ namespace wxl::storage
+         g_nativeExists = fn;
+     }
+ 
++    void SetVirtualKeyCheck(VirtualKeyFn fn)
++    {
++        g_virtualKeyCheck = fn;
++    }
++
++    bool IsVirtualKey(const char* name)
++    {
++        return g_virtualKeyCheck && name && *name && g_virtualKeyCheck(name);
++    }
++
+     bool ExistsNative(const char* name)
+     {
+         return g_nativeExists && name && *name && g_nativeExists(name);
+diff --git a/Engine/Source/WXL/Storage.h b/Engine/Source/WXL/Storage.h
+index 0890f92..c6ebfe4 100644
+--- a/Engine/Source/WXL/Storage.h
++++ b/Engine/Source/WXL/Storage.h
+@@ -42,6 +42,12 @@ namespace wxl::storage
+     void SetNativeReader(NativeReadFn fn);
+     bool ReadNative(const char* name, std::vector<uint8_t>& out);
+ 
++    /// "Is this name a virtual path a module minted?", for callers in WXLCore, which cannot reach the module that owns the
++    /// table. Installed next to the native reader. Without one installed nothing is virtual.
++    using VirtualKeyFn = bool (*)(const char* name);
++    void SetVirtualKeyCheck(VirtualKeyFn fn);
++    bool IsVirtualKey(const char* name);
++
+     /// Existence probe installed next to the native reader: opens the name the way the client does and closes it
+     /// again without reading. Providers see this open too (a virtual file "exists").
+     using NativeExistsFn = bool (*)(const char* name);
+diff --git a/Engine/Source/WXLEquip/Equip.cpp b/Engine/Source/WXLEquip/Equip.cpp
+index 7770b02..e003c4a 100644
+--- a/Engine/Source/WXLEquip/Equip.cpp
++++ b/Engine/Source/WXLEquip/Equip.cpp
+@@ -3,6 +3,7 @@
+ #include "Engine/Source/BlizzardCore/SFile2-Core.h"
+ #include "Engine/Source/WXL/Event.h"
+ #include "Engine/Source/WXL/Log.h"
++#include "Engine/Source/WXL/ModuleRegistry.h"
+ #include "Engine/Source/WXL/Storage.h"
+ #include "Engine/Source/WXLEquip/VirtualPath.hpp"
+ 
+@@ -66,6 +67,12 @@ namespace wxl::equip
+             return false;
+         }
+ 
++        // "Is this name a virtual path that was really minted?": this table's own keys, or any module's.
++        bool IsMintedVirtualKey(const char* name)
++        {
++            return wxl::scripts::equipextension::VPathIsVirtualKey(name) || wxl::registry::IsVirtualKey(name) != 0;
++        }
++
+         // Where do the sidecars live right now? Answers "does it actually see my CSVs" before any model
+         // loads. Only the working directory can be checked this early: game archives are not mounted yet.
+         void ReportSidecarsOnDisk()
+@@ -107,6 +114,7 @@ namespace wxl::equip
+         wxl::LogCat("EQUIP", "Init: installing native reader and virtual path provider");
+         wxl::storage::SetNativeReader(&ReadThroughSFile);
+         wxl::storage::SetNativeExists(&ExistsThroughSFile);
++        wxl::storage::SetVirtualKeyCheck(&IsMintedVirtualKey);
+         wxl::scripts::equipextension::VPathRegister();
+         // The equip extension, weapon, creature and physics are modules (WXL\Modules\wxl_equip.dll, wxl_weapon.dll,
+         // wxl_creature.dll, wxl_physics.dll), loaded by wxl::api::LoadModules() right after this. wxl_equip.dll
+diff --git a/Example config files/WXLSetup.ini b/Example config files/WXLSetup.ini
+index 4b10ee4..6b232be 100644
+--- a/Example config files/WXLSetup.ini	
++++ b/Example config files/WXLSetup.ini	
+@@ -263,4 +263,10 @@ OverrideFile=SpellAreaOverride.csv
+ JumpDistanceFile=SpellsJumpDistance.csv
+ ConeFile=SpellsCone.csv
+ 
+-
++[Particles]
++; Opt-in. 1 = when a model loads, look for a CSV named like the model in the same folder (Spells\Foo.m2 -> Spells\Foo.csv).
++; For every particle emitter the CSV marks Multitextured=Yes, all of that emitter's textures (up to three) are drawn on top
++; of each other with additive blending. Emitters the CSV does not mark, and models without a CSV, render as usual.
++; A model that comes from a virtual path (weapon/creature overrides) uses the CSV of the original model, in the original
++; model's folder. Columns: Emitter ID,Particle texture ID,Texture path,Multitextured,Blending
++MultiTextureCsv=0

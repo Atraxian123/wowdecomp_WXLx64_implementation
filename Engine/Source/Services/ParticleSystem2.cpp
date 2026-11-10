@@ -276,6 +276,49 @@ void CParticleEmitter2::SetTexture(CTexture* texture) {
     this->m_texture = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(texture)));
 }
 
+// WXL: layer 1 or 2 of a multi-textured emitter. A null texture clears the layer.
+void CParticleEmitter2::SetLayerTexture(uint32_t layer, CTexture* texture) {
+    if (layer >= kLayerTextureCount) {
+        return;
+    }
+
+    if (this->m_layerTextures[layer]) {
+        HandleClose(reinterpret_cast<HOBJECT>(this->m_layerTextures[layer]));
+        this->m_layerTextures[layer] = nullptr;
+    }
+
+    if (texture) {
+        this->m_layerTextures[layer] = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(texture)));
+    }
+}
+
+// WXL: draws the vertices already built for this emitter once more for each extra texture layer. The shader, the
+// lighting and the blend state are still the ones the first draw set up; only texture 0 changes. A layer whose
+// texture is not loaded yet is skipped, and the base texture is put back afterwards.
+void CParticleEmitter2::RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
+    bool drawn = false;
+
+    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
+        if (!this->m_layerTextures[i]) {
+            continue;
+        }
+
+        CGxTex* gxTex = TextureGetGxTex(this->m_layerTextures[i], 0, nullptr);
+
+        if (!gxTex) {
+            continue;
+        }
+
+        g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
+        CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
+        drawn = true;
+    }
+
+    if (drawn) {
+        g_theGxDevicePtr->RsSet(GxRs_Texture0, TextureGetGxTex(this->m_texture, 0, nullptr));
+    }
+}
+
 // VERIFY: a4b2b0e5 manual
 // OFFSET: 0x00978C70
 void CParticleEmitter2::SetTextureDimensions(uint32_t rows, uint32_t cols) {
@@ -1484,6 +1527,13 @@ CParticleEmitter2::~CParticleEmitter2() {
         this->m_texture = nullptr;
     }
 
+    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
+        if (this->m_layerTextures[i]) {
+            HandleClose(reinterpret_cast<HOBJECT>(this->m_layerTextures[i]));
+            this->m_layerTextures[i] = nullptr;
+        }
+    }
+
     if (this->m_model) {
         this->m_model->Release();
         this->m_model = nullptr;
@@ -2177,6 +2227,8 @@ CParticleEmitter2::CParticleEmitter2() : m_random(0) {
     this->m_indicesPerParticle = 0;
     this->m_alphaScale = 1.0f;
     this->m_texture = nullptr;
+    this->m_layerTextures[0] = nullptr;
+    this->m_layerTextures[1] = nullptr;
     this->unused_012C = 0;
     this->m_twinkleFPS = 10.0f;
     this->m_flags = 0x6;
@@ -2383,6 +2435,7 @@ void CParticleEmitter2::RenderParticles(const C44Matrix* frameOfReference, void*
 
         if (this->m_renderedParticles) {
             CParticleEmitter2::RenderParticleVertices(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
+            this->RenderLayers(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
             g_theGxDevicePtr->XformSetView(view);
         }
     }
@@ -2623,6 +2676,13 @@ CParticleEmitter2::CParticleEmitter2(const CParticleEmitter2& source, int32_t co
     }
 
     this->m_texture = reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(source.m_texture)));
+
+    for (uint32_t i = 0; i < kLayerTextureCount; i++) {
+        this->m_layerTextures[i] = source.m_layerTextures[i]
+            ? reinterpret_cast<CTexture*>(HandleDuplicate(reinterpret_cast<HOBJECT>(source.m_layerTextures[i])))
+            : nullptr;
+    }
+
     this->m_flags &= ~0x80;
 
     if (!copyParticles || (!source.m_freeList.m_count && !source.m_liveList.m_count)) {

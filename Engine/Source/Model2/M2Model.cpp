@@ -39,9 +39,35 @@
 #include "WoW/Source/DB/DBClient/DBClient.h"
 #include "WoW/Source/Object/ObjectClient/Types.h"
 #include "Engine/Source/WXL/Hooks.h"
+#include "Engine/Source/WXL/Log.h"
+#include "Engine/Source/WXL/ParticleCsv.h"
+#include "Engine/Source/WXL/Storage.h"
+#include "Engine/Source/Base/Status.h"
 
 // STATIC: 0x00A45570
 static const uint32_t s_ribbonBlendModes[] = { 0, 1, 2, 10, 3, 4, 5 };
+
+// WXL: loads one texture of a multi-textured particle emitter that a CSV names (see WXL/ParticleCsv.h), with the flags
+// the model's own textures get. Null when the file is not there, so the emitter keeps what it has instead of drawing
+// nothing. The caller owns the returned handle.
+static CTexture* LoadCsvParticleTexture(const char* path, uint32_t sharedFlags) {
+    if (!wxl::storage::ExistsNative(path)) {
+        return nullptr;
+    }
+
+    CGxTexFlags texFlags;
+    texFlags.m_filter = GxTex_LinearMipLinear;
+    texFlags.m_wrapU = 1;
+    texFlags.m_wrapV = 1;
+
+    uint32_t flags = (sharedFlags & 4) ? 2 : 0;
+
+    if (sharedFlags & 0x40) {
+        flags |= 0x30;
+    }
+
+    return TextureCreate(path, texFlags, &GetGlobalStatusObj(), flags);
+}
 
 // STATIC: 0x00D4118C
 void (*CM2Model::s_transformVertices[5])(CM2Model*, M2SkinSection*, uint8_t*, int32_t);
@@ -7283,6 +7309,10 @@ int32_t CM2Model::InitializeLoaded() {
 
         uint8_t* emitterMemory = memory + emitterOffset;
 
+        // WXL: this model's multi-textured emitters, when [Particles] MultiTextureCsv=1 and a CSV sits beside the model
+        // (or beside the original of a virtual-path model). Null otherwise, and every emitter is built as before.
+        const std::shared_ptr<const wxl::particlecsv::Table> wxlParticleCsv = wxl::particlecsv::For(this->m_shared->m_fileName);
+
         for (uint32_t i = 0; i < data->m_particles.m_count; i++) {
             M2Particle* particleData = &data->m_particles[i];
             M2ModelParticle* particle = &this->m_particles[i];
@@ -7468,7 +7498,47 @@ int32_t CM2Model::InitializeLoaded() {
                 emitter->SetChooseRandomTexture(1);
             }
 
-            emitter->SetMaterial(material, this->m_shared->m_textures[particleData->m_textureIndex]);
+            // WXL: a multi-textured emitter takes every texture the CSV names for it and blends them additively. One that
+            // the CSV does not mark, or whose textures cannot be found (fewer than two), keeps the stock material.
+            CTexture* wxlLayers[wxl::particlecsv::kMaxLayers] = {};
+            uint32_t wxlLayerCount = 0;
+
+            if (const wxl::particlecsv::Emitter* wxlMulti = wxlParticleCsv ? wxlParticleCsv->Find(i) : nullptr) {
+                for (uint32_t slot = 0; slot < wxl::particlecsv::kMaxLayers; slot++) {
+                    if (wxlMulti->texture[slot].empty()) {
+                        continue;
+                    }
+
+                    if (CTexture* layer = LoadCsvParticleTexture(wxlMulti->texture[slot].c_str(), this->m_shared->m_flags)) {
+                        wxlLayers[wxlLayerCount++] = layer;
+                    }
+                }
+
+                if (wxlLayerCount >= 2) {
+                    // stock M2 blend 4 ("add"): no alpha test, the layers sum in the frame buffer
+                    material.m_blendMode = 3;
+                    material.m_flags &= ~4u;
+                    wxl::LogCat("PARTICLE", "%s: emitter %u draws %u textures additively", this->m_shared->m_fileName, i, wxlLayerCount);
+                } else {
+                    for (uint32_t l = 0; l < wxlLayerCount; l++) {
+                        HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));
+                    }
+
+                    wxlLayerCount = 0;
+                    wxl::LogCat("PARTICLE", "%s: emitter %u is multi-textured in the CSV but fewer than two of its textures exist; drawn normally", this->m_shared->m_fileName, i);
+                }
+            }
+
+            emitter->SetMaterial(material, wxlLayerCount ? wxlLayers[0] : this->m_shared->m_textures[particleData->m_textureIndex]);
+
+            for (uint32_t l = 1; l < wxlLayerCount; l++) {
+                emitter->SetLayerTexture(l - 1, wxlLayers[l]);
+            }
+
+            for (uint32_t l = 0; l < wxlLayerCount; l++) {
+                HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));   // the emitter holds its own references
+            }
+
             emitter->m_params.m_colorTrack = &particleData->m_colorTrack;
             emitter->m_params.m_scaleTrack = &particleData->m_scaleTrack;
             emitter->m_params.m_alphaTrack = &particleData->m_alphaTrack;
