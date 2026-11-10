@@ -1,0 +1,63 @@
+diff --git a/Engine/Source/Services/ParticleSystem2.cpp b/Engine/Source/Services/ParticleSystem2.cpp
+index c1f00fd..b0a6d87 100644
+--- a/Engine/Source/Services/ParticleSystem2.cpp
++++ b/Engine/Source/Services/ParticleSystem2.cpp
+@@ -298,6 +298,36 @@ void CParticleEmitter2::SetLayerMode(uint32_t mode, uint32_t gain) {
+     this->m_layerGain = gain >= 4 ? 4 : (gain <= 1 ? 1 : 2);
+ }
+ 
++// WXL: RenderParticleVertices without CShaderEffect::SetDefaultShaders. That call selects the particle vertex and pixel
++// shaders again, and those sample ONE texture, so a pass that had switched the shaders off to let the fixed-function
++// texture stages multiply its layers would be drawn by the shaders after all and lose every layer but the first.
++void CParticleEmitter2::RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
++    if (!s_particleRenderEnable) {
++        return;
++    }
++
++    if (!CParticleEmitter2::s_indexBuf->m_hasData || !CParticleEmitter2::s_indexBuf->m_valid) {
++        CParticleEmitter2::RenderIndices(CParticleEmitter2::s_indexBuf);
++    }
++
++    C44Matrix identity;
++    g_theGxDevicePtr->XformSetView(identity);
++
++    GxPrimVertexPtr(buf, format);
++    g_theGxDevicePtr->PrimIndexPtr(CParticleEmitter2::s_indexBuf);
++
++    CShaderEffect::SetTexMtx_Identity(0);
++    CShaderEffect::UpdateWorldViewMatrix();
++
++    CGxBatch batch;
++    batch.m_primType = GxPrim_Triangles;
++    batch.m_start = 0;
++    batch.m_count = indexCount;
++    batch.m_minIndex = 0;
++    batch.m_maxIndex = vertexCount - 1;
++    g_theGxDevicePtr->Draw(&batch, 1);
++}
++
+ // WXL: the multiply mode of a multi-textured emitter. Draws the vertices already built for this emitter in ONE
+ // fixed-function pass: stage k samples layer k and modulates the result of the stage before it (stage 0 modulates the
+ // vertex colour), so the frame receives  layer0 * layer1 [* layer2] * vertex colour  in colour, blended with the blend
+@@ -392,7 +422,8 @@ bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat form
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_Texture0 + k), layerTex[k]);
+     }
+ 
+-    CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
++    // not RenderParticleVertices: it would put the shaders back (see RenderParticleVerticesFixedFunction)
++    CParticleEmitter2::RenderParticleVerticesFixedFunction(buf, format, vertexCount, indexCount);
+ 
+     g_theGxDevicePtr->RsPop();
+     return true;
+diff --git a/Engine/Source/Services/ParticleSystem2.h b/Engine/Source/Services/ParticleSystem2.h
+index fd97a04..d603c13 100644
+--- a/Engine/Source/Services/ParticleSystem2.h
++++ b/Engine/Source/Services/ParticleSystem2.h
+@@ -152,6 +152,7 @@ class CParticleEmitter2 {
+     static void Init();
+     static void __stdcall RenderIndices(CGxBuf* buf);
+     static void __stdcall RenderParticleVertices(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
++    static void RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+ 
+     /* 0004 */ int32_t m_refCount;
+     /* 0008 */ float m_emitAccumulator;

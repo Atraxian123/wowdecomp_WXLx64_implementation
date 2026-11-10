@@ -152,6 +152,7 @@ class CParticleEmitter2 {
     static void Init();
     static void __stdcall RenderIndices(CGxBuf* buf);
     static void __stdcall RenderParticleVertices(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+    static void RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
 
     /* 0004 */ int32_t m_refCount;
     /* 0008 */ float m_emitAccumulator;
