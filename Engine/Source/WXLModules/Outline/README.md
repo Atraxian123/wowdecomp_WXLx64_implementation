@@ -55,6 +55,10 @@ far node from being outlined across the map; `TrackedThroughWalls` (default: the
 them show through walls, and `HideBehindObjects` applies as for the others. The trivial-quests entry of the tracking
 menu changes quest icons only, so it has nothing to outline.
 
+The depth test needs the silhouette to be drawn with the same viewport as the scene: the world renders with a depth
+range of 0 .. 0.94 (the rest is kept for the horizon and sky), so the module puts the engine's viewport back after
+switching to its mask target. Without that every silhouette comes out deeper than the scene and nothing passes.
+
 Hiding behind walls (`QuestThroughWalls=0`, `TrackedThroughWalls=0`, `HideBehindObjects=1`) tests the outline against the
 scene's depth buffer. The silhouette is the unit's own triangles drawn again right after the engine drew them, so on its
 own pixels the depth only just matches; the module therefore follows the engine's depth convention, accepts equal depth,

@@ -297,7 +297,8 @@ namespace wxl::outline
         IDirect3DPixelShader9* fillPS_  = nullptr; // stamps a batch into the mask, following its cutout
         IDirect3DPixelShader9* blurPS_  = nullptr; // one Gaussian, run once per axis
         IDirect3DPixelShader9* applyPS_ = nullptr; // blurred field minus silhouette, into the frame
-        IDirect3DStateBlock9*  stampSave_ = nullptr; // records exactly the states StampSilhouette changes
+        IDirect3DStateBlock9*  stampSave_ = nullptr; // records exactly the states StampSilhouette changes (the viewport too)
+        IDirect3DStateBlock9*  viewportSave_ = nullptr; // records the viewport alone: the pure device cannot be asked for it
         bool                stamped_  = false;     // a silhouette reached the mask this frame
         float               spread_;
         float               intensity_;
@@ -342,6 +343,7 @@ namespace wxl::outline
         SafeRelease(applyPS_);
         SafeRelease(debugPS_);
         SafeRelease(stampSave_);
+        SafeRelease(viewportSave_);
         ReleaseTargets();
         stamped_ = false;
         count_   = 0;
@@ -383,8 +385,18 @@ namespace wxl::outline
         if (!stampSave_ && fillPS_)
         {
             const float zero[8] = {};
+            // Only the kinds of state a recording sees are recorded, and the viewport is one of them: recorded with any
+            // value, Capture() later reads the device's real one and Apply() puts it back. That is the only way to
+            // save and restore it here, because a pure device refuses GetViewport.
+            const D3DVIEWPORT9 anyViewport = { 0, 0, 1, 1, 0.0f, 1.0f };
+            if (!viewportSave_ && SUCCEEDED(dev->BeginStateBlock()))
+            {
+                dev->SetViewport(&anyViewport);
+                if (FAILED(dev->EndStateBlock(&viewportSave_))) viewportSave_ = nullptr;
+            }
             if (SUCCEEDED(dev->BeginStateBlock()))
             {
+                dev->SetViewport(&anyViewport);
                 dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
                 dev->SetRenderState(D3DRS_ALPHATESTENABLE, 0);
                 dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
@@ -544,8 +556,10 @@ namespace wxl::outline
         // is in stampSave_; the targets, depth surface and viewport are saved by hand.
         IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
         IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
-        D3DVIEWPORT9 oldVP{}; dev->GetViewport(&oldVP);
-        stampSave_->Capture();
+        D3DVIEWPORT9 oldVP{};
+        const bool haveVP = SUCCEEDED(dev->GetViewport(&oldVP)) && oldVP.Width > 0 && oldVP.Height > 0;   // a pure device says no
+        stampSave_->Capture();                      // everything it records, the engine's viewport included
+        if (viewportSave_) viewportSave_->Capture();
 
         // Players depth-test against the scene so walls occlude the outline, which needs the scene's depth surface
         // to be compatible with the mask target (no multisampling, at least as large). Otherwise, like NPCs, the
@@ -567,6 +581,15 @@ namespace wxl::outline
         }
 
         dev->SetRenderTarget(0, mask_.surface);
+
+        // Setting a render target resets the viewport to the whole target with a depth range of 0 .. 1. The world is
+        // not drawn with that range: it uses 0 .. 0.94 (CWorld::s_unk_ADEEE4), the rest of the depth range being kept
+        // for the horizon and the sky. The scene's depth buffer therefore holds depth x 0.94, and a silhouette drawn
+        // with 0 .. 1 comes out about 6 percent deeper than the scene on every pixel, so it fails the depth test
+        // everywhere, even on the unit's own pixels. Put the engine's own viewport back before drawing.
+        if (haveVP) dev->SetViewport(&oldVP);
+        else if (viewportSave_) viewportSave_->Apply();
+
         if (useDepth)
         {
             // The silhouette is the unit's own triangles drawn again after the engine drew them, so on its own
@@ -600,6 +623,12 @@ namespace wxl::outline
                 wxl::LogCat("OUTLINE", "depth test on: scene depth %ux%u format %u, mask %ux%u, engine ZFUNC %lu (%s), bias %.2g slope %.2g",
                             d.Width, d.Height, static_cast<unsigned>(d.Format), mask_.width, mask_.height,
                             static_cast<unsigned long>(engineZFunc), reversed ? "reversed" : "standard", bias, slope);
+                if (haveVP)
+                    wxl::LogCat("OUTLINE", "depth test: the engine's viewport %lux%lu, depth range %.3f .. %.3f, put back for the stamp",
+                                static_cast<unsigned long>(oldVP.Width), static_cast<unsigned long>(oldVP.Height), oldVP.MinZ, oldVP.MaxZ);
+                else
+                    wxl::LogCat("OUTLINE", "depth test: the device cannot report its viewport; it is saved and put back with a state block%s",
+                                viewportSave_ ? "" : " - NOT AVAILABLE, the stamp uses the default viewport");
             }
         }
         else
@@ -619,8 +648,8 @@ namespace wxl::outline
 
         dev->SetRenderTarget(0, oldRT);
         dev->SetDepthStencilSurface(oldDS);
-        dev->SetViewport(&oldVP);
-        stampSave_->Apply();
+        if (haveVP) dev->SetViewport(&oldVP);       // switching the target reset it again
+        stampSave_->Apply();                        // also puts the viewport back when it could not be read
         SafeRelease(oldRT);
         SafeRelease(oldDS);
     }
