@@ -1,0 +1,98 @@
+diff --git a/Engine/Source/Model2/ModernM2/FlightAnim.h b/Engine/Source/Model2/ModernM2/FlightAnim.h
+index dcdbeea..f94df57 100644
+--- a/Engine/Source/Model2/ModernM2/FlightAnim.h
++++ b/Engine/Source/Model2/ModernM2/FlightAnim.h
+@@ -100,6 +100,20 @@ namespace wxl::flightanim
+         }
+     }
+ 
++    // The jump that takes a unit off the ground into flight.
++    constexpr uint32_t kJumpStart        = 37;    // ANIM_JUMP_START
++    constexpr uint32_t kMountFlightStart = 564;   // ANIM_MOUNT_FLIGHT_START
++
++    /// A jump-start request from a unit in flight (it has just taken off): the model's own MOUNT_FLIGHT_START when it has
++    /// that sequence (`has` is a native-presence test, plus loaded), JUMP_START otherwise. A jump from a unit that is not in
++    /// flight, and any other id, is returned as it is: the ground jump is always the native JUMP_START.
++    template <class HasSequence>
++    inline uint32_t PreferJumpStart(uint32_t animId, bool inFlight, HasSequence&& has)
++    {
++        if (animId != kJumpStart || !inFlight) return animId;
++        return has(kMountFlightStart) ? kMountFlightStart : kJumpStart;
++    }
++
+     /// The animation id to resolve for a model.
+     ///   * A swim-set request from a unit in flight (flying and not swimming), or a request already in the flight family
+     ///     (a rider model resolved first and found one): the first id of the same slot that the model has natively
+diff --git a/Engine/Source/WXLModules/ModernM2/Load.cpp b/Engine/Source/WXLModules/ModernM2/Load.cpp
+index a8b0639..984cc31 100644
+--- a/Engine/Source/WXLModules/ModernM2/Load.cpp
++++ b/Engine/Source/WXLModules/ModernM2/Load.cpp
+@@ -161,9 +161,10 @@ namespace wxl::m2mod
+                 }
+                 else
+                 {
++                    // 564 (MOUNT_FLIGHT_START) is NOT filed as JUMP_START: a model can have both, and the game layer picks
++                    // it for the jump into flight only (see FlightAnim.h); the ground jump stays the native JUMP_START.
+                     switch (id)
+                     {
+-                    case 564: anim = 37;  break;
+                     case 572: anim = 39;  break;
+                     case 574: anim = 187; break;
+                     }
+diff --git a/Tools/WxlModuleTest/modernm2_test.cpp b/Tools/WxlModuleTest/modernm2_test.cpp
+index 2ed6ded..ff69189 100644
+--- a/Tools/WxlModuleTest/modernm2_test.cpp
++++ b/Tools/WxlModuleTest/modernm2_test.cpp
+@@ -87,7 +87,7 @@ static Fixture BuildModernFile(uint32_t version)
+     setArr(offsetof(M2Data, m_cameras), 2, camOff);
+     Put32(body, offsetof(M2Data, m_numSkinProfiles), 7); // LDV1-era count, must be clamped
+ 
+-    // sequences: #0 inline keys, #1 external (flags 0), source id 564 -> client 37, packed blend in|out
++    // sequences: #0 inline keys, #1 external (flags 0), source id 564 (kept as it is), packed blend in|out
+     auto* seqs = reinterpret_cast<M2Sequence*>(&body[seqOff]);
+     seqs[0].m_id = 0;   seqs[0].m_flags = 0x20; seqs[0].m_blendTime = 0x00030002;
+     seqs[1].m_id = 564; seqs[1].m_flags = 0x00; seqs[1].m_blendTime = 0x00050004;
+@@ -224,7 +224,7 @@ static void TestLoad()
+ 
+     const auto* seqs = reinterpret_cast<const M2Sequence*>(b + f.seqOff);
+     CHECK(seqs[0].m_blendTime == 0x0002 && seqs[1].m_blendTime == 0x0004, "split blend times masked to the single value");
+-    CHECK(seqs[1].m_id == 37, "source anim id 564 remapped to client 37");
++    CHECK(seqs[1].m_id == 564, "source anim id 564 (MOUNT_FLIGHT_START) is not filed as JUMP_START: the game layer picks it for the jump into flight");
+     CHECK(seqs[2].m_id == 270 && seqs[3].m_id == 274, "source flight ids 548 / 562 filed under the flight twins 0x10E / 0x112");
+     CHECK(seqs[4].m_id == 41, "the model's own swim idle is left alone (flight does not replace swim)");
+     CHECK(seqs[5].m_id == 700, "a modern id above the old table keeps its own number (ANIM_COUNT covers it now)");
+@@ -487,6 +487,12 @@ static void TestFlightChoice()
+               "a MOUNT_FLIGHT request falls through twin and swim in turn");
+     }
+     CHECK(fa::Prefer(42, true, has({ 548, 270 })) == 42, "only the slot's own ids count (idle's MOUNT_FLIGHT and twin do not answer a forward request)");
++    // the jump into flight: MOUNT_FLIGHT_START first, then JUMP_START; the ground jump is always JUMP_START
++    CHECK(fa::kJumpStart == 37 && fa::kMountFlightStart == 564, "jump ids");
++    CHECK(fa::PreferJumpStart(37, true, has({ 564 })) == 564 && fa::PreferJumpStart(37, true, has({ 564, 37 })) == 564, "taking off: MOUNT_FLIGHT_START wins");
++    CHECK(fa::PreferJumpStart(37, true, has({ 37 })) == 37 && fa::PreferJumpStart(37, true, none) == 37, "taking off, no MOUNT_FLIGHT_START: JUMP_START");
++    CHECK(fa::PreferJumpStart(37, false, has({ 564, 37 })) == 37 && fa::PreferJumpStart(37, false, has({ 564 })) == 37, "a jump that is not into flight: always JUMP_START");
++    CHECK(fa::PreferJumpStart(38, true, has({ 564 })) == 38 && fa::PreferJumpStart(41, true, has({ 564 })) == 41 && fa::PreferJumpStart(564, true, none) == 564, "other ids untouched");
+     CHECK(fa::Prefer(558, true, has({ 558 })) == 558 && fa::Prefer(560, true, none) == 560 && fa::Prefer(564, true, none) == 564,
+           "sprint, walk and start of the mount set are not part of the chain");
+     CHECK(fa::FlightIdForSource(548) == 270 && fa::FlightIdForSource(556) == 271 && fa::FlightIdForSource(552) == 272
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 618197e..e7f2ab2 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -4005,9 +4005,16 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
+             return model->HasSequence(id) != 0 && (!wxl::flightanim::IsMountFlightSet(id) || model->IsSequenceLoaded(id));
+         });
+ 
++        // WXL: the jump that takes a unit off the ground into flight (the takeoff plays ANIM_JUMP_START with the flying
++        // flag already set) asks the model for its MOUNT_FLIGHT_START first and falls back to JUMP_START; a jump that is not
++        // into flight is always the native JUMP_START. The request stays JUMP_START for every classifier.
++        animId = wxl::flightanim::PreferJumpStart(animId, inFlight, [model](uint32_t id) {
++            return model->HasSequence(id) != 0 && model->IsSequenceLoaded(id);
++        });
++
+         // A MOUNT_FLIGHT sequence the model has and has loaded is played as it is: these ids are found by the model, not
+         // through the animation table's behavior / tier / fallback rows below.
+-        if (wxl::flightanim::IsMountFlightSet(animId)) {
++        if (wxl::flightanim::IsMountFlightSet(animId) || animId == wxl::flightanim::kMountFlightStart) {
+             return animId;
+         }
+     }

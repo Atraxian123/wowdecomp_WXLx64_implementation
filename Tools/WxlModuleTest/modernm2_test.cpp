@@ -87,7 +87,7 @@ static Fixture BuildModernFile(uint32_t version)
     setArr(offsetof(M2Data, m_cameras), 2, camOff);
     Put32(body, offsetof(M2Data, m_numSkinProfiles), 7); // LDV1-era count, must be clamped
 
-    // sequences: #0 inline keys, #1 external (flags 0), source id 564 -> client 37, packed blend in|out
+    // sequences: #0 inline keys, #1 external (flags 0), source id 564 (kept as it is), packed blend in|out
     auto* seqs = reinterpret_cast<M2Sequence*>(&body[seqOff]);
     seqs[0].m_id = 0;   seqs[0].m_flags = 0x20; seqs[0].m_blendTime = 0x00030002;
     seqs[1].m_id = 564; seqs[1].m_flags = 0x00; seqs[1].m_blendTime = 0x00050004;
@@ -224,7 +224,7 @@ static void TestLoad()
 
     const auto* seqs = reinterpret_cast<const M2Sequence*>(b + f.seqOff);
     CHECK(seqs[0].m_blendTime == 0x0002 && seqs[1].m_blendTime == 0x0004, "split blend times masked to the single value");
-    CHECK(seqs[1].m_id == 37, "source anim id 564 remapped to client 37");
+    CHECK(seqs[1].m_id == 564, "source anim id 564 (MOUNT_FLIGHT_START) is not filed as JUMP_START: the game layer picks it for the jump into flight");
     CHECK(seqs[2].m_id == 270 && seqs[3].m_id == 274, "source flight ids 548 / 562 filed under the flight twins 0x10E / 0x112");
     CHECK(seqs[4].m_id == 41, "the model's own swim idle is left alone (flight does not replace swim)");
     CHECK(seqs[5].m_id == 700, "a modern id above the old table keeps its own number (ANIM_COUNT covers it now)");
@@ -487,6 +487,12 @@ static void TestFlightChoice()
               "a MOUNT_FLIGHT request falls through twin and swim in turn");
     }
     CHECK(fa::Prefer(42, true, has({ 548, 270 })) == 42, "only the slot's own ids count (idle's MOUNT_FLIGHT and twin do not answer a forward request)");
+    // the jump into flight: MOUNT_FLIGHT_START first, then JUMP_START; the ground jump is always JUMP_START
+    CHECK(fa::kJumpStart == 37 && fa::kMountFlightStart == 564, "jump ids");
+    CHECK(fa::PreferJumpStart(37, true, has({ 564 })) == 564 && fa::PreferJumpStart(37, true, has({ 564, 37 })) == 564, "taking off: MOUNT_FLIGHT_START wins");
+    CHECK(fa::PreferJumpStart(37, true, has({ 37 })) == 37 && fa::PreferJumpStart(37, true, none) == 37, "taking off, no MOUNT_FLIGHT_START: JUMP_START");
+    CHECK(fa::PreferJumpStart(37, false, has({ 564, 37 })) == 37 && fa::PreferJumpStart(37, false, has({ 564 })) == 37, "a jump that is not into flight: always JUMP_START");
+    CHECK(fa::PreferJumpStart(38, true, has({ 564 })) == 38 && fa::PreferJumpStart(41, true, has({ 564 })) == 41 && fa::PreferJumpStart(564, true, none) == 564, "other ids untouched");
     CHECK(fa::Prefer(558, true, has({ 558 })) == 558 && fa::Prefer(560, true, none) == 560 && fa::Prefer(564, true, none) == 564,
           "sprint, walk and start of the mount set are not part of the chain");
     CHECK(fa::FlightIdForSource(548) == 270 && fa::FlightIdForSource(556) == 271 && fa::FlightIdForSource(552) == 272
