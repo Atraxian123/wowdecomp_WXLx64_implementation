@@ -32,6 +32,8 @@ enum {
     kRibbonLayersStock = 0,    // one pass per layer, each with its own material's blend mode (the stock draw)
     kRibbonLayersMultiply = 1, // a ribbon of 2-4 layers is ONE pass: the layers multiply into one image
     kRibbonLayersAdd = 2,      // a ribbon of 2+ layers: every layer is drawn additively (blend mode "add"), so the layers sum
+    kRibbonLayersMultiplyPlain = 3, // like Multiply, but the alpha is the plain product (never scaled) and the colour gain comes
+                                    // from [Ribbons] MultiTextureGain: the opt-in MultiTextureBlend=Multiply
 };
 
 class CRibbonEmitter {
@@ -93,7 +95,7 @@ class CRibbonEmitter {
     int32_t IsDead();
     int32_t AddsLayers(); // WXL: true when this ribbon has 2+ texture layers and they blend additively
     int32_t Render(const C44Matrix* frameOfReference);
-    void RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers); // WXL
+    void RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex, uint32_t layers, bool plainAlpha); // WXL
     int32_t ReplaceTexture(uint32_t type, CTexture* texture);
     void SetAbove(float above);
     void SetAlpha(float alpha);

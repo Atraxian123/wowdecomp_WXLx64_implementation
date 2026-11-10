@@ -41,6 +41,7 @@
 #include "Engine/Source/WXL/Hooks.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/ParticleCsv.h"
+#include "Engine/Source/WXL/RibbonBlend.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/Base/Status.h"
 
@@ -7287,9 +7288,21 @@ int32_t CM2Model::InitializeLoaded() {
 
             this->m_ribbonEmitters[i]->Initialize(ribbonData->m_edgesPerSecond, ribbonData->m_edgeLifetime, color, s_ribbonTextures, s_ribbonMaterials, s_ribbonTextureTypes, texCoords, ribbonData->m_textureRows, ribbonData->m_textureCols);
             this->m_ribbonEmitters[i]->SetGravity(ribbonData->m_gravity);
-            // WXL: a modern model's multi-layer ribbons draw as one multiplied image; a native Wrath model's
-            // (m_wxl is null) add their layers together, as a material with blend mode "add" does.
-            this->m_ribbonEmitters[i]->m_foldLayers = this->m_shared->m_wxl ? kRibbonLayersMultiply : kRibbonLayersAdd;
+            // WXL: how a ribbon with several textures combines them (a single-texture ribbon is never touched).
+            // [Ribbons] MultiTextureBlend=Multiply or Add decides it for every model, native Wrath or modern; Off, the
+            // default, leaves it as it was: a modern model's ribbons are one multiplied pass, a native Wrath model's
+            // are drawn by the stock client, one pass per layer with the material's own blend mode.
+            switch (wxl::ribbonblend::MultiTextureBlend()) {
+            case wxl::ribbonblend::Mode::Multiply:
+                this->m_ribbonEmitters[i]->m_foldLayers = kRibbonLayersMultiplyPlain;
+                break;
+            case wxl::ribbonblend::Mode::Add:
+                this->m_ribbonEmitters[i]->m_foldLayers = kRibbonLayersAdd;
+                break;
+            default:
+                this->m_ribbonEmitters[i]->m_foldLayers = this->m_shared->m_wxl ? kRibbonLayersMultiply : kRibbonLayersStock;
+                break;
+            }
             this->m_ribbonEmitters[i]->SetDataEnabled(0);
             this->m_ribbons[i].m_visibilityTrack.m_currentValue = 1;
             this->m_ribbons[i].m_alphaTrack.m_currentValue = 1.0f;
