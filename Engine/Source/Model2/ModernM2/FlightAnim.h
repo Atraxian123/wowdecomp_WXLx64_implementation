@@ -100,20 +100,6 @@ namespace wxl::flightanim
         }
     }
 
-    // The jump that takes a unit off the ground into flight.
-    constexpr uint32_t kJumpStart        = 37;    // ANIM_JUMP_START
-    constexpr uint32_t kMountFlightStart = 564;   // ANIM_MOUNT_FLIGHT_START
-
-    /// A jump-start request from a unit in flight (it has just taken off): the model's own MOUNT_FLIGHT_START when it has
-    /// that sequence (`has` is a native-presence test, plus loaded), JUMP_START otherwise. A jump from a unit that is not in
-    /// flight, and any other id, is returned as it is: the ground jump is always the native JUMP_START.
-    template <class HasSequence>
-    inline uint32_t PreferJumpStart(uint32_t animId, bool inFlight, HasSequence&& has)
-    {
-        if (animId != kJumpStart || !inFlight) return animId;
-        return has(kMountFlightStart) ? kMountFlightStart : kJumpStart;
-    }
-
     /// The animation id to resolve for a model.
     ///   * A swim-set request from a unit in flight (flying and not swimming), or a request already in the flight family
     ///     (a rider model resolved first and found one): the first id of the same slot that the model has natively

@@ -4005,16 +4005,9 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
             return model->HasSequence(id) != 0 && (!wxl::flightanim::IsMountFlightSet(id) || model->IsSequenceLoaded(id));
         });
 
-        // WXL: the jump that takes a unit off the ground into flight (the takeoff plays ANIM_JUMP_START with the flying
-        // flag already set) asks the model for its MOUNT_FLIGHT_START first and falls back to JUMP_START; a jump that is not
-        // into flight is always the native JUMP_START. The request stays JUMP_START for every classifier.
-        animId = wxl::flightanim::PreferJumpStart(animId, inFlight, [model](uint32_t id) {
-            return model->HasSequence(id) != 0 && model->IsSequenceLoaded(id);
-        });
-
         // A MOUNT_FLIGHT sequence the model has and has loaded is played as it is: these ids are found by the model, not
         // through the animation table's behavior / tier / fallback rows below.
-        if (wxl::flightanim::IsMountFlightSet(animId) || animId == wxl::flightanim::kMountFlightStart) {
+        if (wxl::flightanim::IsMountFlightSet(animId)) {
             return animId;
         }
     }

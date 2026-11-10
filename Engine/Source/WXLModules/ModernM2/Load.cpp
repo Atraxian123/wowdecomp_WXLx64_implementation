@@ -161,10 +161,9 @@ namespace wxl::m2mod
                 }
                 else
                 {
-                    // 564 (MOUNT_FLIGHT_START) is NOT filed as JUMP_START: a model can have both, and the game layer picks
-                    // it for the jump into flight only (see FlightAnim.h); the ground jump stays the native JUMP_START.
                     switch (id)
                     {
+                    case 564: anim = 37;  break;
                     case 572: anim = 39;  break;
                     case 574: anim = 187; break;
                     }
