@@ -17,6 +17,7 @@ int32_t CShaderEffect::s_useAlphaRef;
 
 // STATIC: 0x00D4300C
 float CShaderEffect::s_fogMul;
+int32_t CShaderEffect::s_fogActive;
 
 // STATIC: 0x00D43010
 uint32_t CShaderEffect::s_shadowValue;
@@ -340,6 +341,8 @@ void CShaderEffect::SetFogParams(float start, float end, float density, const CI
 // VERIFY: af8a3952 manual
 // OFFSET: 0x00873390
 void CShaderEffect::SetFogEnabled(int32_t enabled) {
+    CShaderEffect::s_fogActive = enabled && g_theGxDevicePtr->MasterEnable(GxMasterEnable_Fog);
+
     if (enabled && g_theGxDevicePtr->MasterEnable(GxMasterEnable_Fog)) {
         if (CShaderEffect::s_enableShaders) {
             GxShaderConstantsSet(GxSh_Vertex, 30, &CShaderEffect::s_fogParams.x, 1);

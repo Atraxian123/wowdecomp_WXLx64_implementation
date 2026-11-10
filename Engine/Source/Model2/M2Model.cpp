@@ -7515,10 +7515,23 @@ int32_t CM2Model::InitializeLoaded() {
                 }
 
                 if (wxlLayerCount >= 2) {
-                    // stock M2 blend 4 ("add"): no alpha test, the layers sum in the frame buffer
-                    material.m_blendMode = 3;
-                    material.m_flags &= ~4u;
-                    wxl::LogCat("PARTICLE", "%s: emitter %u draws %u textures additively", this->m_shared->m_fileName, i, wxlLayerCount);
+                    if (wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply) {
+                        // The layers multiply into one image, which the emitter blends the way the CSV says it is blended:
+                        // M2 blend 4 is "add" (the particle material's mode 3, as the stock switch above maps it, no alpha
+                        // test). Any other value, such as 7 ("blend add"), keeps the blend the model already carries,
+                        // which the stock mapping above resolves.
+                        if (wxlMulti->blending == 4) {
+                            material.m_blendMode = 3;
+                            material.m_flags &= ~4u;
+                        }
+                    } else {
+                        // each layer is added into the frame buffer on its own: the stock M2 blend 4 ("add"), no alpha test
+                        material.m_blendMode = 3;
+                        material.m_flags &= ~4u;
+                    }
+
+                    wxl::LogCat("PARTICLE", "%s: emitter %u combines %u textures (%s, CSV blend %d)", this->m_shared->m_fileName, i, wxlLayerCount,
+                                wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply ? "multiply" : "add", wxlMulti->blending);
                 } else {
                     for (uint32_t l = 0; l < wxlLayerCount; l++) {
                         HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));
@@ -7533,6 +7546,11 @@ int32_t CM2Model::InitializeLoaded() {
 
             for (uint32_t l = 1; l < wxlLayerCount; l++) {
                 emitter->SetLayerTexture(l - 1, wxlLayers[l]);
+            }
+
+            if (wxlLayerCount) {
+                emitter->SetLayerMode(wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply ? CParticleEmitter2::kLayersMultiply : CParticleEmitter2::kLayersAdd,
+                                      wxl::particlecsv::Gain());
             }
 
             for (uint32_t l = 0; l < wxlLayerCount; l++) {

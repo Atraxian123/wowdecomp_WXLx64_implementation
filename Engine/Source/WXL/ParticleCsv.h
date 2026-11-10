@@ -6,10 +6,24 @@
 //
 //     [Particles]
 //     MultiTextureCsv=1
+//     MultiTextureBlend=Multiply     ; or Add
+//     MultiTextureGain=2             ; Multiply only: 1, 2 or 4
 //
 // the model loader looks for a CSV named like the model, in the model's folder, and for every emitter the CSV marks
-// as multi-textured it gives the emitter all of that emitter's textures, drawn on top of each other with additive
-// blending. An emitter the CSV does not mark, a model without a CSV, and the setting off all render as before.
+// as multi-textured it gives the emitter all of that emitter's textures. An emitter the CSV does not mark, a model
+// without a CSV, and the setting off all render as before.
+//
+// How the textures of a multi-textured emitter combine (MultiTextureBlend):
+//   Multiply (default)  one pass: texture0 * texture1 * texture2 * vertex colour in colour, and texture0's alpha times
+//                       the particle's own alpha track in alpha, then blended
+//                       into the frame the way the CSV says the emitter blends: Blending 4 is "add"; any other value keeps
+//                       the blend the converted model carries.
+//                       The filler textures (white8x8, a 50 % grey) are neutral in it, and the particle's own colour and
+//                       alpha tracks are kept.
+//   Add                 one pass per texture, each added into the frame on its own. A solid filler texture then
+//                       adds a solid square, so this only suits emitters whose layers are all soft masks.
+// MultiTextureGain (Multiply): the colour of the product is doubled once (2, the default: a 50 % grey layer is then
+// neutral), twice (4), or not at all (1). Alpha is never scaled.
 //
 // File format (one row per texture of an emitter; the header names are matched case-insensitively, and without it
 // the columns are taken in this order):
@@ -62,6 +76,15 @@ namespace wxl::particlecsv
 
     /// WXLSetup.ini [Particles] MultiTextureCsv (default 0). Read once.
     bool Enabled();
+
+    /// How the textures of a multi-textured emitter combine. See the top of this file.
+    enum class LayerBlend : uint32_t { Add = 0, Multiply = 1 };
+
+    /// WXLSetup.ini [Particles] MultiTextureBlend: "Add" or "Multiply" (default). Anything else is Multiply. Read once.
+    LayerBlend Blend();
+
+    /// WXLSetup.ini [Particles] MultiTextureGain: 1, 2 (default) or 4; other values round to the nearest. Read once.
+    uint32_t Gain();
 
     /// The table for a model, or null when the setting is off or no CSV exists for it (not an error: the model
     /// simply renders as before). Results, hits and misses alike, are cached by path. Thread-safe.

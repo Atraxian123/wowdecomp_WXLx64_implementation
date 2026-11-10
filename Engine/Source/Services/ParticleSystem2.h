@@ -219,6 +219,14 @@ class CParticleEmitter2 {
     static constexpr uint32_t kLayerTextureCount = 2;
     CTexture* m_layerTextures[kLayerTextureCount];
 
+    // How the layers combine: kLayersAdd draws each layer in its own pass, added into the frame; kLayersMultiply draws
+    // one pass in which the layers multiply (colour and alpha) and the result is blended with the emitter's blend mode.
+    // m_layerGain, for multiply: 1, 2 or 4, how far the product's colour is doubled (see WXL/ParticleCsv.h).
+    static constexpr uint32_t kLayersAdd = 0;
+    static constexpr uint32_t kLayersMultiply = 1;
+    uint32_t m_layerMode;
+    uint32_t m_layerGain;
+
     virtual void Sync();
     virtual void CreateParticle(CParticle2& particle, float time, const C44Matrix& transform);
     virtual void CreateParticle(CParticle2_Model& particle, float time, const C44Matrix& transform);
@@ -276,6 +284,8 @@ class CParticleEmitter2 {
     void SetSimpleTailCellKeys();
     void SetTexture(CTexture* texture);
     void SetLayerTexture(uint32_t layer, CTexture* texture);
+    void SetLayerMode(uint32_t mode, uint32_t gain);
+    bool RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
     void RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     void SetTextureDimensions(uint32_t rows, uint32_t cols);

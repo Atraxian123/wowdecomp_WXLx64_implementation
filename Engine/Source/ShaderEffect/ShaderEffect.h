@@ -31,6 +31,7 @@ class CShaderEffect : public TSHashObject<CShaderEffect, HASHKEY_STRI> {
     static int32_t s_enableShaders;
     static C4Vector s_fogColorAlphaRef;
     static float s_fogMul;
+    static int32_t s_fogActive; // WXL: 1 when the last SetFogEnabled turned fog on (the shaders read it from a constant, so nothing else says)
     static C4Vector s_fogParams;
     static int32_t s_lightEnabled;
     static uint32_t s_localLightCount;

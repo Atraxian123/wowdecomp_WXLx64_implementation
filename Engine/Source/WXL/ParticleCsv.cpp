@@ -50,6 +50,32 @@ namespace wxl::particlecsv
 #endif
         }
 
+        // The ini's text value of a key, or the default. Same lookup as IniInt.
+        std::string IniString(const char* section, const char* key, const char* def)
+        {
+#ifdef _WIN32
+            char path[MAX_PATH] = {};
+            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
+            if (n == 0 || n >= sizeof(path)) return def;
+            char* slash = std::strrchr(path, '\\');
+            const char* name = "WXLSetup.ini";
+            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
+            std::strcpy(slash + 1, name);
+            char inWxl[MAX_PATH] = {};
+            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
+            {
+                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
+                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
+            }
+            char value[64] = {};
+            GetPrivateProfileStringA(section, key, def, value, static_cast<DWORD>(sizeof(value)), path);
+            return value;
+#else
+            (void)section; (void)key;
+            return def;
+#endif
+        }
+
         std::string Lower(std::string s)
         {
             for (char& c : s) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
@@ -278,6 +304,29 @@ namespace wxl::particlecsv
             return v;
         }();
         return on;
+    }
+
+    LayerBlend Blend()
+    {
+        static const LayerBlend mode = [] {
+            std::string v = Lower(Trim(IniString("Particles", "MultiTextureBlend", "Multiply")));
+            // anything that is not clearly "add" is the default; a trailing comment (";") is not part of the value
+            const size_t semi = v.find(';');
+            if (semi != std::string::npos) v = Trim(v.substr(0, semi));
+            const bool add = v == "add" || v == "additive" || v == "plain" || v == "sum";
+            wxl::LogCat("PARTICLE", "multi-textured particles blend by %s", add ? "adding each texture" : "multiplying the textures");
+            return add ? LayerBlend::Add : LayerBlend::Multiply;
+        }();
+        return mode;
+    }
+
+    uint32_t Gain()
+    {
+        static const uint32_t gain = [] {
+            const int v = IniInt("Particles", "MultiTextureGain", 2);
+            return v <= 1 ? 1u : (v >= 4 ? 4u : (v == 3 ? 4u : 2u));
+        }();
+        return gain;
     }
 
     std::shared_ptr<const Table> For(const char* modelPath)
