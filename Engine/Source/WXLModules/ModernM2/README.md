@@ -28,7 +28,9 @@ A split-skeleton model (`SKID`, a `.skel` file) is refused like an absent file: 
   Every block the module needs comes through `WxlM2Alloc`, from the client's own allocators, so a block is freed by the
   routine that allocated it (`SIMD::FreeA16`, `OsFreeNear`) and no pointer crosses the DLL boundary the wrong way.
 * **Shared, engine-free:** `Engine/Source/Model2/ModernM2/FlightAnim.h` (constants and a pure decision function; the
-  module remaps the source flight ids with it, the game layer resolves them with it).
+  module remaps the source flight ids with it, the game layer resolves them with it). A unit in flight plays the first of
+  MOUNT_FLIGHT_* (548 / 556 / 552 / 554 / 562, native or modern), ANIM_FLY_SWIM_* (0x10E-0x112) and the swim set that its
+  model has.
 
 `M2Records.hpp` is a copy of `Engine/Source/Model2/M2Data.h`. The format is the old client's and does not move, but a copy
 can drift: `modernm2_layout_test.cpp` compares every size and field offset with the engine's header (it is generated from

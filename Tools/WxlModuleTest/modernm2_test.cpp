@@ -467,7 +467,28 @@ static void TestFlightChoice()
     CHECK(fa::Prefer(272, true, onlyFlight) == 272, "a flight-twin request on a model that has it is kept");
     CHECK(fa::Prefer(0, true, onlyFlight) == 0 && fa::Prefer(135, true, onlyFlight) == 135 && fa::Prefer(40, true, onlyFlight) == 40
           && fa::Prefer(46, true, onlyFlight) == 46 && fa::Prefer(269, true, none) == 269 && fa::Prefer(275, true, none) == 275,
-          "ids outside the swim set and its twin are never touched");
+          "ids outside the swim set, its twin and the mount flight set are never touched");
+
+    // the MOUNT_FLIGHT layer: first, then the twin, then swim
+    const uint32_t mount[5] = { 548, 556, 552, 554, 562 };
+    CHECK(fa::kMountFlightIdle == 548 && fa::kMountFlight == 556 && fa::kMountFlightLeft == 552 && fa::kMountFlightRight == 554 && fa::kMountFlightBackwards == 562,
+          "MOUNT_FLIGHT ids");
+    for (uint32_t i = 0; i < 5; ++i)
+    {
+        const uint32_t swim = 41 + i, twin = swim + 229;
+        CHECK(fa::MountFlightForSwim(swim) == mount[i] && fa::SwimIdFor(mount[i]) == swim && fa::SwimIdFor(twin) == swim && fa::SwimIdFor(swim) == swim, "slots line up");
+        CHECK(fa::Prefer(swim, true, has({ mount[i], twin })) == mount[i], "flying, model has both: MOUNT_FLIGHT wins over the twin");
+        CHECK(fa::Prefer(swim, true, has({ mount[i] })) == mount[i], "flying, MOUNT_FLIGHT only: MOUNT_FLIGHT");
+        CHECK(fa::Prefer(swim, true, has({ twin })) == twin, "flying, no MOUNT_FLIGHT: the FLY_SWIM twin");
+        CHECK(fa::Prefer(swim, true, has({ swim })) == swim && fa::Prefer(swim, true, none) == swim, "flying, neither: swim");
+        CHECK(fa::Prefer(swim, false, has({ mount[i], twin })) == swim, "swimming: swim, whatever flight sequences the model has");
+        CHECK(fa::Prefer(twin, true, has({ mount[i] })) == mount[i], "a twin request (rider resolved first) still finds the model's MOUNT_FLIGHT");
+        CHECK(fa::Prefer(mount[i], true, none) == swim && fa::Prefer(mount[i], true, has({ twin })) == twin && fa::Prefer(mount[i], true, has({ mount[i] })) == mount[i],
+              "a MOUNT_FLIGHT request falls through twin and swim in turn");
+    }
+    CHECK(fa::Prefer(42, true, has({ 548, 270 })) == 42, "only the slot's own ids count (idle's MOUNT_FLIGHT and twin do not answer a forward request)");
+    CHECK(fa::Prefer(558, true, has({ 558 })) == 558 && fa::Prefer(560, true, none) == 560 && fa::Prefer(564, true, none) == 564,
+          "sprint, walk and start of the mount set are not part of the chain");
     CHECK(fa::FlightIdForSource(548) == 270 && fa::FlightIdForSource(556) == 271 && fa::FlightIdForSource(552) == 272
           && fa::FlightIdForSource(554) == 273 && fa::FlightIdForSource(562) == 274 && fa::FlightIdForSource(564) == 0 && fa::FlightIdForSource(41) == 0,
           "source ids map idle / forward / left / right / backwards onto the twins, nothing else");

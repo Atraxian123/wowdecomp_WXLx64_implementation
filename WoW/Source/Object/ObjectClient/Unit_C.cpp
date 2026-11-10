@@ -3985,10 +3985,13 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
     }
 
     // WXL: flight animations. ChooseMovementAnim / ChooseDefaultAnim ask for the swim set whenever the unit is
-    // swimming OR flying. A unit in flight (flying and not submerged) is given the model's native flight twin of that
-    // set when it has one, and the plain swim sequence when it does not; a unit that is actually swimming keeps
-    // swim. HasSequence is the test (native presence): IsSequenceLoaded would also succeed through the fallback chain.
-    // The mount path resolves the mount model through here too, so a mount gets its own flight set or its swim set.
+    // swimming OR flying. A unit in flight (flying and not submerged) is given, in this order, the first of these the
+    // model has natively: the MOUNT_FLIGHT_* sequence (548 / 556 / 552 / 554 / 562, which a native .m2 can carry as well
+    // as a modern one), then the ANIM_FLY_SWIM_* twin (0x10E-0x112, where the modern reader files its flight set), then
+    // the plain swim sequence; a unit that is actually swimming keeps swim. HasSequence is the test (native presence):
+    // IsSequenceLoaded would also succeed through the fallback chain. A MOUNT_FLIGHT sequence also has to be loaded (its
+    // animation file may still be on its way), so an unloaded one does not shadow the twin or swim sequence that would
+    // play now. The mount path resolves the mount model through here too, so a mount gets its own flight set or its swim set.
     static_assert(wxl::flightanim::kSwimIdle == ANIM_SWIM_IDLE && wxl::flightanim::kSwimBackwards == ANIM_SWIM_BACKWARDS
                   && wxl::flightanim::kFlightSwimIdle == ANIM_FLY_SWIM_IDLE
                   && wxl::flightanim::kFlightSwimBackwards == ANIM_FLY_SWIM_BACKWARDS,
@@ -3998,7 +4001,15 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
         const uint32_t moveFlags = this->m_movementData.m_flags;
         const bool inFlight = (moveFlags & MOVEMENTFLAG_FLYING) && !(moveFlags & MOVEMENTFLAG_SWIMMING);
 
-        animId = wxl::flightanim::Prefer(animId, inFlight, [model](uint32_t id) { return model->HasSequence(id) != 0; });
+        animId = wxl::flightanim::Prefer(animId, inFlight, [model](uint32_t id) {
+            return model->HasSequence(id) != 0 && (!wxl::flightanim::IsMountFlightSet(id) || model->IsSequenceLoaded(id));
+        });
+
+        // A MOUNT_FLIGHT sequence the model has and has loaded is played as it is: these ids are found by the model, not
+        // through the animation table's behavior / tier / fallback rows below.
+        if (wxl::flightanim::IsMountFlightSet(animId)) {
+            return animId;
+        }
     }
 
     uint32_t result = static_cast<uint16_t>(animId);

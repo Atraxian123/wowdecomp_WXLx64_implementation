@@ -1,0 +1,193 @@
+diff --git a/Engine/Source/Model2/ModernM2/FlightAnim.h b/Engine/Source/Model2/ModernM2/FlightAnim.h
+index 4550e6b..dcdbeea 100644
+--- a/Engine/Source/Model2/ModernM2/FlightAnim.h
++++ b/Engine/Source/Model2/ModernM2/FlightAnim.h
+@@ -7,9 +7,12 @@
+ // (ANIM_FLY_SWIM_IDLE..ANIM_FLY_SWIM_BACKWARDS, 0x10E-0x112) that nothing ever requested. Later-era models
+ // (Cataclysm and on) ship real flight sequences; the modern reader files them under those twin ids.
+ //
++// A model of ANY era can also carry the mount flight set itself (MOUNT_FLIGHT_IDLE..WALK_BACKWARDS, ids 548, 556, 552,
++// 554, 562, the ids the modern models use): a native .m2 can be authored with them, since a sequence is found by id.
++//
+ // The request stays a swim id (so every classifier keyed on the request keeps working); the resolver
+-// (CGUnit_C::ResolveAnimForModel) turns it into the flight twin when the unit is flying and not submerged and
+-// the model has that sequence natively, and into the plain swim sequence otherwise.
++// (CGUnit_C::ResolveAnimForModel) turns it, for a unit that is flying and not submerged, into the first of these
++// that the model has natively: the MOUNT_FLIGHT sequence, then the FLY_SWIM twin, then the plain swim sequence.
+ //
+ // Pure functions and constants only, so the engine layer (the modern reader's id remap) and the game layer (the
+ // resolver) share one definition and a host test can run the decision without the game.
+@@ -32,6 +35,48 @@ namespace wxl::flightanim
+     constexpr bool IsSwimSet(uint32_t id)   { return id >= kSwimIdle && id <= kSwimBackwards; }
+     constexpr bool IsFlightSet(uint32_t id) { return id >= kFlightSwimIdle && id <= kFlightSwimBackwards; }
+ 
++    // The MOUNT_FLIGHT set, in the same idle / forward / left / right / backwards order as the swim set.
++    constexpr uint32_t kMountFlightIdle      = 548;
++    constexpr uint32_t kMountFlight          = 556;
++    constexpr uint32_t kMountFlightLeft      = 552;
++    constexpr uint32_t kMountFlightRight     = 554;
++    constexpr uint32_t kMountFlightBackwards = 562;
++
++    constexpr bool IsMountFlightSet(uint32_t id)
++    {
++        return id == kMountFlightIdle || id == kMountFlight || id == kMountFlightLeft || id == kMountFlightRight || id == kMountFlightBackwards;
++    }
++
++    /// The MOUNT_FLIGHT id that goes with a swim id (41..45), 0 for anything else.
++    constexpr uint32_t MountFlightForSwim(uint32_t swimId)
++    {
++        switch (swimId - kSwimIdle)
++        {
++        case 0:  return kMountFlightIdle;
++        case 1:  return kMountFlight;
++        case 2:  return kMountFlightLeft;
++        case 3:  return kMountFlightRight;
++        case 4:  return kMountFlightBackwards;
++        default: return 0;
++        }
++    }
++
++    /// The swim id (41..45) a swim, flight-twin or MOUNT_FLIGHT id belongs to, 0 for any other id.
++    constexpr uint32_t SwimIdFor(uint32_t id)
++    {
++        if (IsSwimSet(id)) return id;
++        if (IsFlightSet(id)) return id - kFlightOffset;
++        switch (id)
++        {
++        case kMountFlightIdle:      return kSwimIdle;
++        case kMountFlight:          return kSwimIdle + 1;
++        case kMountFlightLeft:      return kSwimIdle + 2;
++        case kMountFlightRight:     return kSwimIdle + 3;
++        case kMountFlightBackwards: return kSwimBackwards;
++        default:                    return 0;
++        }
++    }
++
+     // Source (modern-era) ids of the flight set (MountFlightIdle / Run / Left / Right / WalkBackwards), in the same
+     // idle / forward / left / right / backwards order as the swim set. The reader re-files them under the twins, so
+     // a modern model and a model authored natively at the twin ids behave the same.
+@@ -56,22 +101,25 @@ namespace wxl::flightanim
+     }
+ 
+     /// The animation id to resolve for a model.
+-    ///   * A swim-set request from a unit in flight (flying and not swimming): the flight twin when the model has
+-    ///     it natively (`has` is a native-presence test, not a fallback-aware one), else the swim id unchanged.
+-    ///   * A flight-twin request (a rider model resolved first and found one) for a model that lacks it: the swim id.
++    ///   * A swim-set request from a unit in flight (flying and not swimming), or a request already in the flight family
++    ///     (a rider model resolved first and found one): the first id of the same slot that the model has natively
++    ///     (`has` is a native-presence test, not a fallback-aware one), in this order:
++    ///         1. MOUNT_FLIGHT_*   2. ANIM_FLY_SWIM_* (the twin)   3. the plain swim id.
++    ///   * A swim-set request from a unit that is not in flight (swimming): unchanged, always.
+     ///   * Anything else: unchanged.
+     template <class HasSequence>
+     inline uint32_t Prefer(uint32_t animId, bool inFlight, HasSequence&& has)
+     {
+-        if (IsSwimSet(animId))
+-        {
+-            const uint32_t flight = animId + kFlightOffset;
+-            return (inFlight && has(flight)) ? flight : animId;
+-        }
++        const uint32_t swim = SwimIdFor(animId);
++        if (!swim) return animId;
++        if (IsSwimSet(animId) && !inFlight) return animId;
++
++        const uint32_t mount = MountFlightForSwim(swim);
++        if (has(mount)) return mount;
+ 
+-        if (IsFlightSet(animId) && !has(animId))
+-            return animId - kFlightOffset;
++        const uint32_t twin = swim + kFlightOffset;
++        if (has(twin)) return twin;
+ 
+-        return animId;
++        return swim;
+     }
+ }
+diff --git a/Engine/Source/WXLModules/ModernM2/README.md b/Engine/Source/WXLModules/ModernM2/README.md
+index 55e9185..e3894cd 100644
+--- a/Engine/Source/WXLModules/ModernM2/README.md
++++ b/Engine/Source/WXLModules/ModernM2/README.md
+@@ -28,7 +28,9 @@ A split-skeleton model (`SKID`, a `.skel` file) is refused like an absent file:
+   Every block the module needs comes through `WxlM2Alloc`, from the client's own allocators, so a block is freed by the
+   routine that allocated it (`SIMD::FreeA16`, `OsFreeNear`) and no pointer crosses the DLL boundary the wrong way.
+ * **Shared, engine-free:** `Engine/Source/Model2/ModernM2/FlightAnim.h` (constants and a pure decision function; the
+-  module remaps the source flight ids with it, the game layer resolves them with it).
++  module remaps the source flight ids with it, the game layer resolves them with it). A unit in flight plays the first of
++  MOUNT_FLIGHT_* (548 / 556 / 552 / 554 / 562, native or modern), ANIM_FLY_SWIM_* (0x10E-0x112) and the swim set that its
++  model has.
+ 
+ `M2Records.hpp` is a copy of `Engine/Source/Model2/M2Data.h`. The format is the old client's and does not move, but a copy
+ can drift: `modernm2_layout_test.cpp` compares every size and field offset with the engine's header (it is generated from
+diff --git a/Tools/WxlModuleTest/modernm2_test.cpp b/Tools/WxlModuleTest/modernm2_test.cpp
+index 600de17..2ed6ded 100644
+--- a/Tools/WxlModuleTest/modernm2_test.cpp
++++ b/Tools/WxlModuleTest/modernm2_test.cpp
+@@ -467,7 +467,28 @@ static void TestFlightChoice()
+     CHECK(fa::Prefer(272, true, onlyFlight) == 272, "a flight-twin request on a model that has it is kept");
+     CHECK(fa::Prefer(0, true, onlyFlight) == 0 && fa::Prefer(135, true, onlyFlight) == 135 && fa::Prefer(40, true, onlyFlight) == 40
+           && fa::Prefer(46, true, onlyFlight) == 46 && fa::Prefer(269, true, none) == 269 && fa::Prefer(275, true, none) == 275,
+-          "ids outside the swim set and its twin are never touched");
++          "ids outside the swim set, its twin and the mount flight set are never touched");
++
++    // the MOUNT_FLIGHT layer: first, then the twin, then swim
++    const uint32_t mount[5] = { 548, 556, 552, 554, 562 };
++    CHECK(fa::kMountFlightIdle == 548 && fa::kMountFlight == 556 && fa::kMountFlightLeft == 552 && fa::kMountFlightRight == 554 && fa::kMountFlightBackwards == 562,
++          "MOUNT_FLIGHT ids");
++    for (uint32_t i = 0; i < 5; ++i)
++    {
++        const uint32_t swim = 41 + i, twin = swim + 229;
++        CHECK(fa::MountFlightForSwim(swim) == mount[i] && fa::SwimIdFor(mount[i]) == swim && fa::SwimIdFor(twin) == swim && fa::SwimIdFor(swim) == swim, "slots line up");
++        CHECK(fa::Prefer(swim, true, has({ mount[i], twin })) == mount[i], "flying, model has both: MOUNT_FLIGHT wins over the twin");
++        CHECK(fa::Prefer(swim, true, has({ mount[i] })) == mount[i], "flying, MOUNT_FLIGHT only: MOUNT_FLIGHT");
++        CHECK(fa::Prefer(swim, true, has({ twin })) == twin, "flying, no MOUNT_FLIGHT: the FLY_SWIM twin");
++        CHECK(fa::Prefer(swim, true, has({ swim })) == swim && fa::Prefer(swim, true, none) == swim, "flying, neither: swim");
++        CHECK(fa::Prefer(swim, false, has({ mount[i], twin })) == swim, "swimming: swim, whatever flight sequences the model has");
++        CHECK(fa::Prefer(twin, true, has({ mount[i] })) == mount[i], "a twin request (rider resolved first) still finds the model's MOUNT_FLIGHT");
++        CHECK(fa::Prefer(mount[i], true, none) == swim && fa::Prefer(mount[i], true, has({ twin })) == twin && fa::Prefer(mount[i], true, has({ mount[i] })) == mount[i],
++              "a MOUNT_FLIGHT request falls through twin and swim in turn");
++    }
++    CHECK(fa::Prefer(42, true, has({ 548, 270 })) == 42, "only the slot's own ids count (idle's MOUNT_FLIGHT and twin do not answer a forward request)");
++    CHECK(fa::Prefer(558, true, has({ 558 })) == 558 && fa::Prefer(560, true, none) == 560 && fa::Prefer(564, true, none) == 564,
++          "sprint, walk and start of the mount set are not part of the chain");
+     CHECK(fa::FlightIdForSource(548) == 270 && fa::FlightIdForSource(556) == 271 && fa::FlightIdForSource(552) == 272
+           && fa::FlightIdForSource(554) == 273 && fa::FlightIdForSource(562) == 274 && fa::FlightIdForSource(564) == 0 && fa::FlightIdForSource(41) == 0,
+           "source ids map idle / forward / left / right / backwards onto the twins, nothing else");
+diff --git a/WoW/Source/Object/ObjectClient/Unit_C.cpp b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+index 149e09d..618197e 100644
+--- a/WoW/Source/Object/ObjectClient/Unit_C.cpp
++++ b/WoW/Source/Object/ObjectClient/Unit_C.cpp
+@@ -3985,10 +3985,13 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
+     }
+ 
+     // WXL: flight animations. ChooseMovementAnim / ChooseDefaultAnim ask for the swim set whenever the unit is
+-    // swimming OR flying. A unit in flight (flying and not submerged) is given the model's native flight twin of that
+-    // set when it has one, and the plain swim sequence when it does not; a unit that is actually swimming keeps
+-    // swim. HasSequence is the test (native presence): IsSequenceLoaded would also succeed through the fallback chain.
+-    // The mount path resolves the mount model through here too, so a mount gets its own flight set or its swim set.
++    // swimming OR flying. A unit in flight (flying and not submerged) is given, in this order, the first of these the
++    // model has natively: the MOUNT_FLIGHT_* sequence (548 / 556 / 552 / 554 / 562, which a native .m2 can carry as well
++    // as a modern one), then the ANIM_FLY_SWIM_* twin (0x10E-0x112, where the modern reader files its flight set), then
++    // the plain swim sequence; a unit that is actually swimming keeps swim. HasSequence is the test (native presence):
++    // IsSequenceLoaded would also succeed through the fallback chain. A MOUNT_FLIGHT sequence also has to be loaded (its
++    // animation file may still be on its way), so an unloaded one does not shadow the twin or swim sequence that would
++    // play now. The mount path resolves the mount model through here too, so a mount gets its own flight set or its swim set.
+     static_assert(wxl::flightanim::kSwimIdle == ANIM_SWIM_IDLE && wxl::flightanim::kSwimBackwards == ANIM_SWIM_BACKWARDS
+                   && wxl::flightanim::kFlightSwimIdle == ANIM_FLY_SWIM_IDLE
+                   && wxl::flightanim::kFlightSwimBackwards == ANIM_FLY_SWIM_BACKWARDS,
+@@ -3998,7 +4001,15 @@ uint32_t CGUnit_C::ResolveAnimForModel(uint32_t animId, CM2Model* model) {
+         const uint32_t moveFlags = this->m_movementData.m_flags;
+         const bool inFlight = (moveFlags & MOVEMENTFLAG_FLYING) && !(moveFlags & MOVEMENTFLAG_SWIMMING);
+ 
+-        animId = wxl::flightanim::Prefer(animId, inFlight, [model](uint32_t id) { return model->HasSequence(id) != 0; });
++        animId = wxl::flightanim::Prefer(animId, inFlight, [model](uint32_t id) {
++            return model->HasSequence(id) != 0 && (!wxl::flightanim::IsMountFlightSet(id) || model->IsSequenceLoaded(id));
++        });
++
++        // A MOUNT_FLIGHT sequence the model has and has loaded is played as it is: these ids are found by the model, not
++        // through the animation table's behavior / tier / fallback rows below.
++        if (wxl::flightanim::IsMountFlightSet(animId)) {
++            return animId;
++        }
+     }
+ 
+     uint32_t result = static_cast<uint16_t>(animId);
