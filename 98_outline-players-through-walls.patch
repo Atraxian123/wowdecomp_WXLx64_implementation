@@ -1,0 +1,46 @@
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+index a602841..c94b523 100644
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -279,6 +279,7 @@ namespace wxl::outline
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
+             bool  transparentUnits = false; // [Outline] TransparentUnits: also outline see-through batches (ghosts, spirits)
++            bool  playersThroughWalls = false; // [Outline] PlayersThroughWalls: a targeted / hovered player is not depth-tested either
+             std::vector<std::string> excludePrefixes; // [Outline] ExcludeEffects / ExcludePaths: models never outlined, by path
+             float transparentAlphaRef = 0.05f; // [Outline] TransparentAlphaRef: texture alpha below this is not outlined on them
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+@@ -298,6 +299,7 @@ namespace wxl::outline
+               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+               trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
+               transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef),
++              playersThroughWalls_(o.playersThroughWalls),
+               excludePrefixes_(o.excludePrefixes)
+         {
+             depthTol_ = o.depthTolerance;
+@@ -368,6 +370,7 @@ namespace wxl::outline
+         float               trackedRange_;
+         bool                transparentUnits_;
+         float               transparentAlphaRef_;
++        bool                playersThroughWalls_;
+         std::vector<std::string> excludePrefixes_;   // model path prefixes that are never outlined (spell and aura visuals)
+         std::unordered_map<const void*, bool> excludeCache_; // loaded model file -> excluded; cleared every frame
+         float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
+@@ -530,7 +533,8 @@ namespace wxl::outline
+             {
+                 const float* color = units[i].reaction == 0 ? hostileColor_ : units[i].reaction == 1 ? neutralColor_ : friendlyColor_;
+                 targets_[count_].model     = units[i].model;
+-                targets_[count_].depthTest = hideBehind_ || units[i].isPlayer != 0; // players always hide behind walls; NPCs only with HideBehindObjects
++                // Players hide behind walls (unless PlayersThroughWalls); NPCs only with HideBehindObjects
++                targets_[count_].depthTest = hideBehind_ || (units[i].isPlayer != 0 && !playersThroughWalls_);
+                 std::memcpy(targets_[count_].color, color, sizeof(targets_[count_].color));
+                 ++count_;
+             }
+@@ -1023,6 +1027,7 @@ namespace wxl::outline
+         o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
+         if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
+         o.transparentUnits = IniInt("Outline", "TransparentUnits", 0) != 0;
++        o.playersThroughWalls = IniInt("Outline", "PlayersThroughWalls", 0) != 0;
+         if (IniInt("Outline", "ExcludeEffects", 1) != 0)
+         {
+             char paths[256] = {};
