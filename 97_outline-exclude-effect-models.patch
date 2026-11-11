@@ -1,0 +1,155 @@
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+index 18908e3..a602841 100644
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -28,6 +28,9 @@
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
++#include <string>
++#include <unordered_map>
++#include <vector>
+ 
+ namespace wxl::outline
+ {
+@@ -58,6 +61,39 @@ namespace wxl::outline
+             return api && api->iniGetString && api->iniGetString(section, key, out, cap) != 0 && out[0];
+         }
+ 
++        // A model path in the form the prefixes are kept in: lower case, backslashes.
++        std::string NormalizeModelPath(const char* path)
++        {
++            std::string s = path ? path : "";
++            for (char& c : s)
++            {
++                if (c == '/') c = '\\';
++                else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
++            }
++            return s;
++        }
++
++        // "Spells\, World\Generic\" -> { "spells\\", "world\\generic\\" }. Separated by commas or bars.
++        std::vector<std::string> ParsePathPrefixes(const char* text)
++        {
++            std::vector<std::string> out;
++            std::string cur;
++            auto flush = [&] {
++                size_t b = 0, e = cur.size();
++                while (b < e && (cur[b] == ' ' || cur[b] == '\t')) ++b;
++                while (e > b && (cur[e - 1] == ' ' || cur[e - 1] == '\t')) --e;
++                if (e > b) out.push_back(NormalizeModelPath(cur.substr(b, e - b).c_str()));
++                cur.clear();
++            };
++            for (const char* p = text ? text : ""; *p; ++p)
++            {
++                if (*p == ',' || *p == '|') flush();
++                else cur += *p;
++            }
++            flush();
++            return out;
++        }
++
+         float IniFloat(const char* section, const char* key, float def)
+         {
+             char out[64] = {};
+@@ -243,6 +279,7 @@ namespace wxl::outline
+             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
+             float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
+             bool  transparentUnits = false; // [Outline] TransparentUnits: also outline see-through batches (ghosts, spirits)
++            std::vector<std::string> excludePrefixes; // [Outline] ExcludeEffects / ExcludePaths: models never outlined, by path
+             float transparentAlphaRef = 0.05f; // [Outline] TransparentAlphaRef: texture alpha below this is not outlined on them
+             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
+             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
+@@ -260,7 +297,8 @@ namespace wxl::outline
+               questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
+               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+               trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
+-              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef)
++              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef),
++              excludePrefixes_(o.excludePrefixes)
+         {
+             depthTol_ = o.depthTolerance;
+             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
+@@ -299,6 +337,7 @@ namespace wxl::outline
+ 
+         // --- helpers ---
+         int  FindTarget(const void* model) const;
++        bool IsExcludedModel(const void* instance);
+         void RefreshQuestTargets();
+         void AppendQuestTargets();
+         void ReleaseTargets();
+@@ -329,6 +368,8 @@ namespace wxl::outline
+         float               trackedRange_;
+         bool                transparentUnits_;
+         float               transparentAlphaRef_;
++        std::vector<std::string> excludePrefixes_;   // model path prefixes that are never outlined (spell and aura visuals)
++        std::unordered_map<const void*, bool> excludeCache_; // loaded model file -> excluded; cleared every frame
+         float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
+         Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
+         int                 trackedCount_ = 0;
+@@ -447,6 +488,36 @@ namespace wxl::outline
+         return -1;
+     }
+ 
++    // True when the model being drawn is one that is never outlined: by default the models under Spells\, which is where
++    // the spell, aura and state visuals live. Those are separate model instances attached to the unit, so FindTarget
++    // finds the unit through their parent link and, without this, they would be outlined as part of it. Only the model
++    // actually being drawn is looked at, so a weapon that carries an effect is outlined and its effect is not. The
++    // answer is kept per loaded model file for the frame (a path lookup is a call into the client); a model whose path
++    // cannot be read yet is outlined, and asked again with the next batch.
++    bool Outline::IsExcludedModel(const void* instance)
++    {
++        if (excludePrefixes_.empty() || !instance) return false;
++        const WxlApi* api = wxl::module::Api();
++        if (!api || !api->modelInfo || !api->sharedPath) return false;
++        WxlModelInfo info = {};
++        info.structSize = sizeof(info);
++        if (api->modelInfo(const_cast<void*>(instance), &info) != 0 || !info.shared) return false;
++
++        const auto cached = excludeCache_.find(info.shared);
++        if (cached != excludeCache_.end()) return cached->second;
++
++        char path[260] = {};
++        if (api->sharedPath(info.shared, path, sizeof(path)) == 0 || !path[0]) return false;
++        const std::string norm = NormalizeModelPath(path);
++        bool excluded = false;
++        for (const std::string& prefix : excludePrefixes_)
++            if (norm.compare(0, prefix.size(), prefix) == 0) { excluded = true; break; }
++
++        if (excludeCache_.size() > 512) excludeCache_.clear();
++        excludeCache_[info.shared] = excluded;
++        return excluded;
++    }
++
+     void Outline::RebuildTargets()
+     {
+         count_ = 0;
+@@ -855,6 +926,7 @@ namespace wxl::outline
+         if (!fillPS_ || !mask_.surface || !stampSave_) return;
+         const int idx = FindTarget(a.model);
+         if (idx < 0) return;
++        if (IsExcludedModel(a.model)) return;   // a spell or aura visual attached to the unit
+         // 1 = a solid batch, 2 = a see-through one (alpha-blended, additive, or no depth write: ghosts and spirits).
+         // Those are stamped only when [Outline] TransparentUnits=1, and with their own alpha reference: the engine's
+         // cutout value means nothing for a blended batch.
+@@ -873,6 +945,7 @@ namespace wxl::outline
+     {
+         const bool stamped = stamped_;
+         stamped_ = false;
++        excludeCache_.clear();   // a freed model file's address can come back as another one
+ 
+         auto* dev = static_cast<IDirect3DDevice9*>(a.device);
+         if (!dev) return;
+@@ -950,6 +1023,12 @@ namespace wxl::outline
+         o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
+         if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
+         o.transparentUnits = IniInt("Outline", "TransparentUnits", 0) != 0;
++        if (IniInt("Outline", "ExcludeEffects", 1) != 0)
++        {
++            char paths[256] = {};
++            if (!IniText("Outline", "ExcludePaths", paths, sizeof(paths))) std::strcpy(paths, "Spells\\");
++            o.excludePrefixes = ParsePathPrefixes(paths);
++        }
+         o.transparentAlphaRef = IniFloat("Outline", "TransparentAlphaRef", 0.05f);
+         if (!(o.transparentAlphaRef >= 0.0f) || o.transparentAlphaRef > 1.0f) o.transparentAlphaRef = 0.05f;
+         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);

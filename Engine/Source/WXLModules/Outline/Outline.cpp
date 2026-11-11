@@ -28,6 +28,9 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace wxl::outline
 {
@@ -56,6 +59,39 @@ namespace wxl::outline
             if (out && cap) out[0] = '\0';
             const WxlApi* api = wxl::module::Api();
             return api && api->iniGetString && api->iniGetString(section, key, out, cap) != 0 && out[0];
+        }
+
+        // A model path in the form the prefixes are kept in: lower case, backslashes.
+        std::string NormalizeModelPath(const char* path)
+        {
+            std::string s = path ? path : "";
+            for (char& c : s)
+            {
+                if (c == '/') c = '\\';
+                else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            }
+            return s;
+        }
+
+        // "Spells\, World\Generic\" -> { "spells\\", "world\\generic\\" }. Separated by commas or bars.
+        std::vector<std::string> ParsePathPrefixes(const char* text)
+        {
+            std::vector<std::string> out;
+            std::string cur;
+            auto flush = [&] {
+                size_t b = 0, e = cur.size();
+                while (b < e && (cur[b] == ' ' || cur[b] == '\t')) ++b;
+                while (e > b && (cur[e - 1] == ' ' || cur[e - 1] == '\t')) --e;
+                if (e > b) out.push_back(NormalizeModelPath(cur.substr(b, e - b).c_str()));
+                cur.clear();
+            };
+            for (const char* p = text ? text : ""; *p; ++p)
+            {
+                if (*p == ',' || *p == '|') flush();
+                else cur += *p;
+            }
+            flush();
+            return out;
         }
 
         float IniFloat(const char* section, const char* key, float def)
@@ -171,9 +207,22 @@ namespace wxl::outline
             explicit ScopedDeviceState(IDirect3DDevice9* dev)
             {
                 if (dev && SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &state_)) && state_)
-                    state_->Capture();
+                {
+                    if (FAILED(state_->Capture()))
+                    {
+                        state_->Release();
+                        state_ = nullptr;
+                    }
+                }
             }
             ~ScopedDeviceState() { Restore(); }
+
+            // False when the device's state could not be saved (a state block is a driver allocation and can fail
+            // when video memory is short, which is just what the first frames after a loading screen look like). The
+            // caller must then leave the device alone: with nothing to restore from, every state it changed would stay
+            // changed, and the client, which caches its own states and does not re-send what it believes is already
+            // set, would keep drawing with them: no depth test, no culling, no shaders.
+            bool Valid() const { return state_ != nullptr; }
             void Restore()
             {
                 if (!state_) return;
@@ -230,6 +279,7 @@ namespace wxl::outline
             bool  hideBehindObjects = false; // [Outline] HideBehindObjects: every outline is depth-tested
             float depthTolerance = 1.0f;    // [Outline] DepthTolerance: scales the bias that lets a unit pass its own depth
             bool  transparentUnits = false; // [Outline] TransparentUnits: also outline see-through batches (ghosts, spirits)
+            std::vector<std::string> excludePrefixes; // [Outline] ExcludeEffects / ExcludePaths: models never outlined, by path
             float transparentAlphaRef = 0.05f; // [Outline] TransparentAlphaRef: texture alpha below this is not outlined on them
             // Defaults as shipped: red / yellow / green by the unit's attitude toward the player, light blue for quests.
             float hostileColor[4]  = { 1.0f, 0.0f,  0.0f, 1.0f };
@@ -247,7 +297,8 @@ namespace wxl::outline
               questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
               tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
               trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
-              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef)
+              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef),
+              excludePrefixes_(o.excludePrefixes)
         {
             depthTol_ = o.depthTolerance;
             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
@@ -281,11 +332,12 @@ namespace wxl::outline
         void Discard();
         void RebuildTargets();
         void StampSilhouette(IDirect3DDevice9* dev, const ev::M2BatchDrawArgs& a, int idx);
-        void OutlinePass(IDirect3DDevice9* dev);
-        void ClearMask(IDirect3DDevice9* dev);
+        bool OutlinePass(IDirect3DDevice9* dev);
+        bool ClearMask(IDirect3DDevice9* dev);
 
         // --- helpers ---
         int  FindTarget(const void* model) const;
+        bool IsExcludedModel(const void* instance);
         void RefreshQuestTargets();
         void AppendQuestTargets();
         void ReleaseTargets();
@@ -300,6 +352,8 @@ namespace wxl::outline
         IDirect3DStateBlock9*  stampSave_ = nullptr; // records exactly the states StampSilhouette changes (the viewport too)
         IDirect3DStateBlock9*  viewportSave_ = nullptr; // records the viewport alone: the pure device cannot be asked for it
         bool                stamped_  = false;     // a silhouette reached the mask this frame
+        bool                maskDirty_ = false;    // the mask holds silhouettes that have not been cleared yet
+        bool                loggedSkip_ = false;   // a pass skipped for want of a saved device state, said once
         float               spread_;
         float               intensity_;
         bool                debug_;                // draw the raw mask in the top-left corner
@@ -314,6 +368,8 @@ namespace wxl::outline
         float               trackedRange_;
         bool                transparentUnits_;
         float               transparentAlphaRef_;
+        std::vector<std::string> excludePrefixes_;   // model path prefixes that are never outlined (spell and aura visuals)
+        std::unordered_map<const void*, bool> excludeCache_; // loaded model file -> excluded; cleared every frame
         float               trackedObjectColor_[4]{}, trackedCreatureColor_[4]{}, trackedNpcColor_[4]{};
         Tgt                 trackedTargets_[kMaxTrackedTargets]{};   // what the minimap tracks: the last in the order
         int                 trackedCount_ = 0;
@@ -376,7 +432,7 @@ namespace wxl::outline
         // A freshly created target holds whatever was in that memory, and the mask is otherwise only wiped after a
         // frame that stamped into it, so its first clear belongs here.
         if (!mask_.surface && EnsureTarget(dev, mask_, 1))
-            ClearMask(dev);
+            maskDirty_ = !ClearMask(dev);
         EnsureTarget(dev, blurA_, kBlurDivisor);
         EnsureTarget(dev, blurB_, kBlurDivisor);
 
@@ -430,6 +486,36 @@ namespace wxl::outline
             model = (api->modelInfo(const_cast<void*>(model), &info) == 0) ? info.parent : nullptr;
         }
         return -1;
+    }
+
+    // True when the model being drawn is one that is never outlined: by default the models under Spells\, which is where
+    // the spell, aura and state visuals live. Those are separate model instances attached to the unit, so FindTarget
+    // finds the unit through their parent link and, without this, they would be outlined as part of it. Only the model
+    // actually being drawn is looked at, so a weapon that carries an effect is outlined and its effect is not. The
+    // answer is kept per loaded model file for the frame (a path lookup is a call into the client); a model whose path
+    // cannot be read yet is outlined, and asked again with the next batch.
+    bool Outline::IsExcludedModel(const void* instance)
+    {
+        if (excludePrefixes_.empty() || !instance) return false;
+        const WxlApi* api = wxl::module::Api();
+        if (!api || !api->modelInfo || !api->sharedPath) return false;
+        WxlModelInfo info = {};
+        info.structSize = sizeof(info);
+        if (api->modelInfo(const_cast<void*>(instance), &info) != 0 || !info.shared) return false;
+
+        const auto cached = excludeCache_.find(info.shared);
+        if (cached != excludeCache_.end()) return cached->second;
+
+        char path[260] = {};
+        if (api->sharedPath(info.shared, path, sizeof(path)) == 0 || !path[0]) return false;
+        const std::string norm = NormalizeModelPath(path);
+        bool excluded = false;
+        for (const std::string& prefix : excludePrefixes_)
+            if (norm.compare(0, prefix.size(), prefix) == 0) { excluded = true; break; }
+
+        if (excludeCache_.size() > 512) excludeCache_.clear();
+        excludeCache_[info.shared] = excluded;
+        return excluded;
     }
 
     void Outline::RebuildTargets()
@@ -558,7 +644,15 @@ namespace wxl::outline
         IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
         D3DVIEWPORT9 oldVP{};
         const bool haveVP = SUCCEEDED(dev->GetViewport(&oldVP)) && oldVP.Width > 0 && oldVP.Height > 0;   // a pure device says no
-        stampSave_->Capture();                      // everything it records, the engine's viewport included
+
+        // Nothing below may run unless the way back is in hand: without the saved states the stamp's own changes
+        // (no Z write, a depth bias, the fill shader) would be left on the client's device.
+        if (!oldRT || FAILED(stampSave_->Capture()))   // everything it records, the engine's viewport included
+        {
+            SafeRelease(oldRT);
+            SafeRelease(oldDS);
+            return;
+        }
         if (viewportSave_) viewportSave_->Capture();
 
         // Players depth-test against the scene so walls occlude the outline, which needs the scene's depth surface
@@ -580,7 +674,14 @@ namespace wxl::outline
             wxl::LogCat("OUTLINE", "depth testing unavailable (scene depth surface is multisampled or smaller than the mask): outlines show through objects");
         }
 
-        dev->SetRenderTarget(0, mask_.surface);
+        // The first change to the device. If it is refused, nothing has been touched and nothing needs undoing; going on
+        // would draw the silhouette into the scene itself.
+        if (FAILED(dev->SetRenderTarget(0, mask_.surface)))
+        {
+            SafeRelease(oldRT);
+            SafeRelease(oldDS);
+            return;
+        }
 
         // Setting a render target resets the viewport to the whole target with a depth range of 0 .. 1. The world is
         // not drawn with that range: it uses 0 .. 0.94 (CWorld::s_unk_ADEEE4), the rest of the depth range being kept
@@ -637,6 +738,7 @@ namespace wxl::outline
             dev->SetRenderState(D3DRS_ZENABLE, 0);
         }
         stamped_ = true;
+        maskDirty_ = true;
         dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
         dev->SetRenderState(D3DRS_ALPHATESTENABLE, 0);
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
@@ -658,12 +760,22 @@ namespace wxl::outline
     // falloff is a gradient rather than a one-texel step and the width is a radius rather than a tap offset.
     //
     // The state block does not capture render targets, so those are the one thing saved by hand.
-    void Outline::OutlinePass(IDirect3DDevice9* dev)
+    bool Outline::OutlinePass(IDirect3DDevice9* dev)
     {
         ScopedDeviceState state(dev);
+        if (!state.Valid())
+        {
+            // Nothing to restore from, so nothing may be changed: see ScopedDeviceState::Valid.
+            if (!loggedSkip_)
+            {
+                loggedSkip_ = true;
+                wxl::LogCat("OUTLINE", "outline pass skipped: the device state could not be saved (CreateStateBlock failed); the frame is left untouched");
+            }
+            return false;
+        }
         IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
         IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
-        if (!oldRT) { SafeRelease(oldDS); return; }
+        if (!oldRT) { SafeRelease(oldDS); return false; }
         D3DSURFACE_DESC frame{};
         oldRT->GetDesc(&frame);
 
@@ -710,16 +822,17 @@ namespace wxl::outline
         // The step is in blur-target texels, spread in frame pixels, hence the divisor.
         const float step = passSpread / float(kBlurDivisor);
         IDirect3DTexture9* source = mask_.texture;
-        for (int i = 0; i < iterations; ++i)
+        bool targetsOk = true;   // a refused SetRenderTarget would send the blur into the scene itself
+        for (int i = 0; i < iterations && targetsOk; ++i)
         {
             const float horizontal[4] = { 1.0f / blurA_.width, 0.0f, step, 0.0f };
-            dev->SetRenderTarget(0, blurA_.surface);
+            if (FAILED(dev->SetRenderTarget(0, blurA_.surface))) { targetsOk = false; break; }
             dev->SetTexture(0, source);
             dev->SetPixelShaderConstantF(0, horizontal, 1);
             DrawFullscreenQuad(dev, blurA_.width, blurA_.height);
 
             const float vertical[4] = { 0.0f, 1.0f / blurB_.height, step, 0.0f };
-            dev->SetRenderTarget(0, blurB_.surface);
+            if (FAILED(dev->SetRenderTarget(0, blurB_.surface))) { targetsOk = false; break; }
             dev->SetTexture(0, blurA_.texture);
             dev->SetPixelShaderConstantF(0, vertical, 1);
             DrawFullscreenQuad(dev, blurB_.width, blurB_.height);
@@ -730,16 +843,19 @@ namespace wxl::outline
         const float apply[4] = { intensity_, 0.0f, 0.0f, 0.0f };
         dev->SetRenderTarget(0, oldRT);
         dev->SetDepthStencilSurface(oldDS);
-        dev->SetTexture(0, blurB_.texture);
-        dev->SetTexture(1, mask_.texture);
-        dev->SetPixelShader(applyPS_);
-        dev->SetPixelShaderConstantF(0, apply, 1);
-        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 1);
-        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-        DrawFullscreenQuad(dev, frame.Width, frame.Height);
+        if (targetsOk)
+        {
+            dev->SetTexture(0, blurB_.texture);
+            dev->SetTexture(1, mask_.texture);
+            dev->SetPixelShader(applyPS_);
+            dev->SetPixelShaderConstantF(0, apply, 1);
+            dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 1);
+            dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+            dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+            DrawFullscreenQuad(dev, frame.Width, frame.Height);
+        }
 
-        if (debug_ && debugPS_)
+        if (targetsOk && debug_ && debugPS_)
         {
             // The mask as stamped, a quarter of the frame wide, in the top-left corner.
             dev->SetRenderState(D3DRS_ALPHABLENDENABLE, 0);
@@ -760,32 +876,45 @@ namespace wxl::outline
 
         SafeRelease(oldRT);
         SafeRelease(oldDS);
+        return targetsOk;
     }
 
     // Stages 0 and 1 are dropped first: the blur and the composite sampled the mask, and a surface still bound as a
     // texture cannot be made a render target -- the clear would be dropped and the silhouettes would survive into
     // the next frame.
-    void Outline::ClearMask(IDirect3DDevice9* dev)
+    //
+    // True when the mask was wiped. False leaves it dirty, and the next EndScene tries again.
+    bool Outline::ClearMask(IDirect3DDevice9* dev)
     {
         ScopedDeviceState state(dev);
+        if (!state.Valid())
+            return false;   // see ScopedDeviceState::Valid: no saved state, no changes
         IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
         IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
 
         dev->SetTexture(0, nullptr);
         dev->SetTexture(1, nullptr);
-        dev->SetRenderTarget(0, mask_.surface);
+        if (!oldRT || FAILED(dev->SetRenderTarget(0, mask_.surface)))
+        {
+            SafeRelease(oldRT);
+            SafeRelease(oldDS);
+            return false;
+        }
         dev->SetDepthStencilSurface(nullptr);
 
         // A clear is bounded by the scissor rect the same way a draw is, so an inherited one would leave part of the
         // mask untouched.
         dev->SetRenderState(D3DRS_SCISSORTESTENABLE, 0);
         dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
-        dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0);
+        const bool cleared = SUCCEEDED(dev->Clear(0, nullptr, D3DCLEAR_TARGET, 0x00000000, 1.0f, 0));
 
         dev->SetRenderTarget(0, oldRT);
         dev->SetDepthStencilSurface(oldDS);
         SafeRelease(oldRT);
         SafeRelease(oldDS);
+        if (cleared)
+            maskDirty_ = false;
+        return cleared;
     }
 
     void Outline::OnM2Batch(const ev::M2BatchDrawArgs& a)
@@ -797,6 +926,7 @@ namespace wxl::outline
         if (!fillPS_ || !mask_.surface || !stampSave_) return;
         const int idx = FindTarget(a.model);
         if (idx < 0) return;
+        if (IsExcludedModel(a.model)) return;   // a spell or aura visual attached to the unit
         // 1 = a solid batch, 2 = a see-through one (alpha-blended, additive, or no depth write: ghosts and spirits).
         // Those are stamped only when [Outline] TransparentUnits=1, and with their own alpha reference: the engine's
         // cutout value means nothing for a blended batch.
@@ -815,6 +945,7 @@ namespace wxl::outline
     {
         const bool stamped = stamped_;
         stamped_ = false;
+        excludeCache_.clear();   // a freed model file's address can come back as another one
 
         auto* dev = static_cast<IDirect3DDevice9*>(a.device);
         if (!dev) return;
@@ -826,10 +957,11 @@ namespace wxl::outline
         // The clear is paired with the stamping rather than run unconditionally: the mask starts empty and is wiped
         // at the end of every frame that wrote into it, so a frame that stamps nothing finds it already empty.
         if (stamped)
-        {
             OutlinePass(dev);
+        // The mask is wiped after every frame that wrote into it, and again next frame if that wipe could not be done:
+        // silhouettes left in it would pile up.
+        if (stamped || maskDirty_)
             ClearMask(dev);
-        }
         RebuildTargets();
     }
 
@@ -891,6 +1023,12 @@ namespace wxl::outline
         o.depthTolerance = IniFloat("Outline", "DepthTolerance", 1.0f);
         if (!(o.depthTolerance >= 0.0f) || o.depthTolerance > 100.0f) o.depthTolerance = 1.0f;
         o.transparentUnits = IniInt("Outline", "TransparentUnits", 0) != 0;
+        if (IniInt("Outline", "ExcludeEffects", 1) != 0)
+        {
+            char paths[256] = {};
+            if (!IniText("Outline", "ExcludePaths", paths, sizeof(paths))) std::strcpy(paths, "Spells\\");
+            o.excludePrefixes = ParsePathPrefixes(paths);
+        }
         o.transparentAlphaRef = IniFloat("Outline", "TransparentAlphaRef", 0.05f);
         if (!(o.transparentAlphaRef >= 0.0f) || o.transparentAlphaRef > 1.0f) o.transparentAlphaRef = 0.05f;
         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
