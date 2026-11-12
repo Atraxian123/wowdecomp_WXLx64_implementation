@@ -2316,6 +2316,8 @@ uint32_t CMapObj::CreateWmoIgnoreFlags(uint32_t flags) {
         result &= ~2u;
     if ((flags & 0x4000) == 0)
         result &= ~0x40u;
+    if ((flags & 0x400000) != 0)    // WXL: also the faces that are collision (0x08) as well as render; set by the ground decals only
+        result &= ~0x8u;
     if ((flags & 0x1000000) != 0) {
         if ((flags & 0x40000000) != 0)
             return 0xFFFFFCDB;

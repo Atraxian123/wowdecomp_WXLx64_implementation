@@ -51,6 +51,7 @@ namespace wxl::api::spellareahost
 #include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <unordered_map>
@@ -367,7 +368,7 @@ namespace wxl::api::spellareahost
 
     void Draw(const WxlSpellAreaDraw* d)
     {
-        if (!d || d->structSize < sizeof(WxlSpellAreaDraw) || !d->texture || !(d->half > 0.0f)) return;
+        if (!d || d->structSize < offsetof(WxlSpellAreaDraw, projectFlags) + sizeof(d->projectFlags) || !d->texture || !(d->half > 0.0f)) return;
         auto* entry = static_cast<TexEntry*>(d->texture);
         CGxTex* texture = entry->tex ? TextureGetGxTex(entry->tex, 0, nullptr) : nullptr;
         if (!texture) return;
@@ -381,7 +382,8 @@ namespace wxl::api::spellareahost
         // A square box around the shape's center (a cone's apex, a line's start); the texture is stretched over it
         // and the box's height is how far above and below the center the ground still takes the picture.
         const float half = d->half;
-        const float hz = Clamp(half * 0.5f, 4.0f, 20.0f);
+        const bool haveHeight = d->structSize >= offsetof(WxlSpellAreaDraw, halfHeight) + sizeof(d->halfHeight);
+        const float hz = haveHeight && d->halfHeight > 0.0f ? Clamp(d->halfHeight, 1.0f, 100.0f) : Clamp(half * 0.5f, 4.0f, 20.0f);
         CAaBox box(C3Vector(d->pos[0] - half, d->pos[1] - half, d->pos[2] - hz), C3Vector(d->pos[0] + half, d->pos[1] + half, d->pos[2] + hz));
 
         // The texture's front (row 0) points along the facing once rotated by -facing.

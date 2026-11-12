@@ -9,6 +9,7 @@
 #include "Engine/Source/Tempest/CImVector.h"
 #include "Engine/Source/Tempest/CMath.h"
 #include "Engine/Source/Tempest/CiRect.h"
+#include "Engine/Source/WXL/DecalQuery.h"
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Tempest/CAaBox.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -495,7 +496,15 @@ static int32_t ProjectTexRenderGetQuery2d(const CAaBox& box, uint32_t flags, uin
         World::TriData::faceIndexCursor = 0;
         World::TriData::indexCursor = 0;
         World::TriData::matrixPoolCount = 0;
-        World::GetTris(box, &s_queryTriData, triFlags);
+
+        // WXL: the terrain pass (0x100) also takes the WMO faces that are flagged render and collision both; see WXL/DecalQuery.h
+        uint32_t queryFlags = triFlags;
+
+        if ((triFlags & 0x100) && wxl::decals::WmoCollisionFaces()) {
+            queryFlags |= wxl::decals::kQueryWmoCollisionFaces;
+        }
+
+        World::GetTris(box, &s_queryTriData, queryFlags);
     }
 
     return s_doodadModelCount || World::TriData::nBatches;

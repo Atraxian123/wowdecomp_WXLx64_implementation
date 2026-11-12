@@ -1,0 +1,237 @@
+diff --git a/Engine/Source/WXL/DecalQuery.cpp b/Engine/Source/WXL/DecalQuery.cpp
+new file mode 100644
+index 0000000..50f39ed
+--- /dev/null
++++ b/Engine/Source/WXL/DecalQuery.cpp
+@@ -0,0 +1,54 @@
++// Ground decals (projected textures): which WMO faces they may land on. See DecalQuery.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++
++#include "Engine/Source/WXL/DecalQuery.h"
++
++#include "Engine/Source/WXL/Log.h"
++
++#ifdef _WIN32
++#include <windows.h>
++#endif
++
++#include <cstdio>
++#include <cstring>
++
++namespace wxl::decals
++{
++    namespace
++    {
++        // WXLSetup.ini sits in the WXL folder beside the client executable; a copy left beside the executable is still
++        // read. The lookup is repeated here as in the other WXLCore files that read the ini.
++        int IniInt(const char* section, const char* key, int def)
++        {
++#ifdef _WIN32
++            char path[MAX_PATH] = {};
++            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
++            if (n == 0 || n >= sizeof(path)) return def;
++            char* slash = std::strrchr(path, '\\');
++            const char* name = "WXLSetup.ini";
++            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
++            std::strcpy(slash + 1, name);
++            char inWxl[MAX_PATH] = {};
++            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
++            {
++                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
++                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
++            }
++            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
++#else
++            (void)section; (void)key;
++            return def;
++#endif
++        }
++    }
++
++    bool WmoCollisionFaces()
++    {
++        static const bool on = [] {
++            const bool v = IniInt("Decals", "WmoCollisionFaces", 1) != 0;
++            wxl::LogCat("DECAL", "ground decals: WMO faces flagged both render and collision %s ([Decals] WmoCollisionFaces)", v ? "count" : "are skipped, as in the stock client");
++            return v;
++        }();
++        return on;
++    }
++}
+diff --git a/Engine/Source/WXL/DecalQuery.h b/Engine/Source/WXL/DecalQuery.h
+new file mode 100644
+index 0000000..d6e2a40
+--- /dev/null
++++ b/Engine/Source/WXL/DecalQuery.h
+@@ -0,0 +1,25 @@
++// Ground decals (projected textures): which WMO faces they may land on. Opt-out.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// Every projected texture of the client, the targeting circle under the cursor, the selection rings, the spell area
++// indicator and the ground textures of spell animations, collects the triangles it is drawn on with one world query
++// (World::GetTris). For WMOs that query takes a face only if it is not flagged as collision geometry (flag 0x08 of
++// the face), so that a decal does not land on the invisible walls and ramps WMOs have for the physics. A WMO whose
++// floor faces are flagged both "render" (0x20) and "collision" (0x08), which is how custom and converted WMOs are
++// usually built, is therefore skipped completely, and the decal falls through to the terrain under it.
++//
++//     [Decals]
++//     WmoCollisionFaces=1     ; 1 (default): faces that are both render and collision count too; 0: as the stock client
++//
++// With 1, the one thing that can show is a decal on an invisible collision-only surface, wherever a WMO has one right
++// under the decal's box.
++#pragma once
++
++namespace wxl::decals
++{
++    /// WXLSetup.ini [Decals] WmoCollisionFaces (default 1). Read once, logged once.
++    bool WmoCollisionFaces();
++
++    /// The extra bit this adds to the triangle query flags of a decal (not used by anything else of the world query).
++    constexpr unsigned kQueryWmoCollisionFaces = 0x400000;
++}
+diff --git a/Engine/Source/WXL/Sdk/wxl_api.h b/Engine/Source/WXL/Sdk/wxl_api.h
+index 60c7c2d..6c8dc1e 100644
+--- a/Engine/Source/WXL/Sdk/wxl_api.h
++++ b/Engine/Source/WXL/Sdk/wxl_api.h
+@@ -370,6 +370,8 @@ typedef struct WxlSpellAreaDraw
+     uint8_t  r, g, b, a;
+     uint32_t triFlags;          /* the ones the render callback was given */
+     uint32_t projectFlags;
++    float    halfHeight;        /* how far above and below `pos` the ground still takes the picture; 0 = the core's own choice
++                                   (half the radius, 4 .. 20 yards). Ignored when structSize does not reach this field. */
+ } WxlSpellAreaDraw;
+ 
+ /* A spell that has just gone off (SMSG_SPELL_GO), kept for a few seconds so the module can show where an instant spell hit.
+diff --git a/Engine/Source/WXLApi/SpellAreaHost.cpp b/Engine/Source/WXLApi/SpellAreaHost.cpp
+index 7c48431..b9eb990 100644
+--- a/Engine/Source/WXLApi/SpellAreaHost.cpp
++++ b/Engine/Source/WXLApi/SpellAreaHost.cpp
+@@ -51,6 +51,7 @@ namespace wxl::api::spellareahost
+ #include "WoW/Source/ObjectMgrClient/ObjectMgrClient.h"
+ 
+ #include <algorithm>
++#include <cstddef>
+ #include <cstring>
+ #include <memory>
+ #include <unordered_map>
+@@ -367,7 +368,7 @@ namespace wxl::api::spellareahost
+ 
+     void Draw(const WxlSpellAreaDraw* d)
+     {
+-        if (!d || d->structSize < sizeof(WxlSpellAreaDraw) || !d->texture || !(d->half > 0.0f)) return;
++        if (!d || d->structSize < offsetof(WxlSpellAreaDraw, projectFlags) + sizeof(d->projectFlags) || !d->texture || !(d->half > 0.0f)) return;
+         auto* entry = static_cast<TexEntry*>(d->texture);
+         CGxTex* texture = entry->tex ? TextureGetGxTex(entry->tex, 0, nullptr) : nullptr;
+         if (!texture) return;
+@@ -381,7 +382,8 @@ namespace wxl::api::spellareahost
+         // A square box around the shape's center (a cone's apex, a line's start); the texture is stretched over it
+         // and the box's height is how far above and below the center the ground still takes the picture.
+         const float half = d->half;
+-        const float hz = Clamp(half * 0.5f, 4.0f, 20.0f);
++        const bool haveHeight = d->structSize >= offsetof(WxlSpellAreaDraw, halfHeight) + sizeof(d->halfHeight);
++        const float hz = haveHeight && d->halfHeight > 0.0f ? Clamp(d->halfHeight, 1.0f, 100.0f) : Clamp(half * 0.5f, 4.0f, 20.0f);
+         CAaBox box(C3Vector(d->pos[0] - half, d->pos[1] - half, d->pos[2] - hz), C3Vector(d->pos[0] + half, d->pos[1] + half, d->pos[2] + hz));
+ 
+         // The texture's front (row 0) points along the facing once rotated by -facing.
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index ab1e753..a90983a 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -54,6 +54,7 @@ namespace wxl::spellarea
+             float coneAngle    = 90.0f;
+             bool  lines        = true;    // spells whose attributes make their cone a line
+             float lineWidth    = 4.0f;    // yards
++            float heightRange  = 0.0f;    // yards above and below an area's center that the ground still takes it; 0 = automatic
+             float minRadius    = 1.0f;
+             float maxRadius    = 60.0f;
+             int   maxAreas     = 16;
+@@ -174,6 +175,7 @@ namespace wxl::spellarea
+             c.coneAngle   = Clamp(IniFloat("ConeAngle", c.coneAngle), 5.0f, 180.0f);
+             c.lines       = IniInt("Lines", 1) != 0;
+             c.lineWidth   = Clamp(IniFloat("LineWidth", c.lineWidth), 0.5f, 40.0f);
++            c.heightRange = Clamp(IniFloat("HeightRange", c.heightRange), 0.0f, 100.0f);
+             c.minRadius   = Clamp(IniFloat("MinRadius", c.minRadius), 0.1f, 50.0f);
+             c.maxRadius   = Clamp(IniFloat("MaxRadius", c.maxRadius), c.minRadius, 150.0f);
+             c.maxAreas    = std::max(1, std::min(64, IniInt("MaxAreas", c.maxAreas)));
+@@ -772,6 +774,7 @@ namespace wxl::spellarea
+             d.a            = static_cast<uint8_t>(Clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+             d.triFlags     = triFlags;
+             d.projectFlags = projectFlags;
++            d.halfHeight   = g_cfg.heightRange;
+             Api()->spellAreaDraw(&d);
+         }
+ 
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index dcdfd7e..b61fa30 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -37,6 +37,7 @@ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
+ Cones=1                 ; cone spells
+ Lines=1                 ; spells whose "cone" is a line (CONE_LINE in the custom attributes file)
+ LineWidth=4             ; 0.5 .. 40 yards: how wide such a line is
++HeightRange=0           ; 0 .. 100 yards above and below an area's center that the ground still takes it; 0 = automatic (half the radius, 4 .. 20)
+ Opacity=0.65            ; 0.05 .. 1: how strong an indicator is once its cast is done (it fades in from 45% of this)
+ MaxOpacity=1.0          ; 0.05 .. 1: ceiling for every indicator, applied last; lower it to keep them faint whatever Opacity says
+ Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
+@@ -228,6 +229,19 @@ worked out exactly as for a cast (the override, cone, jump and attribute files a
+ * The areas that are fading count toward `MaxAreas`; the oldest goes first when there are too many.
+ * Switching `Instant` on does not show spells that went off before.
+ 
++## Areas over WMO floors
++
++The area is painted on whatever the client's projected-texture pass finds inside a box around its center: terrain, WMO
++faces, doodads. Two things decide whether a WMO floor above the terrain gets it:
++
++* **Which WMO faces count.** The stock query skips every WMO face flagged as collision geometry, so a WMO whose floors are
++  flagged both render and collision (custom and converted WMOs usually are) is skipped whole. `[Decals]
++  WmoCollisionFaces=1` (the default, in `WXLSetup.ini`) lets those faces count; it applies to every ground decal of the
++  client, the targeting circle and selection rings included (see `WXL/DecalQuery.h`).
++* **How tall the box is.** It reaches `HeightRange` yards above and below the area's center (automatic: half the radius,
++  4 to 20 yards). A ground effect whose center the server gives at terrain height can sit that far under a higher floor:
++  raise `HeightRange` (try 15 or 25). A taller box also takes in more floors above and below the one you stand on.
++
+ ## Limits
+ 
+ * Area traps and other game objects (Explosive Trap, a placed totem's radius) are not drawn: they are objects, not
+diff --git a/WoW/Source/WorldClient/MapObj.cpp b/WoW/Source/WorldClient/MapObj.cpp
+index 3d50df2..855e8cb 100644
+--- a/WoW/Source/WorldClient/MapObj.cpp
++++ b/WoW/Source/WorldClient/MapObj.cpp
+@@ -2316,6 +2316,8 @@ uint32_t CMapObj::CreateWmoIgnoreFlags(uint32_t flags) {
+         result &= ~2u;
+     if ((flags & 0x4000) == 0)
+         result &= ~0x40u;
++    if ((flags & 0x400000) != 0)    // WXL: also the faces that are collision (0x08) as well as render; set by the ground decals only
++        result &= ~0x8u;
+     if ((flags & 0x1000000) != 0) {
+         if ((flags & 0x40000000) != 0)
+             return 0xFFFFFCDB;
+diff --git a/WoW/Source/WorldClient/shadow.cpp b/WoW/Source/WorldClient/shadow.cpp
+index 42a505c..cce4096 100644
+--- a/WoW/Source/WorldClient/shadow.cpp
++++ b/WoW/Source/WorldClient/shadow.cpp
+@@ -9,6 +9,7 @@
+ #include "Engine/Source/Tempest/CImVector.h"
+ #include "Engine/Source/Tempest/CMath.h"
+ #include "Engine/Source/Tempest/CiRect.h"
++#include "Engine/Source/WXL/DecalQuery.h"
+ #include "Engine/Source/Model2/M2Model.h"
+ #include "Engine/Source/Tempest/CAaBox.h"
+ #include "WoW/Source/WorldClient/World.h"
+@@ -495,7 +496,15 @@ static int32_t ProjectTexRenderGetQuery2d(const CAaBox& box, uint32_t flags, uin
+         World::TriData::faceIndexCursor = 0;
+         World::TriData::indexCursor = 0;
+         World::TriData::matrixPoolCount = 0;
+-        World::GetTris(box, &s_queryTriData, triFlags);
++
++        // WXL: the terrain pass (0x100) also takes the WMO faces that are flagged render and collision both; see WXL/DecalQuery.h
++        uint32_t queryFlags = triFlags;
++
++        if ((triFlags & 0x100) && wxl::decals::WmoCollisionFaces()) {
++            queryFlags |= wxl::decals::kQueryWmoCollisionFaces;
++        }
++
++        World::GetTris(box, &s_queryTriData, queryFlags);
+     }
+ 
+     return s_doodadModelCount || World::TriData::nBatches;

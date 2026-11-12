@@ -37,6 +37,7 @@ Persistent=1            ; areas lying on the ground (the game's dynamic objects)
 Cones=1                 ; cone spells
 Lines=1                 ; spells whose "cone" is a line (CONE_LINE in the custom attributes file)
 LineWidth=4             ; 0.5 .. 40 yards: how wide such a line is
+HeightRange=0           ; 0 .. 100 yards above and below an area's center that the ground still takes it; 0 = automatic (half the radius, 4 .. 20)
 Opacity=0.65            ; 0.05 .. 1: how strong an indicator is once its cast is done (it fades in from 45% of this)
 MaxOpacity=1.0          ; 0.05 .. 1: ceiling for every indicator, applied last; lower it to keep them faint whatever Opacity says
 Chain=1                 ; chain spells (Chain Lightning, Chain Heal ...): the circle of the first jump around the target
@@ -227,6 +228,19 @@ worked out exactly as for a cast (the override, cone, jump and attribute files a
   not drawn twice. Channels and spells with a cast time are left to `Channel` and `Precast`.
 * The areas that are fading count toward `MaxAreas`; the oldest goes first when there are too many.
 * Switching `Instant` on does not show spells that went off before.
+
+## Areas over WMO floors
+
+The area is painted on whatever the client's projected-texture pass finds inside a box around its center: terrain, WMO
+faces, doodads. Two things decide whether a WMO floor above the terrain gets it:
+
+* **Which WMO faces count.** The stock query skips every WMO face flagged as collision geometry, so a WMO whose floors are
+  flagged both render and collision (custom and converted WMOs usually are) is skipped whole. `[Decals]
+  WmoCollisionFaces=1` (the default, in `WXLSetup.ini`) lets those faces count; it applies to every ground decal of the
+  client, the targeting circle and selection rings included (see `WXL/DecalQuery.h`).
+* **How tall the box is.** It reaches `HeightRange` yards above and below the area's center (automatic: half the radius,
+  4 to 20 yards). A ground effect whose center the server gives at terrain height can sit that far under a higher floor:
+  raise `HeightRange` (try 15 or 25). A taller box also takes in more floors above and below the one you stand on.
 
 ## Limits
 

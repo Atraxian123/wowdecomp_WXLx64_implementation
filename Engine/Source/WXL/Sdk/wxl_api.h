@@ -370,6 +370,8 @@ typedef struct WxlSpellAreaDraw
     uint8_t  r, g, b, a;
     uint32_t triFlags;          /* the ones the render callback was given */
     uint32_t projectFlags;
+    float    halfHeight;        /* how far above and below `pos` the ground still takes the picture; 0 = the core's own choice
+                                   (half the radius, 4 .. 20 yards). Ignored when structSize does not reach this field. */
 } WxlSpellAreaDraw;
 
 /* A spell that has just gone off (SMSG_SPELL_GO), kept for a few seconds so the module can show where an instant spell hit.

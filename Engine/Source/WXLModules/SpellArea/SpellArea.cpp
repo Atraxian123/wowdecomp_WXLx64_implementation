@@ -54,6 +54,7 @@ namespace wxl::spellarea
             float coneAngle    = 90.0f;
             bool  lines        = true;    // spells whose attributes make their cone a line
             float lineWidth    = 4.0f;    // yards
+            float heightRange  = 0.0f;    // yards above and below an area's center that the ground still takes it; 0 = automatic
             float minRadius    = 1.0f;
             float maxRadius    = 60.0f;
             int   maxAreas     = 16;
@@ -174,6 +175,7 @@ namespace wxl::spellarea
             c.coneAngle   = Clamp(IniFloat("ConeAngle", c.coneAngle), 5.0f, 180.0f);
             c.lines       = IniInt("Lines", 1) != 0;
             c.lineWidth   = Clamp(IniFloat("LineWidth", c.lineWidth), 0.5f, 40.0f);
+            c.heightRange = Clamp(IniFloat("HeightRange", c.heightRange), 0.0f, 100.0f);
             c.minRadius   = Clamp(IniFloat("MinRadius", c.minRadius), 0.1f, 50.0f);
             c.maxRadius   = Clamp(IniFloat("MaxRadius", c.maxRadius), c.minRadius, 150.0f);
             c.maxAreas    = std::max(1, std::min(64, IniInt("MaxAreas", c.maxAreas)));
@@ -772,6 +774,7 @@ namespace wxl::spellarea
             d.a            = static_cast<uint8_t>(Clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
             d.triFlags     = triFlags;
             d.projectFlags = projectFlags;
+            d.halfHeight   = g_cfg.heightRange;
             Api()->spellAreaDraw(&d);
         }
 
