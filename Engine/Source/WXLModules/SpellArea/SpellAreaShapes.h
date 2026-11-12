@@ -28,6 +28,7 @@ namespace wxl::spellarea
         float     param  = 0;   // cone angle in degrees, line width in yards
         Intent    intent = Intent::Neutral;
         bool      back   = false;   // a cone or line that points behind the caster (the server's CONE_BACK attribute)
+        bool      atDynObject = false; // a circle around the spell's dynamic object (Anchor::Dest, but not a ground point or a target)
     };
 
     // ---- the server's custom spell attributes (acore SpellInfo::AttributesCu) that change the shape of a cone ----
@@ -65,6 +66,8 @@ namespace wxl::spellarea
     bool IsConeTarget(int32_t target);          // 24, 54, 59, 60, 104
     bool IsCasterAreaTarget(int32_t target);    // areas around the caster: 7, 11, 15, 20, 30, 33, 56
     bool IsDestAreaTarget(int32_t target);      // areas around the destination: 8, 16, 28, 29, 31, 34, 87, 91
+    bool IsDestAtCasterTarget(int32_t target);  // 18 (TARGET_DEST_CASTER): the destination IS the caster's position
+    bool IsDynObjectTarget(int32_t target);     // 28, 29 (TARGET_DEST_DYNOBJ_ENEMY / ALLY): the destination is the spell's dynamic object
     bool IsEnemyTarget(int32_t target);
     bool IsAllyTarget(int32_t target);
 
@@ -72,7 +75,9 @@ namespace wxl::spellarea
     /// A cone target type gives a cone (angle from rules), an area around the caster or the destination gives a
     /// circle, and so do the area aura effects (35, 65, 119, 128, 129, 143: around the caster) and the persistent area
     /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
-    /// of its first jump, around the target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
+    /// of its first jump, around the target. Where a destination area is centered depends on the other target of the
+    /// effect: target 18 (destination = the caster) puts it on the caster (Anchor::Caster), 28 and 29 put it on the
+    /// spell's dynamic object (Shape::atDynObject), anything else leaves it to the cast's ground point or target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
     /// cone: its cone target types use that angle instead of the default, and its areas around the caster become cones
     /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle.
     /// The custom attributes (SpellEffects::customAttributes, from SpellsCustomAttribute.csv) pick the cone's direction

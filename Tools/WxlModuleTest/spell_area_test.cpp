@@ -236,6 +236,38 @@ int main()
               problems.find("line 4") != std::string::npos && problems.find("line 5") != std::string::npos, "table: bad rows are reported and skipped, a plain header line is skipped quietly");
     }
 
+    std::printf("2f. where a destination area is centered\n");
+    {
+        SpellEffects boom;            // target 18 (destination = the caster) with an area target: around the caster
+        boom.effect[0] = 2; boom.targetA[0] = 18; boom.targetB[0] = 16; boom.radius[0] = 10;
+        Check(ShapesFromSpell(boom, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Caster && !out[0].atDynObject && out[0].intent == Intent::Harmful,
+              "target 18 + a destination area: around the caster, not the target");
+        SpellEffects consecration;    // a persistent area aura whose destination is the caster
+        consecration.effect[0] = 27; consecration.targetA[0] = 18; consecration.radius[0] = 8;
+        Check(ShapesFromSpell(consecration, rules, out) == 1 && out[0].anchor == Anchor::Caster, "persistent area aura with target 18: around the caster");
+        SpellEffects flame;           // the same area target next to a destination that is NOT the caster
+        flame.effect[0] = 2; flame.targetA[0] = 63; flame.targetB[0] = 16; flame.radius[0] = 8;
+        Check(ShapesFromSpell(flame, rules, out) == 1 && out[0].anchor == Anchor::Dest && !out[0].atDynObject, "target 63 + a destination area: the cast's ground point or target");
+        SpellEffects plain;           // a destination area alone, as before
+        plain.effect[0] = 2; plain.targetA[0] = 16; plain.radius[0] = 8;
+        Check(ShapesFromSpell(plain, rules, out) == 1 && out[0].anchor == Anchor::Dest && !out[0].atDynObject, "a destination area alone: as before");
+
+        SpellEffects tick;            // the tick of a ground effect: around its dynamic object
+        tick.effect[0] = 2; tick.targetA[0] = 28; tick.radius[0] = 6;
+        Check(ShapesFromSpell(tick, rules, out) == 1 && out[0].anchor == Anchor::Dest && out[0].atDynObject && out[0].intent == Intent::Harmful, "target 28: around the dynamic object");
+        tick.targetA[0] = 29;
+        Check(ShapesFromSpell(tick, rules, out) == 1 && out[0].atDynObject && out[0].intent == Intent::Helpful, "target 29: around the dynamic object, helpful");
+
+        SpellEffects two;             // two effects, one around the caster and one around the target, stay two circles
+        two.effect[0] = 2; two.targetA[0] = 18; two.targetB[0] = 16; two.radius[0] = 10;
+        two.effect[1] = 2; two.targetA[1] = 16; two.radius[1] = 10;
+        Check(ShapesFromSpell(two, rules, out) == 2 && out[0].anchor == Anchor::Caster && out[1].anchor == Anchor::Dest, "a caster circle and a destination circle of one radius are not merged");
+
+        SpellEffects cone;            // a cone is a cone whatever else is written next to it
+        cone.effect[0] = 2; cone.targetA[0] = 18; cone.targetB[0] = 24; cone.radius[0] = 12;
+        Check(ShapesFromSpell(cone, rules, out) == 1 && out[0].kind == ShapeKind::Cone, "target 18 with a cone target: still a cone");
+    }
+
     std::printf("3. override file\n");
     {
         OverrideTable t;

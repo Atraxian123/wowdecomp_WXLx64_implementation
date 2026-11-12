@@ -384,7 +384,7 @@ namespace wxl::spellarea
             return g_triggerCache.emplace(spellId, info).first->second;
         }
 
-        struct DynKey { uint64_t caster; uint32_t spell; };
+        struct DynKey { uint64_t caster; uint32_t spell; uint64_t guid; };   // guid: the dynamic object itself
 
         void AddArea(const Area& a)
         {
@@ -400,7 +400,7 @@ namespace wxl::spellarea
             const bool hostile = d.casterKnown && d.casterHostile;
             if (g_cfg.enemiesOnly && !hostile) return;   // a caster that is gone is not known to be an enemy
 
-            dyn.push_back(DynKey{ d.casterGuid, d.spellId });
+            dyn.push_back(DynKey{ d.casterGuid, d.spellId, d.guid });
             if (!g_cfg.persistent) return;
 
             Area a;
@@ -495,10 +495,11 @@ namespace wxl::spellarea
         }
 
         // An aura that casts a spell every few seconds (a periodic trigger): the area of that spell, for as long as the
-        // aura is there. Around the unit that carries the aura, or around whoever put it there when the spell is an area
-        // of its caster (a cone, a self-centered circle). Only what the client is told of is here: an aura the server keeps
-        // hidden is not.
-        void AddTriggerAura(const WxlSpellAreaAura& aura)
+        // aura is there. Where it is centered follows the triggered spell's own targets, as the server casts it: around
+        // whoever put the aura there when the spell is an area of its caster (a cone, a circle with target 18, a self-
+        // centered one), around the spell's dynamic object when it says so (targets 28 and 29), and around the unit that
+        // carries the aura otherwise. Only what the client is told of is here: an aura the server keeps hidden is not.
+        void AddTriggerAura(const WxlSpellAreaAura& aura, const std::vector<DynKey>& dyn)
         {
             const bool own = aura.casterIsPlayer != 0;
             if (own ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || aura.casterHostile))) return;
@@ -516,7 +517,16 @@ namespace wxl::spellarea
                     if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
                     const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
                     a.follow = true;
-                    a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
+                    if (shapes[i].atDynObject)
+                    {
+                        // the area is around the spell's ground effect: that object, if it is there to be seen
+                        uint64_t object = 0;
+                        for (const DynKey& d : dyn)
+                            if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
+                        if (!object) continue;
+                        a.guid = object;
+                    }
+                    else a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
 
                     bool duplicate = false;   // the same aura on several units, all drawn around its caster: one is enough
                     for (const Area& other : g_areas)
@@ -557,7 +567,7 @@ namespace wxl::spellarea
             {
                 static WxlSpellAreaAura auraBuf[kMaxScan];
                 const uint32_t auraCount = Api()->spellAreaTriggerAuras(auraBuf, kMaxScan);
-                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i]);
+                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i], dyn);
             }
         }
 

@@ -153,6 +153,19 @@ into a cone. `Lines=0` hides the line spells, `Cones=0` hides the cone ones. A r
 all of this for its spell. A bad line is skipped and written to `WXL.log` (category AOE); when the file is read the
 log says how many spells it holds and how many of them are back cones and lines.
 
+## Where a triggered or destination area is centered
+
+A spell's own targets say what its area is around, and the indicator follows them:
+
+| the effect's targets | the area is around |
+|---|---|
+| an area around the caster (targets 7, 15, 20, 30, 33 ...) or a cone | the caster |
+| target 18 (destination = the caster) with a destination area next to it (16, 31, 34 ...) | **the caster**, not the unit the cast was aimed at. Most area spells, and almost every spell the server triggers, are written this way |
+| targets 28 / 29 (around the spell's dynamic object) | **the dynamic object** of the spell (an aura that ticks it, such as the one a ground effect puts on a unit, is drawn around that object, not around the unit carrying the aura) |
+| any other destination area | the cast's ground point, else the unit it was aimed at; for a periodic aura, the unit that carries it |
+
+A row in `SpellAreaOverride.csv` still decides the shape of a spell it lists.
+
 ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
 
 The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. The two files above

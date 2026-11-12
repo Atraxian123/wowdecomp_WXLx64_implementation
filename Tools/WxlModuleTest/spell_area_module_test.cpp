@@ -31,6 +31,8 @@ static float g_periodicPos[3] = {}, g_missilePos[3] = {};
 static int g_instantRotated = 0;
 static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
 static std::string g_dir;
+static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0;
+static float g_centerPos[3] = {}, g_dynCenterPos[3] = {};
 
 int main()
 {
@@ -67,6 +69,7 @@ int main()
     api.workingDirectory = []() -> const char* { return g_dir.c_str(); };
     api.spellAreaDynamicObjects = [](WxlSpellAreaDynObject* o, uint32_t) -> uint32_t
     {
+        if (!g_dynOn) return 0;
         o[0] = {}; o[0].guid = 5; o[0].casterGuid = 9; o[0].spellId = 10; o[0].radius = 8; o[0].casterKnown = 1; o[0].casterHostile = 1;
         return 1;
     };
@@ -81,7 +84,9 @@ int main()
         *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = sp == 40 ? 6.0f : 10.0f;   // around the caster
         if (sp == 61) { o->targetA[0] = 16; o->radius[0] = 7.0f; }   // the periodic aura's spell: an area at the target
         if (sp == 71) { o->targetA[0] = 16; o->radius[0] = 5.0f; }   // the grenade's spell: an area at its destination
-        if (sp == 60 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
+        if (sp == 67) { o->targetA[0] = 18; o->targetB[0] = 16; o->radius[0] = 4.0f; }   // an area written as destination = caster + a destination area
+        if (sp == 69) { o->targetA[0] = 28; o->radius[0] = 3.0f; }                         // an area around the spell's dynamic object
+        if (sp == 60 || sp == 66 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
         return 1;
     };
     api.spellAreaPendingCast = [](uint64_t, uint32_t, WxlSpellAreaPending*) -> int { return 0; };
@@ -90,6 +95,8 @@ int main()
     {
         *o = {};
         if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
+        if (sp == 66) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 67, 2000, 0 }; return 1; }    // an aura casting 67
+        if (sp == 10) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; return 1; }    // a ground effect's aura casting 69
         if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
         if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
         return 0;
@@ -97,7 +104,7 @@ int main()
     api.spellAreaTriggerAuras = [](WxlSpellAreaAura* o, uint32_t) -> uint32_t
     {
         if (!g_auraOn) return 0;
-        o[0] = {}; o[0].holderGuid = 50; o[0].casterGuid = 9; o[0].spellId = 60; o[0].casterHostile = 1;
+        o[0] = {}; o[0].holderGuid = 50; o[0].casterGuid = 9; o[0].spellId = static_cast<uint32_t>(g_auraSpell); o[0].casterHostile = 1;
         return 1;
     };
     api.spellAreaCreateTexture = [](const uint32_t* px, uint32_t size, const char*) -> void* { ++g_textures; return px && size == 256 ? &g_textures : nullptr; };
@@ -107,6 +114,8 @@ int main()
         if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
+        if (d->half == 4.0f) { ++g_centerDraws; std::memcpy(g_centerPos, d->pos, sizeof(g_centerPos)); }
+        if (d->half == 3.0f) { ++g_dynCenterDraws; std::memcpy(g_dynCenterPos, d->pos, sizeof(g_dynCenterPos)); }
         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
         if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; if (d->rotate) ++g_instantRotated; }     // the instant spell's area (spell 40)
         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
@@ -177,6 +186,19 @@ int main()
     g_auraOn = 0; g_periodicDraws = 0;
     g_fn(g_user, 0x200122, 5, 46000);
     Check(g_periodicDraws == 0, "gone with the aura");
+
+    std::printf("5b. where a triggered area is centered\n");
+    g_auraOn = 1; g_auraSpell = 66; g_centerDraws = 0;                 // the aura sits on unit 50 (at 10, 20); its caster 9 is at the origin
+    g_fn(g_user, 0x200122, 5, 46500);
+    Check(g_centerDraws == 1 && g_centerPos[0] == 0.0f && g_centerPos[1] == 0.0f, "destination = caster (target 18): around the aura's caster, not around the unit that carries it");
+    g_auraSpell = 10; g_dynCenterDraws = 0;                            // the aura of a ground effect: its tick is around the dynamic object (guid 5)
+    g_fn(g_user, 0x200122, 5, 46600);
+    Check(g_dynCenterDraws == 1 && g_dynCenterPos[0] == 0.0f && g_dynCenterPos[1] == 0.0f, "target 28: around the dynamic object, not around the unit that carries the aura");
+    g_dynOn = 0; g_dynCenterDraws = 0;
+    g_fn(g_user, 0x200122, 5, 46700);
+    Check(g_dynCenterDraws == 0, "with no dynamic object to be seen, nothing is drawn for it (not around the carrier)");
+    g_dynOn = 1; g_auraSpell = 60; g_auraOn = 0;
+    g_fn(g_user, 0x200122, 5, 46800);
 
     std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
     g_instantOn = 0;                                   // only the triggered spell is wanted

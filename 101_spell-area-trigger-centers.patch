@@ -1,0 +1,290 @@
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index ab1e753..d013ff4 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -382,7 +382,7 @@ namespace wxl::spellarea
+             return g_triggerCache.emplace(spellId, info).first->second;
+         }
+ 
+-        struct DynKey { uint64_t caster; uint32_t spell; };
++        struct DynKey { uint64_t caster; uint32_t spell; uint64_t guid; };   // guid: the dynamic object itself
+ 
+         void AddArea(const Area& a)
+         {
+@@ -398,7 +398,7 @@ namespace wxl::spellarea
+             const bool hostile = d.casterKnown && d.casterHostile;
+             if (g_cfg.enemiesOnly && !hostile) return;   // a caster that is gone is not known to be an enemy
+ 
+-            dyn.push_back(DynKey{ d.casterGuid, d.spellId });
++            dyn.push_back(DynKey{ d.casterGuid, d.spellId, d.guid });
+             if (!g_cfg.persistent) return;
+ 
+             Area a;
+@@ -493,10 +493,11 @@ namespace wxl::spellarea
+         }
+ 
+         // An aura that casts a spell every few seconds (a periodic trigger): the area of that spell, for as long as the
+-        // aura is there. Around the unit that carries the aura, or around whoever put it there when the spell is an area
+-        // of its caster (a cone, a self-centered circle). Only what the client is told of is here: an aura the server keeps
+-        // hidden is not.
+-        void AddTriggerAura(const WxlSpellAreaAura& aura)
++        // aura is there. Where it is centered follows the triggered spell's own targets, as the server casts it: around
++        // whoever put the aura there when the spell is an area of its caster (a cone, a circle with target 18, a self-
++        // centered one), around the spell's dynamic object when it says so (targets 28 and 29), and around the unit that
++        // carries the aura otherwise. Only what the client is told of is here: an aura the server keeps hidden is not.
++        void AddTriggerAura(const WxlSpellAreaAura& aura, const std::vector<DynKey>& dyn)
+         {
+             const bool own = aura.casterIsPlayer != 0;
+             if (own ? !OwnOn() : !(OthersOn() && (!g_cfg.enemiesOnly || aura.casterHostile))) return;
+@@ -514,7 +515,16 @@ namespace wxl::spellarea
+                     if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
+                     const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
+                     a.follow = true;
+-                    a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
++                    if (shapes[i].atDynObject)
++                    {
++                        // the area is around the spell's ground effect: that object, if it is there to be seen
++                        uint64_t object = 0;
++                        for (const DynKey& d : dyn)
++                            if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
++                        if (!object) continue;
++                        a.guid = object;
++                    }
++                    else a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
+ 
+                     bool duplicate = false;   // the same aura on several units, all drawn around its caster: one is enough
+                     for (const Area& other : g_areas)
+@@ -555,7 +565,7 @@ namespace wxl::spellarea
+             {
+                 static WxlSpellAreaAura auraBuf[kMaxScan];
+                 const uint32_t auraCount = Api()->spellAreaTriggerAuras(auraBuf, kMaxScan);
+-                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i]);
++                for (uint32_t i = 0; i < auraCount; ++i) AddTriggerAura(auraBuf[i], dyn);
+             }
+         }
+ 
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index dcdfd7e..60e8629 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -152,6 +152,19 @@ into a cone. `Lines=0` hides the line spells, `Cones=0` hides the cone ones. A r
+ all of this for its spell. A bad line is skipped and written to `WXL.log` (category AOE); when the file is read the
+ log says how many spells it holds and how many of them are back cones and lines.
+ 
++## Where a triggered or destination area is centered
++
++A spell's own targets say what its area is around, and the indicator follows them:
++
++| the effect's targets | the area is around |
++|---|---|
++| an area around the caster (targets 7, 15, 20, 30, 33 ...) or a cone | the caster |
++| target 18 (destination = the caster) with a destination area next to it (16, 31, 34 ...) | **the caster**, not the unit the cast was aimed at. Most area spells, and almost every spell the server triggers, are written this way |
++| targets 28 / 29 (around the spell's dynamic object) | **the dynamic object** of the spell (an aura that ticks it, such as the one a ground effect puts on a unit, is drawn around that object, not around the unit carrying the aura) |
++| any other destination area | the cast's ground point, else the unit it was aimed at; for a periodic aura, the unit that carries it |
++
++A row in `SpellAreaOverride.csv` still decides the shape of a spell it lists.
++
+ ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
+ 
+ The spell data has no line shape and no cone angle, and a few spells have an area that is not in it. The two files above
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+index f035b7b..c512cd9 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.cpp
+@@ -73,6 +73,8 @@ namespace wxl::spellarea
+     bool IsConeTarget(int32_t t)         { static const int32_t s[] = { 24, 54, 59, 60, 104 }; return In(t, s); }
+     bool IsCasterAreaTarget(int32_t t)   { static const int32_t s[] = { 7, 11, 15, 20, 30, 33, 56 }; return In(t, s); }
+     bool IsDestAreaTarget(int32_t t)     { static const int32_t s[] = { 8, 16, 28, 29, 31, 34, 87, 91 }; return In(t, s); }
++    bool IsDestAtCasterTarget(int32_t t) { return t == 18; }
++    bool IsDynObjectTarget(int32_t t)    { return t == 28 || t == 29; }
+     bool IsEnemyTarget(int32_t t)        { static const int32_t s[] = { 2, 6, 15, 16, 24, 28, 53, 54, 104, 93 }; return In(t, s); }
+     bool IsAllyTarget(int32_t t)         { static const int32_t s[] = { 3, 4, 20, 21, 29, 30, 31, 33, 34, 35, 56, 57, 58, 59, 45, 37 }; return In(t, s); }
+ 
+@@ -109,6 +111,15 @@ namespace wxl::spellarea
+                 if (spell.chainRadius > 0.0f) r = spell.chainRadius;                 // the server's own number
+                 else if (!(r >= rules.minRadius)) r = rules.chainRadius;
+             }
++            // A destination area is around the point the OTHER target of the effect defines. Most area spells, and nearly
++            // every spell the server triggers, are written as target 18 (destination = the caster) with an area target
++            // next to it: that is an area around the caster, not around whoever the cast was aimed at.
++            bool atDyn = false;
++            if (destArea && !cone && !casterArea)
++            {
++                if (IsDestAtCasterTarget(a) || IsDestAtCasterTarget(b)) { casterArea = true; destArea = false; }
++                else if (IsDynObjectTarget(a) || IsDynObjectTarget(b)) atDyn = true;
++            }
+             if (!cone && !casterArea && !destArea) continue;
+             if (cone && (attrLine ? !rules.lines : !rules.cones)) continue;
+             if (!(r >= rules.minRadius)) continue;
+@@ -125,7 +136,7 @@ namespace wxl::spellarea
+                 else { s.kind = ShapeKind::Cone; s.param = angle; s.back = attrBack; }
+             }
+             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
+-            else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
++            else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; s.atDynObject = atDyn; }
+ 
+             if (IsEnemyTarget(a) || IsEnemyTarget(b) || eff == 129) s.intent = Intent::Harmful;
+             else if (IsAllyTarget(a) || IsAllyTarget(b) || In(eff, kAreaAuraHelpful)) s.intent = Intent::Helpful;
+@@ -133,7 +144,7 @@ namespace wxl::spellarea
+ 
+             bool dup = false;
+             for (size_t k = 0; k < n; ++k)
+-                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && std::fabs(out[k].radius - s.radius) < 0.01f)
++                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && out[k].atDynObject == s.atDynObject && std::fabs(out[k].radius - s.radius) < 0.01f)
+                 {
+                     // a damaging effect and a helpful one on the same spot: the damage is what to be careful about
+                     if (s.intent == Intent::Harmful) out[k].intent = Intent::Harmful;
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+index 80e7d56..74135ad 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
++++ b/Engine/Source/WXLModules/SpellArea/SpellAreaShapes.h
+@@ -28,6 +28,7 @@ namespace wxl::spellarea
+         float     param  = 0;   // cone angle in degrees, line width in yards
+         Intent    intent = Intent::Neutral;
+         bool      back   = false;   // a cone or line that points behind the caster (the server's CONE_BACK attribute)
++        bool      atDynObject = false; // a circle around the spell's dynamic object (Anchor::Dest, but not a ground point or a target)
+     };
+ 
+     // ---- the server's custom spell attributes (acore SpellInfo::AttributesCu) that change the shape of a cone ----
+@@ -65,6 +66,8 @@ namespace wxl::spellarea
+     bool IsConeTarget(int32_t target);          // 24, 54, 59, 60, 104
+     bool IsCasterAreaTarget(int32_t target);    // areas around the caster: 7, 11, 15, 20, 30, 33, 56
+     bool IsDestAreaTarget(int32_t target);      // areas around the destination: 8, 16, 28, 29, 31, 34, 87, 91
++    bool IsDestAtCasterTarget(int32_t target);  // 18 (TARGET_DEST_CASTER): the destination IS the caster's position
++    bool IsDynObjectTarget(int32_t target);     // 28, 29 (TARGET_DEST_DYNOBJ_ENEMY / ALLY): the destination is the spell's dynamic object
+     bool IsEnemyTarget(int32_t target);
+     bool IsAllyTarget(int32_t target);
+ 
+@@ -72,7 +75,9 @@ namespace wxl::spellarea
+     /// A cone target type gives a cone (angle from rules), an area around the caster or the destination gives a
+     /// circle, and so do the area aura effects (35, 65, 119, 128, 129, 143: around the caster) and the persistent area
+     /// aura (27: around the destination). A chain effect (more than one chain target) that is not an area gives the circle
+-    /// of its first jump, around the target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
++    /// of its first jump, around the target. Where a destination area is centered depends on the other target of the
++    /// effect: target 18 (destination = the caster) puts it on the caster (Anchor::Caster), 28 and 29 put it on the
++    /// spell's dynamic object (Shape::atDynObject), anything else leaves it to the cast's ground point or target. A spell with a cone angle (SpellEffects::coneAngle, from SpellCone.csv) is a
+     /// cone: its cone target types use that angle instead of the default, and its areas around the caster become cones
+     /// (the server applies the cone to them; the DBC does not say so). 360 degrees or more is a full circle.
+     /// The custom attributes (SpellEffects::customAttributes, from SpellsCustomAttribute.csv) pick the cone's direction
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index a785548..9cdc974 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -31,6 +31,8 @@ static float g_periodicPos[3] = {}, g_missilePos[3] = {};
+ static int g_instantRotated = 0;
+ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
+ static std::string g_dir;
++static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0;
++static float g_centerPos[3] = {}, g_dynCenterPos[3] = {};
+ 
+ int main()
+ {
+@@ -67,6 +69,7 @@ int main()
+     api.workingDirectory = []() -> const char* { return g_dir.c_str(); };
+     api.spellAreaDynamicObjects = [](WxlSpellAreaDynObject* o, uint32_t) -> uint32_t
+     {
++        if (!g_dynOn) return 0;
+         o[0] = {}; o[0].guid = 5; o[0].casterGuid = 9; o[0].spellId = 10; o[0].radius = 8; o[0].casterKnown = 1; o[0].casterHostile = 1;
+         return 1;
+     };
+@@ -81,7 +84,9 @@ int main()
+         *o = {}; o->effect[0] = 2; o->targetA[0] = 15; o->radius[0] = sp == 40 ? 6.0f : 10.0f;   // around the caster
+         if (sp == 61) { o->targetA[0] = 16; o->radius[0] = 7.0f; }   // the periodic aura's spell: an area at the target
+         if (sp == 71) { o->targetA[0] = 16; o->radius[0] = 5.0f; }   // the grenade's spell: an area at its destination
+-        if (sp == 60 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
++        if (sp == 67) { o->targetA[0] = 18; o->targetB[0] = 16; o->radius[0] = 4.0f; }   // an area written as destination = caster + a destination area
++        if (sp == 69) { o->targetA[0] = 28; o->radius[0] = 3.0f; }                         // an area around the spell's dynamic object
++        if (sp == 60 || sp == 66 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
+         return 1;
+     };
+     api.spellAreaPendingCast = [](uint64_t, uint32_t, WxlSpellAreaPending*) -> int { return 0; };
+@@ -90,6 +95,8 @@ int main()
+     {
+         *o = {};
+         if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
++        if (sp == 66) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 67, 2000, 0 }; return 1; }    // an aura casting 67
++        if (sp == 10) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; return 1; }    // a ground effect's aura casting 69
+         if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
+         if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
+         return 0;
+@@ -97,7 +104,7 @@ int main()
+     api.spellAreaTriggerAuras = [](WxlSpellAreaAura* o, uint32_t) -> uint32_t
+     {
+         if (!g_auraOn) return 0;
+-        o[0] = {}; o[0].holderGuid = 50; o[0].casterGuid = 9; o[0].spellId = 60; o[0].casterHostile = 1;
++        o[0] = {}; o[0].holderGuid = 50; o[0].casterGuid = 9; o[0].spellId = static_cast<uint32_t>(g_auraSpell); o[0].casterHostile = 1;
+         return 1;
+     };
+     api.spellAreaCreateTexture = [](const uint32_t* px, uint32_t size, const char*) -> void* { ++g_textures; return px && size == 256 ? &g_textures : nullptr; };
+@@ -107,6 +114,8 @@ int main()
+         if (d->half == 8.0f && d->r == 255 && d->g < 100) ++g_redHalf8;   // the enemy's ground effect: red
+         if (d->half == 10.0f) ++g_halfTen;                                 // the player's own cast
+         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
++        if (d->half == 4.0f) { ++g_centerDraws; std::memcpy(g_centerPos, d->pos, sizeof(g_centerPos)); }
++        if (d->half == 3.0f) { ++g_dynCenterDraws; std::memcpy(g_dynCenterPos, d->pos, sizeof(g_dynCenterPos)); }
+         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
+         if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; if (d->rotate) ++g_instantRotated; }     // the instant spell's area (spell 40)
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
+@@ -178,6 +187,19 @@ int main()
+     g_fn(g_user, 0x200122, 5, 46000);
+     Check(g_periodicDraws == 0, "gone with the aura");
+ 
++    std::printf("5b. where a triggered area is centered\n");
++    g_auraOn = 1; g_auraSpell = 66; g_centerDraws = 0;                 // the aura sits on unit 50 (at 10, 20); its caster 9 is at the origin
++    g_fn(g_user, 0x200122, 5, 46500);
++    Check(g_centerDraws == 1 && g_centerPos[0] == 0.0f && g_centerPos[1] == 0.0f, "destination = caster (target 18): around the aura's caster, not around the unit that carries it");
++    g_auraSpell = 10; g_dynCenterDraws = 0;                            // the aura of a ground effect: its tick is around the dynamic object (guid 5)
++    g_fn(g_user, 0x200122, 5, 46600);
++    Check(g_dynCenterDraws == 1 && g_dynCenterPos[0] == 0.0f && g_dynCenterPos[1] == 0.0f, "target 28: around the dynamic object, not around the unit that carries the aura");
++    g_dynOn = 0; g_dynCenterDraws = 0;
++    g_fn(g_user, 0x200122, 5, 46700);
++    Check(g_dynCenterDraws == 0, "with no dynamic object to be seen, nothing is drawn for it (not around the carrier)");
++    g_dynOn = 1; g_auraSpell = 60; g_auraOn = 0;
++    g_fn(g_user, 0x200122, 5, 46800);
++
+     std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
+     g_instantOn = 0;                                   // only the triggered spell is wanted
+     g_fn(g_user, 0x200122, 5, 47000);
+diff --git a/Tools/WxlModuleTest/spell_area_test.cpp b/Tools/WxlModuleTest/spell_area_test.cpp
+index b428002..bd388d3 100644
+--- a/Tools/WxlModuleTest/spell_area_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_test.cpp
+@@ -236,6 +236,38 @@ int main()
+               problems.find("line 4") != std::string::npos && problems.find("line 5") != std::string::npos, "table: bad rows are reported and skipped, a plain header line is skipped quietly");
+     }
+ 
++    std::printf("2f. where a destination area is centered\n");
++    {
++        SpellEffects boom;            // target 18 (destination = the caster) with an area target: around the caster
++        boom.effect[0] = 2; boom.targetA[0] = 18; boom.targetB[0] = 16; boom.radius[0] = 10;
++        Check(ShapesFromSpell(boom, rules, out) == 1 && out[0].kind == ShapeKind::Circle && out[0].anchor == Anchor::Caster && !out[0].atDynObject && out[0].intent == Intent::Harmful,
++              "target 18 + a destination area: around the caster, not the target");
++        SpellEffects consecration;    // a persistent area aura whose destination is the caster
++        consecration.effect[0] = 27; consecration.targetA[0] = 18; consecration.radius[0] = 8;
++        Check(ShapesFromSpell(consecration, rules, out) == 1 && out[0].anchor == Anchor::Caster, "persistent area aura with target 18: around the caster");
++        SpellEffects flame;           // the same area target next to a destination that is NOT the caster
++        flame.effect[0] = 2; flame.targetA[0] = 63; flame.targetB[0] = 16; flame.radius[0] = 8;
++        Check(ShapesFromSpell(flame, rules, out) == 1 && out[0].anchor == Anchor::Dest && !out[0].atDynObject, "target 63 + a destination area: the cast's ground point or target");
++        SpellEffects plain;           // a destination area alone, as before
++        plain.effect[0] = 2; plain.targetA[0] = 16; plain.radius[0] = 8;
++        Check(ShapesFromSpell(plain, rules, out) == 1 && out[0].anchor == Anchor::Dest && !out[0].atDynObject, "a destination area alone: as before");
++
++        SpellEffects tick;            // the tick of a ground effect: around its dynamic object
++        tick.effect[0] = 2; tick.targetA[0] = 28; tick.radius[0] = 6;
++        Check(ShapesFromSpell(tick, rules, out) == 1 && out[0].anchor == Anchor::Dest && out[0].atDynObject && out[0].intent == Intent::Harmful, "target 28: around the dynamic object");
++        tick.targetA[0] = 29;
++        Check(ShapesFromSpell(tick, rules, out) == 1 && out[0].atDynObject && out[0].intent == Intent::Helpful, "target 29: around the dynamic object, helpful");
++
++        SpellEffects two;             // two effects, one around the caster and one around the target, stay two circles
++        two.effect[0] = 2; two.targetA[0] = 18; two.targetB[0] = 16; two.radius[0] = 10;
++        two.effect[1] = 2; two.targetA[1] = 16; two.radius[1] = 10;
++        Check(ShapesFromSpell(two, rules, out) == 2 && out[0].anchor == Anchor::Caster && out[1].anchor == Anchor::Dest, "a caster circle and a destination circle of one radius are not merged");
++
++        SpellEffects cone;            // a cone is a cone whatever else is written next to it
++        cone.effect[0] = 2; cone.targetA[0] = 18; cone.targetB[0] = 24; cone.radius[0] = 12;
++        Check(ShapesFromSpell(cone, rules, out) == 1 && out[0].kind == ShapeKind::Cone, "target 18 with a cone target: still a cone");
++    }
++
+     std::printf("3. override file\n");
+     {
+         OverrideTable t;

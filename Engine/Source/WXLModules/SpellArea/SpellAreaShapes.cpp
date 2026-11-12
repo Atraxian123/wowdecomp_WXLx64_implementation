@@ -73,6 +73,8 @@ namespace wxl::spellarea
     bool IsConeTarget(int32_t t)         { static const int32_t s[] = { 24, 54, 59, 60, 104 }; return In(t, s); }
     bool IsCasterAreaTarget(int32_t t)   { static const int32_t s[] = { 7, 11, 15, 20, 30, 33, 56 }; return In(t, s); }
     bool IsDestAreaTarget(int32_t t)     { static const int32_t s[] = { 8, 16, 28, 29, 31, 34, 87, 91 }; return In(t, s); }
+    bool IsDestAtCasterTarget(int32_t t) { return t == 18; }
+    bool IsDynObjectTarget(int32_t t)    { return t == 28 || t == 29; }
     bool IsEnemyTarget(int32_t t)        { static const int32_t s[] = { 2, 6, 15, 16, 24, 28, 53, 54, 104, 93 }; return In(t, s); }
     bool IsAllyTarget(int32_t t)         { static const int32_t s[] = { 3, 4, 20, 21, 29, 30, 31, 33, 34, 35, 56, 57, 58, 59, 45, 37 }; return In(t, s); }
 
@@ -109,6 +111,15 @@ namespace wxl::spellarea
                 if (spell.chainRadius > 0.0f) r = spell.chainRadius;                 // the server's own number
                 else if (!(r >= rules.minRadius)) r = rules.chainRadius;
             }
+            // A destination area is around the point the OTHER target of the effect defines. Most area spells, and nearly
+            // every spell the server triggers, are written as target 18 (destination = the caster) with an area target
+            // next to it: that is an area around the caster, not around whoever the cast was aimed at.
+            bool atDyn = false;
+            if (destArea && !cone && !casterArea)
+            {
+                if (IsDestAtCasterTarget(a) || IsDestAtCasterTarget(b)) { casterArea = true; destArea = false; }
+                else if (IsDynObjectTarget(a) || IsDynObjectTarget(b)) atDyn = true;
+            }
             if (!cone && !casterArea && !destArea) continue;
             if (cone && (attrLine ? !rules.lines : !rules.cones)) continue;
             if (!(r >= rules.minRadius)) continue;
@@ -125,7 +136,7 @@ namespace wxl::spellarea
                 else { s.kind = ShapeKind::Cone; s.param = angle; s.back = attrBack; }
             }
             else if (casterArea) { s.kind = ShapeKind::Circle; s.anchor = Anchor::Caster; }
-            else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; }
+            else                 { s.kind = ShapeKind::Circle; s.anchor = Anchor::Dest; s.atDynObject = atDyn; }
 
             if (IsEnemyTarget(a) || IsEnemyTarget(b) || eff == 129) s.intent = Intent::Harmful;
             else if (IsAllyTarget(a) || IsAllyTarget(b) || In(eff, kAreaAuraHelpful)) s.intent = Intent::Helpful;
@@ -133,7 +144,7 @@ namespace wxl::spellarea
 
             bool dup = false;
             for (size_t k = 0; k < n; ++k)
-                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && std::fabs(out[k].radius - s.radius) < 0.01f)
+                if (out[k].kind == s.kind && out[k].anchor == s.anchor && out[k].back == s.back && out[k].atDynObject == s.atDynObject && std::fabs(out[k].radius - s.radius) < 0.01f)
                 {
                     // a damaging effect and a helpful one on the same spot: the damage is what to be careful about
                     if (s.intent == Intent::Harmful) out[k].intent = Intent::Harmful;
