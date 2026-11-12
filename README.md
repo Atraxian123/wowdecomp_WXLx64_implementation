@@ -5,34 +5,33 @@ Most of the implementation was made by Claude, so there might be a whole lot of 
 NOTE THAT THIS IS TO BE COMPILED AS 64 BITS
 
 Modules ported and credits:
-WXL 1.1 core API and Modern m2 (credits: iThorgrim https://github.com/iThorgrim and the rest of he people working on WXL)
-Equip Extension by .CSV (credits: 
-							https://github.com/Morfium-G For the original wxl-equipextension module
-							https://github.com/Furioz420 For the original .csv implementation
-							Myself)
-WXL Outlines (credits: https://github.com/WarcraftXL-Extensions/wxl-unit-outline)
-Modern Water (credits: https://github.com/jealous-sound/coa-vfog and https://github.com/manatactical/wxl-modern-water)
-Physics Engine (credits: https://github.com/TheDaveCalaz/wxl-equip-plus and Domino Physics Engine)
+- WXL 1.1 core API and Modern m2 (credits: iThorgrim https://github.com/iThorgrim and the rest of he people working on WXL)
+- Equip Extension by .CSV (credits: https://github.com/Morfium-G For the original wxl-equipextension module, https://github.com/Furioz420 For the original .csv implementation,Myself)
+- WXL Outlines (credits: https://github.com/WarcraftXL-Extensions/wxl-unit-outline)
+- Modern Water (credits: https://github.com/jealous-sound/coa-vfog and https://github.com/manatactical/wxl-modern-water)
+- Physics Engine (credits: https://github.com/TheDaveCalaz/wxl-equip-plus and Domino Physics Engine (couldn't find a link, sorry))
 
 Additional things:
 - Spell AoE indicators (WIP, but serviceable at the moment)
-- Item model physics through individual .phy2 files (you can extract .phy2 files by using this extractor https://github.com/Atraxian123/WoW_Phys_Extractor_Phy2 on unconverted RETAL models and placing them in thesame folder as the converted model)
+- Item model physics through individual .phy2 files (you can extract .phy2 files by using this extractor https://github.com/Atraxian123/WoW_Phys_Extractor_Phy2 on unconverted RETAIL models and placing them in thesame folder as the converted model)
 - Physics override by item or creature display ID
 - configurable items physics through WXLSettings.ini
 - underwater physics and buoyancy (while underwater, models behave with different physics constants)
 - native .png file compatibility (client will look for .blp, then fallback to .png, then to .tgs before giving a green texture)
 - native DXT5 .blp files compatibility for equipment skind instead of just paletted
 - automatic construction of "bakednpctextures" for npcs that use character models, but have no linked bakednpctexture in their creaturedisplayidextra.dbc
-- outlines for quest targets and tracked npcs and objects
+- outlines for quest targets, tracked npcs and tracked objects
 - opt-in for most of the modules
 - solved some crashes with overflowing of native m2 models materials that happened on 64 bits client.
 - mounts choosing flight animations from the mountflight animation ids before falling back to swimming animations.
+- Multitextured particles support (requires you to extract the .csv listing the particles emitter's textures, the extractor is included in this repository, tools folder)
+- Multitextured ribbons support (data is already present in retroported modern .m2, so no extractor needed)
+- NOTE: Extractors are compatible with python 2.6
 
 all configuration files are in the <root>/WXL folder
 
 KNOWN ISSUES:
-- Outlines sometimes screw up the rendering of the image. Just close the client and reopen it and it should be fine.
-- Outlines not showing at all when in the setup file the flags for hiding behind walls are set as active.
+- Otlines now fail to show instead of completely screwing up the image when they fail to render after loading screens
 - Sometimes it crashes when exiting the game. Cause unknown, it might be because I filled my client with gigabites of random patches.
 
 # wowdecomp
