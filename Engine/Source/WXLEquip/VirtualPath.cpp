@@ -22,6 +22,7 @@
 
 #include "Engine/Source/WXLEquip/VirtualPath.hpp"
 
+#include "Engine/Source/WXL/Ini.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
 #include "Engine/Source/WXLEquip/M2Format.hpp"
@@ -1899,104 +1900,26 @@ namespace wxl::scripts::equipextension
         return true;
     }
 
-    namespace
-    {
-        // Resolves the HMODULE of whichever module this very function's own code lives in -- i.e.
-        // WarcraftXL.dll itself (this module is built into it, there is no separate
-        // WXLExtendedEquipment.dll) -- without needing DllMain's hinstDLL (not tracked anywhere in
-        // this module) and without assuming the process's current working directory has any
-        // relationship to the DLL's own location. GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: this
-        // is a lookup, not a LoadLibrary -- don't bump the module's refcount for it. Shared by
-        // WxlIniGetBool and WxlIniGetInt so the resolution logic only exists once.
-        bool ResolveIniPath(char* outIniPath, size_t outIniPathSz)
-        {
-            // In-tree there is no WarcraftXL.dll: the ini sits beside the client executable.
-            const char* kIniName = "WXLSetup.ini";
-#ifdef _WIN32
-            char exePath[MAX_PATH] = {};
-            const DWORD n = GetModuleFileNameA(nullptr, exePath, sizeof(exePath));
-            if (n == 0 || n >= sizeof(exePath)) return false;
-
-            const char* lastSlash = std::strrchr(exePath, '\\');
-            if (lastSlash)
-            {
-                const size_t dirLen = static_cast<size_t>(lastSlash - exePath) + 1; // include the '\\'
-                if (dirLen + std::strlen(kIniName) >= outIniPathSz) return false;
-                std::memcpy(outIniPath, exePath, dirLen);
-                std::strcpy(outIniPath + dirLen, kIniName);
-                // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
-                char inWxl[MAX_PATH] = {};
-                if (dirLen + 4 + std::strlen(kIniName) < sizeof(inWxl) && dirLen + 4 + std::strlen(kIniName) < outIniPathSz)
-                {
-                    std::memcpy(inWxl, exePath, dirLen);
-                    std::strcpy(inWxl + dirLen, "WXL\\");
-                    std::strcat(inWxl, kIniName);
-                    if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(outIniPath, inWxl);
-                }
-                return true;
-            }
-#endif
-            if (std::strlen(kIniName) >= outIniPathSz) return false;
-            std::strcpy(outIniPath, kIniName); // no directory component: relative to the working dir
-            return true;
-        }
-    }
-
+    // WXLSetup.ini is found, read and watched by wxl::ini (WXLCore); these are the same functions the module API's
+    // iniGetInt / iniGetString / iniStamp table entries call, so a module sees the same values, and the same console
+    // overrides, as the core.
     int WxlIniGetInt(const char* section, const char* key, int defaultValue)
     {
-        if (!section || !key) return defaultValue;
-
-        char iniPath[260] = {};
-        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return defaultValue;
-
-#ifdef _WIN32
-        // GetPrivateProfileInt's convention: a missing file, section or key returns the default.
-        return static_cast<int>(GetPrivateProfileIntA(section, key, defaultValue, iniPath));
-#else
-        (void)iniPath;
-        return defaultValue;
-#endif
+        return wxl::ini::GetInt(section, key, defaultValue);
     }
 
     bool WxlIniGetBool(const char* section, const char* key, bool defaultValue)
     {
-        return WxlIniGetInt(section, key, defaultValue ? 1 : 0) != 0;
+        return wxl::ini::GetBool(section, key, defaultValue);
     }
 
     bool WxlIniGetString(const char* section, const char* key, char* out, size_t cap)
     {
-        if (!out || cap == 0) return false;
-        out[0] = '\0';
-        if (!section || !key) return false;
-
-        char iniPath[260] = {};
-        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return false;
-
-#ifdef _WIN32
-        // A one-character sentinel nobody writes in an ini tells "key missing" from "key present and empty".
-        const DWORD n = GetPrivateProfileStringA(section, key, "\x01", out, static_cast<DWORD>(cap), iniPath);
-        if (n == 1 && out[0] == '\x01')
-        {
-            out[0] = '\0';
-            return false;
-        }
-        return true;
-#else
-        (void)iniPath;
-        return false;
-#endif
+        return wxl::ini::GetString(section, key, out, cap);
     }
 
     uint64_t WxlIniStamp()
     {
-        char iniPath[260] = {};
-        if (!ResolveIniPath(iniPath, sizeof(iniPath))) return 0;
-#ifdef _WIN32
-        WIN32_FILE_ATTRIBUTE_DATA data = {};
-        if (!GetFileAttributesExA(iniPath, GetFileExInfoStandard, &data)) return 0;
-        return (static_cast<uint64_t>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
-#else
-        return 0;
-#endif
+        return wxl::ini::Stamp();
     }
 }

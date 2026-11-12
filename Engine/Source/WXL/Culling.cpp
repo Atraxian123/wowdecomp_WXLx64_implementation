@@ -3,6 +3,7 @@
 
 #include "Engine/Source/WXL/Culling.h"
 
+#include "Engine/Source/WXL/Ini.h"
 #include "Engine/Source/WXL/Log.h"
 
 #ifdef _WIN32
@@ -22,57 +23,9 @@ namespace wxl::culling
 {
     namespace
     {
-        // WXLSetup.ini sits in the WXL folder beside the client executable (the file the equip modules and the log
-        // read; this module lives in WXLCore, which cannot call their helper, so the lookup is repeated, as
-        // Log.cpp does). Missing file, section or key: the default.
-        bool IniPath(char* path, size_t cap)
-        {
-#ifdef _WIN32
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
-            if (n == 0 || n >= cap) return false;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
-            std::strcpy(slash + 1, name);
-            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
-            char inWxl[MAX_PATH] = {};
-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
-            }
-            return true;
-#else
-            (void)path; (void)cap;
-            return false;
-#endif
-        }
+        int IniInt(const char* section, const char* key, int def) { return wxl::ini::GetInt(section, key, def); }
 
-        int IniInt(const char* section, const char* key, int def)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return def;
-            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
-#else
-            (void)section; (void)key;
-            return def;
-#endif
-        }
-
-        std::string IniStr(const char* section, const char* key)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return {};
-            char out[256] = {};
-            GetPrivateProfileStringA(section, key, "", out, sizeof(out), path);
-            return out;
-#else
-            (void)section; (void)key;
-            return {};
-#endif
-        }
+        std::string IniStr(const char* section, const char* key) { return wxl::ini::GetText(section, key, ""); }
 
         std::string Lower(std::string s)
         {
@@ -117,11 +70,24 @@ namespace wxl::culling
             }
         };
 
-        // Built on first use; C++11 guarantees the construction happens once even if several threads race.
+        // The switches as the ini has them now. Rebuilt when the ini changes (a save, or a console override); the old
+        // Config is left in place, never freed, because a thread that fetched it a moment ago may still be reading it.
         const Config& Cfg()
         {
-            static const Config c;
-            return c;
+            static std::atomic<const Config*> current{nullptr};
+            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+            static std::mutex m;
+            const uint32_t gen = wxl::ini::Generation();
+            if (seen.load(std::memory_order_acquire) != gen || !current.load(std::memory_order_acquire))
+            {
+                std::lock_guard<std::mutex> lock(m);
+                if (seen.load(std::memory_order_relaxed) != gen || !current.load(std::memory_order_relaxed))
+                {
+                    current.store(new Config(), std::memory_order_release);
+                    seen.store(gen, std::memory_order_release);
+                }
+            }
+            return *current.load(std::memory_order_acquire);
         }
 
         std::atomic<const void*> g_lastKey{ nullptr };

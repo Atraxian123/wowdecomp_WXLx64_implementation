@@ -1,0 +1,159 @@
+diff --git a/Engine/Source/WXLModules/Outline/Outline.cpp b/Engine/Source/WXLModules/Outline/Outline.cpp
+index c94b523..92adad3 100644
+--- a/Engine/Source/WXLModules/Outline/Outline.cpp
++++ b/Engine/Source/WXLModules/Outline/Outline.cpp
+@@ -294,14 +294,28 @@ namespace wxl::outline
+         };
+ 
+         explicit Outline(const Options& o)
+-            : spread_(o.spread), intensity_(o.intensity), debug_(o.debug), mouseTarget_(o.mouseTarget), quest_(o.quest),
+-              questTurnIn_(o.questTurnIn), questThroughWalls_(o.questThroughWalls), hideBehind_(o.hideBehindObjects),
+-              tracked_(o.tracked), trackedObjects_(o.trackedObjects), trackedCreatures_(o.trackedCreatures),
+-              trackedNpcs_(o.trackedNpcs), trackedThroughWalls_(o.trackedThroughWalls), trackedRange_(o.trackedRange),
+-              transparentUnits_(o.transparentUnits), transparentAlphaRef_(o.transparentAlphaRef),
+-              playersThroughWalls_(o.playersThroughWalls),
+-              excludePrefixes_(o.excludePrefixes)
+         {
++            Reconfigure(o);
++            iniStamp_ = WxlIniStamp();
++            on<&Outline::OnEndScene>(ev::Event::OnEndScene);
++            on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
++            on<&Outline::OnDeviceLost>(ev::Event::OnDeviceLost);
++        }
++
++        // Takes the settings of `o`; called at start and again whenever the ini changes (a save, or a console
++        // override), so a switch can be flipped or a colour tried without a restart. With every outline off the module
++        // stays subscribed but does nothing, and gives its device objects back.
++        void Reconfigure(const Options& o)
++        {
++            const bool wasActive = active_;
++            spread_ = o.spread; intensity_ = o.intensity; debug_ = o.debug; mouseTarget_ = o.mouseTarget; quest_ = o.quest;
++            questTurnIn_ = o.questTurnIn; questThroughWalls_ = o.questThroughWalls; hideBehind_ = o.hideBehindObjects;
++            tracked_ = o.tracked; trackedObjects_ = o.trackedObjects; trackedCreatures_ = o.trackedCreatures;
++            trackedNpcs_ = o.trackedNpcs; trackedThroughWalls_ = o.trackedThroughWalls; trackedRange_ = o.trackedRange;
++            transparentUnits_ = o.transparentUnits; transparentAlphaRef_ = o.transparentAlphaRef;
++            playersThroughWalls_ = o.playersThroughWalls;
++            excludePrefixes_ = o.excludePrefixes;
++            excludeCache_.clear();
+             depthTol_ = o.depthTolerance;
+             std::memcpy(trackedObjectColor_, o.trackedObjectColor, sizeof(trackedObjectColor_));
+             std::memcpy(trackedCreatureColor_, o.trackedCreatureColor, sizeof(trackedCreatureColor_));
+@@ -311,9 +325,13 @@ namespace wxl::outline
+             std::memcpy(hostileColor_, o.hostileColor, sizeof(hostileColor_));
+             std::memcpy(neutralColor_, o.neutralColor, sizeof(neutralColor_));
+             std::memcpy(friendlyColor_, o.friendlyColor, sizeof(friendlyColor_));
+-            on<&Outline::OnEndScene>(ev::Event::OnEndScene);
+-            on<&Outline::OnM2Batch>(ev::Event::OnM2BatchDraw);
+-            on<&Outline::OnDeviceLost>(ev::Event::OnDeviceLost);
++            active_ = o.mouseTarget || o.quest || o.questTurnIn || o.tracked;
++            if (wasActive && !active_)
++            {
++                Discard();          // nothing is outlined any more: give the shaders and targets back
++                questCount_ = turnInCount_ = trackedCount_ = 0;
++            }
++            if (!active_) count_ = 0;
+         }
+ 
+     private:
+@@ -343,7 +361,11 @@ namespace wxl::outline
+         void RefreshQuestTargets();
+         void AppendQuestTargets();
+         void ReleaseTargets();
++        void PollIni();
+ 
++        bool                active_ = false;       // at least one kind of outline is switched on
++        uint64_t            iniStamp_ = 0;         // the ini as the settings were last read from it
++        unsigned long long  nextIniCheck_ = 0;
+         Tgt                 targets_[kMaxTargets]{};
+         int                 count_    = 0;
+         IDirect3DDevice9*   device_   = nullptr;   // the device the resources below belong to (identity only)
+@@ -951,6 +973,9 @@ namespace wxl::outline
+         stamped_ = false;
+         excludeCache_.clear();   // a freed model file's address can come back as another one
+ 
++        PollIni();
++        if (!active_) return;
++
+         auto* dev = static_cast<IDirect3DDevice9*>(a.device);
+         if (!dev) return;
+ 
+@@ -972,6 +997,26 @@ namespace wxl::outline
+     // The targets are D3DPOOL_DEFAULT resources, so they have to go before the engine resets the device. They are
+     // recreated by EnsureResources on the next frame; the pixel shaders and the recorded state block are not pool
+     // resources and survive the reset untouched.
++    bool ReadOptions(Outline::Options& o);   // below
++
++    // Twice a second: has the ini changed (saved, or overridden from the console)? Then the settings are read again.
++    void Outline::PollIni()
++    {
++        const unsigned long long now = GetTickCount64();
++        if (now < nextIniCheck_) return;
++        nextIniCheck_ = now + 500;
++        const uint64_t stamp = WxlIniStamp();
++        if (stamp == iniStamp_) return;
++        iniStamp_ = stamp;
++
++        Options o;
++        const bool anyOn = ReadOptions(o);
++        Reconfigure(o);
++        wxl::LogCat("OUTLINE", "settings re-read: %s (mouseover/target %s, quest %s, turn-ins %s, tracked %s, transparent units %s)",
++                    anyOn ? "unit outline active" : "unit outline off", o.mouseTarget ? "on" : "off", o.quest ? "on" : "off",
++                    o.questTurnIn ? "on" : "off", o.tracked ? "on" : "off", o.transparentUnits ? "on" : "off");
++    }
++
+     void Outline::OnDeviceLost(const ev::DeviceResetArgs&)
+     {
+         ReleaseTargets();
+@@ -979,10 +1024,10 @@ namespace wxl::outline
+         count_   = 0;
+     }
+ 
+-    // Reads the ini and, when [Outline] Enabled=1 or Quest=1, brings the outline up. False when it stays off.
+-    bool Start()
++    // Reads the [Outline] settings from the ini into `o`. True when at least one kind of outline is switched on; the rest
++    // of `o` is filled in either way, so a later `wxl set Outline Enabled 1` has everything it needs.
++    bool ReadOptions(Outline::Options& o)
+     {
+-        Outline::Options o;
+         o.mouseTarget = IniInt("Outline", "Enabled", 0) != 0;
+         o.quest       = IniInt("Outline", "Quest", 0) != 0;
+         o.questTurnIn = IniInt("Outline", "QuestTurnIn", 0) != 0;
+@@ -1001,11 +1046,7 @@ namespace wxl::outline
+             o.tracked = false;
+         }
+         if (o.tracked && !o.trackedObjects && !o.trackedCreatures && !o.trackedNpcs) o.tracked = false;
+-        if (!o.mouseTarget && !o.quest && !o.questTurnIn && !o.tracked)
+-        {
+-            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest, QuestTurnIn and Tracked are 0 or absent)");
+-            return false;
+-        }
++        const bool anyOn = o.mouseTarget || o.quest || o.questTurnIn || o.tracked;
+ 
+         o.spread    = IniFloat("Outline", "Spread", 1.5f);
+         o.intensity = IniFloat("Outline", "Intensity", 2.0f);
+@@ -1039,10 +1080,22 @@ namespace wxl::outline
+         o.trackedRange = IniFloat("Outline", "TrackedRange", 80.0f);
+         if (!(o.trackedRange >= 0.0f)) o.trackedRange = 80.0f;
+ 
++        return anyOn;
++    }
++
++    // Brings the outline module up. It always stays loaded, so that a switch turned on later from the console or by
++    // saving the ini takes effect without a restart; while every outline is off it does nothing.
++    bool Start()
++    {
++        Outline::Options o;
++        const bool anyOn = ReadOptions(o);
+         static Outline s_outline(o);
+-        wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s, transparent units %s (spread %.2f, intensity %.2f)",
+-                    o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
+-                    o.tracked ? "on" : "off", o.transparentUnits ? "on" : "off", o.spread, o.intensity);
++        if (anyOn)
++            wxl::LogCat("OUTLINE", "unit outline active: mouseover/target %s, quest objectives %s, quest turn-ins %s, tracked %s, transparent units %s (spread %.2f, intensity %.2f)",
++                        o.mouseTarget ? "on" : "off", o.quest ? "on" : "off", o.questTurnIn ? "on" : "off",
++                        o.tracked ? "on" : "off", o.transparentUnits ? "on" : "off", o.spread, o.intensity);
++        else
++            wxl::LogCat("OUTLINE", "unit outline off ([Outline] Enabled, Quest, QuestTurnIn and Tracked are 0 or absent); `wxl set Outline Enabled 1` turns it on");
+         return true;
+     }
+ }

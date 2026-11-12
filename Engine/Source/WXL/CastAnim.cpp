@@ -3,75 +3,22 @@
 
 #include "Engine/Source/WXL/CastAnim.h"
 
+#include "Engine/Source/WXL/Ini.h"
 #include "Engine/Source/WXL/Log.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 namespace wxl::castanim
 {
     namespace
     {
-        // WXLSetup.ini sits in the WXL folder beside the client executable. This module lives in WXLCore, which
-        // cannot call the equip modules' helper, so the lookup is repeated, as Log.cpp and Culling.cpp do.
-        // Missing file, section or key: the default.
-        bool IniPath(char* path, size_t cap)
-        {
-#ifdef _WIN32
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(cap));
-            if (n == 0 || n >= cap) return false;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= cap) return false;
-            std::strcpy(slash + 1, name);
-            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
-            char inWxl[MAX_PATH] = {};
-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl) && cap >= sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
-            }
-            return true;
-#else
-            (void)path; (void)cap;
-            return false;
-#endif
-        }
-
-        int IniInt(const char* section, const char* key, int def)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return def;
-            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
-#else
-            (void)section; (void)key;
-            return def;
-#endif
-        }
-
-        float IniFloat(const char* section, const char* key, float def)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            if (!IniPath(path, sizeof(path))) return def;
-            char out[64] = {};
-            GetPrivateProfileStringA(section, key, "", out, sizeof(out), path);
-            if (!out[0]) return def;
-            char* end = nullptr;
-            const double v = std::strtod(out, &end);
-            return (end == out) ? def : static_cast<float>(v);
-#else
-            (void)section; (void)key;
-            return def;
-#endif
-        }
+        int   IniInt(const char* section, const char* key, int def) { return wxl::ini::GetInt(section, key, def); }
+        float IniFloat(const char* section, const char* key, float def) { return wxl::ini::GetFloat(section, key, def); }
 
         struct Config
         {
@@ -98,11 +45,24 @@ namespace wxl::castanim
             }
         };
 
-        // Built on first use; C++11 guarantees the construction happens once even if several threads race.
+        // The switches as the ini has them now. Rebuilt when the ini changes (a save, or a console override); the old
+        // Config is left in place, never freed, because a thread that fetched it a moment ago may still be reading it.
         const Config& Cfg()
         {
-            static const Config c;
-            return c;
+            static std::atomic<const Config*> current{nullptr};
+            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+            static std::mutex m;
+            const uint32_t gen = wxl::ini::Generation();
+            if (seen.load(std::memory_order_acquire) != gen || !current.load(std::memory_order_acquire))
+            {
+                std::lock_guard<std::mutex> lock(m);
+                if (seen.load(std::memory_order_relaxed) != gen || !current.load(std::memory_order_relaxed))
+                {
+                    current.store(new Config(), std::memory_order_release);
+                    seen.store(gen, std::memory_order_release);
+                }
+            }
+            return *current.load(std::memory_order_acquire);
         }
     }
 

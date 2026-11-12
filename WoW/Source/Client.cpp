@@ -115,6 +115,7 @@
 #include "Engine/Source/WXL/WXL.h"
 #include "Engine/Source/WXLApi/ApiHost.h"
 #include "Engine/Source/WXLEquip/Equip.h"
+#include "WoW/Source/WXLConsole.h"
 #include "Engine/Source/WXLApi/WaterHost.h"
 
 namespace {
@@ -1750,6 +1751,7 @@ bool InitializeGlobal() {
     CVar* timingMethod = CVar::Register("timingMethod", "Desired method for game timing", 2, "0", TimingMethodCallback, CATEGORY_DEFAULT, false, timingTestError, false);
     OsTimeStartup(static_cast<OsTimeManager::TimingMethod>(timingMethod->m_intValue));
     ConsoleCommandRegister("timingInfo", CCommand_TimingInfo, CATEGORY_DEBUG, nullptr);
+    WxlConsoleInitialize(); // WXL: the "wxl" console command, to look at WXLSetup.ini and change it live
 
     s_timeTestError = OsTimeGetTestError();
 

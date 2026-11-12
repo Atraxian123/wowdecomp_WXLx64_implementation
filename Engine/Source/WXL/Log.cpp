@@ -1,5 +1,7 @@
 #include "Engine/Source/WXL/Log.h"
+#include "Engine/Source/WXL/Ini.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -57,31 +59,11 @@ namespace wxl
             return t;
         }
 
-        // WXLSetup.ini sits in the WXL folder beside the client executable (the same file the equip modules read;
-        // WXLCore cannot call their helper, so the lookup is repeated here, kept free of any logging so it
-        // cannot recurse). [Log] <key>: a missing file, section or key gives `fallback`.
+        // [Log] <key>: a missing file, section or key gives `fallback`. Read through wxl::ini, which never logs, so
+        // this cannot recurse.
         bool IniLogFlag(const char* key, bool fallback)
         {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            const DWORD n = GetModuleFileNameA(nullptr, path, sizeof(path));
-            if (n == 0 || n >= sizeof(path)) return fallback;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || (slash - path) + 1 + std::strlen(name) >= sizeof(path)) return fallback;
-            std::strcpy(slash + 1, name);
-            // the ini lives in <root>\WXL; a copy left beside the executable (the old place) is still read
-            char inWxl[MAX_PATH] = {};
-            if ((slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, inWxl) != 0;
-            }
-            return GetPrivateProfileIntA("Log", key, fallback ? 1 : 0, path) != 0;
-#else
-            (void)key;
-            return fallback;
-#endif
+            return wxl::ini::GetBool("Log", key, fallback);
         }
 
         // [Log] Enabled: off unless set.
@@ -105,30 +87,37 @@ namespace wxl
             return Area::None;
         }
 
-        // Read once, on the first line a module writes; every key defaults to on.
-        struct AreaFlags
-        {
-            bool modernM2 = true, equip = true, physics = true, creature = true, weapon = true;
-            AreaFlags()
-            {
-                modernM2 = IniLogFlag("ModernM2", true);
-                equip    = IniLogFlag("Equip", true);
-                physics  = IniLogFlag("Physics", true);
-                creature = IniLogFlag("Creature", true);
-                weapon   = IniLogFlag("Weapon", true);
-            }
-        };
-
+        // The per-module switches, every one on unless the ini says 0. Re-read when the ini changes (a save, or a
+        // console override), so a module's log can be silenced or enabled without a restart.
         bool AreaEnabled(Area area)
         {
-            static const AreaFlags flags;
+            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+            static std::atomic<uint32_t> bits{0x1Fu};
+            const uint32_t gen = wxl::ini::Generation();
+            if (seen.load(std::memory_order_acquire) != gen)
+            {
+                static std::mutex m;
+                std::lock_guard<std::mutex> lock(m);
+                if (seen.load(std::memory_order_relaxed) != gen)
+                {
+                    uint32_t b = 0;
+                    if (IniLogFlag("ModernM2", true)) b |= 1u << 0;
+                    if (IniLogFlag("Equip", true))    b |= 1u << 1;
+                    if (IniLogFlag("Physics", true))  b |= 1u << 2;
+                    if (IniLogFlag("Creature", true)) b |= 1u << 3;
+                    if (IniLogFlag("Weapon", true))   b |= 1u << 4;
+                    bits.store(b, std::memory_order_relaxed);
+                    seen.store(gen, std::memory_order_release);
+                }
+            }
+            const uint32_t b = bits.load(std::memory_order_relaxed);
             switch (area)
             {
-                case Area::ModernM2: return flags.modernM2;
-                case Area::Equip:    return flags.equip;
-                case Area::Physics:  return flags.physics;
-                case Area::Creature: return flags.creature;
-                case Area::Weapon:   return flags.weapon;
+                case Area::ModernM2: return (b & (1u << 0)) != 0;
+                case Area::Equip:    return (b & (1u << 1)) != 0;
+                case Area::Physics:  return (b & (1u << 2)) != 0;
+                case Area::Creature: return (b & (1u << 3)) != 0;
+                case Area::Weapon:   return (b & (1u << 4)) != 0;
                 default:             return true;
             }
         }
@@ -191,8 +180,21 @@ namespace wxl
 
     bool LogEnabled()
     {
-        static const bool enabled = DecideEnabled();
-        return enabled;
+        // [Log] Enabled is looked at again whenever the ini changes (a save, or a console override); WXL_LOG still wins.
+        static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+        static std::atomic<bool> enabled{false};
+        const uint32_t gen = wxl::ini::Generation();
+        if (seen.load(std::memory_order_acquire) != gen)
+        {
+            static std::mutex m;
+            std::lock_guard<std::mutex> lock(m);
+            if (seen.load(std::memory_order_relaxed) != gen)
+            {
+                enabled.store(DecideEnabled(), std::memory_order_relaxed);
+                seen.store(gen, std::memory_order_release);
+            }
+        }
+        return enabled.load(std::memory_order_relaxed);
     }
 
     bool LogCategoryEnabled(const char* category)

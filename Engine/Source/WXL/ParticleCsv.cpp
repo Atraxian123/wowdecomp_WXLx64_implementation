@@ -3,14 +3,12 @@
 
 #include "Engine/Source/WXL/ParticleCsv.h"
 
+#include "Engine/Source/WXL/Ini.h"
 #include "Engine/Source/WXL/Log.h"
 #include "Engine/Source/WXL/Storage.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,58 +21,6 @@ namespace wxl::particlecsv
     {
         constexpr size_t kMaxCached = 4096;      // models remembered (hits and misses); cleared when full
         constexpr uint32_t kMaxEmitterId = 4096; // a model has a handful of emitters; anything above is a bad row
-
-        // WXLSetup.ini sits in the WXL folder beside the client executable; a copy left beside the executable (the
-        // old place) is still read. The lookup is repeated here because WXLCore keeps no shared ini helper, as in
-        // DrawContext.cpp and Culling.cpp. Missing file, section or key: the default.
-        int IniInt(const char* section, const char* key, int def)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
-            if (n == 0 || n >= sizeof(path)) return def;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
-            std::strcpy(slash + 1, name);
-            char inWxl[MAX_PATH] = {};
-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
-            }
-            return static_cast<int>(GetPrivateProfileIntA(section, key, def, path));
-#else
-            (void)section; (void)key;
-            return def;
-#endif
-        }
-
-        // The ini's text value of a key, or the default. Same lookup as IniInt.
-        std::string IniString(const char* section, const char* key, const char* def)
-        {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
-            if (n == 0 || n >= sizeof(path)) return def;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
-            std::strcpy(slash + 1, name);
-            char inWxl[MAX_PATH] = {};
-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
-            }
-            char value[64] = {};
-            GetPrivateProfileStringA(section, key, def, value, static_cast<DWORD>(sizeof(value)), path);
-            return value;
-#else
-            (void)section; (void)key;
-            return def;
-#endif
-        }
 
         std::string Lower(std::string s)
         {
@@ -296,38 +242,64 @@ namespace wxl::particlecsv
         return table;
     }
 
-    bool Enabled()
+    namespace
     {
-        static const bool on = [] {
-            const bool v = IniInt("Particles", "MultiTextureCsv", 0) != 0;
-            if (v) wxl::LogCat("PARTICLE", "multi-textured particle CSVs: on ([Particles] MultiTextureCsv=1)");
-            return v;
-        }();
-        return on;
+        struct Settings
+        {
+            bool       enabled = false;
+            LayerBlend blend = LayerBlend::Multiply;
+            uint32_t   gain = 2;
+        };
+
+        // The three [Particles] settings as the ini has them now. Re-read when the ini changes (a save, or a console
+        // override), so the CSVs can be switched on and off, and the blend and gain tried, without a restart. The old
+        // Settings are never freed: a thread that fetched them a moment ago may still be reading them.
+        const Settings& Current()
+        {
+            static std::atomic<const Settings*> current{nullptr};
+            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+            static std::mutex m;
+            const uint32_t gen = wxl::ini::Generation();
+            if (seen.load(std::memory_order_acquire) != gen || !current.load(std::memory_order_acquire))
+            {
+                std::lock_guard<std::mutex> lock(m);
+                if (seen.load(std::memory_order_relaxed) != gen || !current.load(std::memory_order_relaxed))
+                {
+                    auto* s = new Settings();
+                    s->enabled = wxl::ini::GetInt("Particles", "MultiTextureCsv", 0) != 0;
+
+                    std::string v = Lower(Trim(wxl::ini::GetText("Particles", "MultiTextureBlend", "Multiply")));
+                    // a trailing comment (";") is not part of the value; anything not clearly "add" is the default
+                    const size_t semi = v.find(';');
+                    if (semi != std::string::npos) v = Trim(v.substr(0, semi));
+                    s->blend = (v == "add" || v == "additive" || v == "plain" || v == "sum") ? LayerBlend::Add : LayerBlend::Multiply;
+
+                    const int gain = wxl::ini::GetInt("Particles", "MultiTextureGain", 2);
+                    s->gain = gain <= 1 ? 1u : (gain >= 3 ? 4u : 2u);
+
+                    const Settings* previous = current.load(std::memory_order_relaxed);
+                    if (!previous || previous->enabled != s->enabled || previous->blend != s->blend || previous->gain != s->gain)
+                    {
+                        wxl::LogCat("PARTICLE", "multi-textured particle CSVs: %s, textures combine by %s%s", s->enabled ? "on" : "off",
+                                    s->blend == LayerBlend::Add ? "adding" : "multiplying", s->blend == LayerBlend::Multiply ? (s->gain == 1 ? " (gain 1)" : s->gain == 4 ? " (gain 4)" : " (gain 2)") : "");
+                    }
+                    if (!previous || previous->enabled != s->enabled)
+                    {
+                        std::lock_guard<std::mutex> cacheLock(g_lock);
+                        g_cache.clear();   // models seen while it was off were not cached; the ones seen on may now be stale
+                    }
+
+                    current.store(s, std::memory_order_release);
+                    seen.store(gen, std::memory_order_release);
+                }
+            }
+            return *current.load(std::memory_order_acquire);
+        }
     }
 
-    LayerBlend Blend()
-    {
-        static const LayerBlend mode = [] {
-            std::string v = Lower(Trim(IniString("Particles", "MultiTextureBlend", "Multiply")));
-            // anything that is not clearly "add" is the default; a trailing comment (";") is not part of the value
-            const size_t semi = v.find(';');
-            if (semi != std::string::npos) v = Trim(v.substr(0, semi));
-            const bool add = v == "add" || v == "additive" || v == "plain" || v == "sum";
-            wxl::LogCat("PARTICLE", "multi-textured particles blend by %s", add ? "adding each texture" : "multiplying the textures");
-            return add ? LayerBlend::Add : LayerBlend::Multiply;
-        }();
-        return mode;
-    }
-
-    uint32_t Gain()
-    {
-        static const uint32_t gain = [] {
-            const int v = IniInt("Particles", "MultiTextureGain", 2);
-            return v <= 1 ? 1u : (v >= 4 ? 4u : (v == 3 ? 4u : 2u));
-        }();
-        return gain;
-    }
+    bool       Enabled() { return Current().enabled; }
+    LayerBlend Blend() { return Current().blend; }
+    uint32_t   Gain() { return Current().gain; }
 
     std::shared_ptr<const Table> For(const char* modelPath)
     {
