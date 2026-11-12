@@ -48,6 +48,7 @@ namespace wxl::outline
         // ---- WXLSetup.ini, beside the executable. Repeated here as Log.cpp, Culling.cpp and
         // CastAnim.cpp do: WXLCore keeps no shared helper and this module links only WXLCore.
         // [Outline] keys of WXLSetup.ini, through the module API.
+        using wxl::scripts::equipextension::WxlIniStamp;
         int IniInt(const char* section, const char* key, int def)
         {
             const WxlApi* api = wxl::module::Api();
