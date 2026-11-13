@@ -3,45 +3,21 @@
 
 #include "Engine/Source/WXL/RibbonBlend.h"
 
+#include "Engine/Source/WXL/Ini.h"
 #include "Engine/Source/WXL/Log.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
-
-#include <cstdio>
-#include <cstring>
+#include <atomic>
+#include <mutex>
 
 namespace wxl::ribbonblend
 {
     namespace
     {
-        // WXLSetup.ini sits in the WXL folder beside the client executable; a copy left beside the executable (the
-        // old place) is still read. The lookup is repeated here because WXLCore keeps no shared ini helper, as in
-        // ParticleCsv.cpp and Culling.cpp. Missing file, section or key: the default.
-        std::string IniString(const char* section, const char* key, const char* def)
+        // The text of a [Ribbons] key, through the shared ini reader: found in the WXL folder or beside the executable,
+        // and seeing a console override (`wxl set Ribbons MultiTextureBlend Add`) at once. Missing: the default.
+        std::string IniString(const char* key, const char* def)
         {
-#ifdef _WIN32
-            char path[MAX_PATH] = {};
-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
-            if (n == 0 || n >= sizeof(path)) return def;
-            char* slash = std::strrchr(path, '\\');
-            const char* name = "WXLSetup.ini";
-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
-            std::strcpy(slash + 1, name);
-            char inWxl[MAX_PATH] = {};
-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
-            {
-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
-            }
-            char value[64] = {};
-            GetPrivateProfileStringA(section, key, def, value, static_cast<DWORD>(sizeof(value)), path);
-            return value;
-#else
-            (void)section; (void)key;
-            return def;
-#endif
+            return wxl::ini::GetText("Ribbons", key, def);
         }
 
         std::string Normalize(const std::string& s)
@@ -88,28 +64,52 @@ namespace wxl::ribbonblend
         }
     }
 
-    Mode MultiTextureBlend()
+    namespace
     {
-        static const Mode mode = [] {
-            const std::string text = IniString("Ribbons", "MultiTextureBlend", "");
-            bool ok = true;
-            const Mode m = ParseMode(text, &ok);
-            if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureBlend='%s' is not Off, Multiply or Add; Off", text.c_str());
-            wxl::LogCat("RIBBON", "multi-textured ribbons: %s", m == Mode::Multiply ? "multiply" : m == Mode::Add ? "add" : "off (as the model has it)");
-            return m;
-        }();
-        return mode;
+        struct Settings
+        {
+            Mode mode = Mode::Off;
+            int  gain = 2;
+        };
+
+        // The two settings as the ini has them now. Re-read when the ini changes (a save, or a console override); a
+        // ribbon takes the mode when its model loads, so a change applies to models loaded afterwards. The old Settings are
+        // never freed: a thread that fetched them a moment ago may still be reading them.
+        const Settings& Current()
+        {
+            static std::atomic<const Settings*> current{nullptr};
+            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
+            static std::mutex m;
+            const uint32_t gen = wxl::ini::Generation();
+            if (seen.load(std::memory_order_acquire) != gen || !current.load(std::memory_order_acquire))
+            {
+                std::lock_guard<std::mutex> lock(m);
+                if (seen.load(std::memory_order_relaxed) != gen || !current.load(std::memory_order_relaxed))
+                {
+                    auto* s = new Settings();
+                    const std::string modeText = IniString("MultiTextureBlend", "");
+                    bool ok = true;
+                    s->mode = ParseMode(modeText, &ok);
+                    if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureBlend='%s' is not Off, Multiply or Add; Off", modeText.c_str());
+
+                    const std::string gainText = IniString("MultiTextureGain", "");
+                    ok = true;
+                    s->gain = ParseGain(gainText, &ok);
+                    if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureGain='%s' is not 1, 2 or 4; 2", gainText.c_str());
+
+                    const Settings* previous = current.load(std::memory_order_relaxed);
+                    if (!previous || previous->mode != s->mode)
+                        wxl::LogCat("RIBBON", "multi-textured ribbons: %s", s->mode == Mode::Multiply ? "multiply" : s->mode == Mode::Add ? "add" : "off (as the model has it)");
+
+                    current.store(s, std::memory_order_release);
+                    seen.store(gen, std::memory_order_release);
+                }
+            }
+            return *current.load(std::memory_order_acquire);
+        }
     }
 
-    int MultiTextureGain()
-    {
-        static const int gain = [] {
-            const std::string text = IniString("Ribbons", "MultiTextureGain", "");
-            bool ok = true;
-            const int g = ParseGain(text, &ok);
-            if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureGain='%s' is not 1, 2 or 4; 2", text.c_str());
-            return g;
-        }();
-        return gain;
-    }
+    Mode MultiTextureBlend() { return Current().mode; }
+
+    int MultiTextureGain() { return Current().gain; }
 }

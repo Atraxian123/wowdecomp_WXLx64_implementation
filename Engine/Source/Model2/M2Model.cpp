@@ -7528,13 +7528,17 @@ int32_t CM2Model::InitializeLoaded() {
                 }
 
                 if (wxlLayerCount >= 2) {
-                    if (wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply) {
-                        // The layers multiply into one image, which the emitter blends the way the CSV says it is blended:
-                        // M2 blend 4 is "add" (the particle material's mode 3, as the stock switch above maps it, no alpha
-                        // test). Any other value, such as 7 ("blend add"), keeps the blend the model already carries,
-                        // which the stock mapping above resolves.
+                    if (wxl::particlecsv::Blend() != wxl::particlecsv::LayerBlend::Add) {
+                        // The layers combine into one image (multiplied, or masked by texture 0), which the emitter
+                        // blends the way the CSV says it is blended: M2 blend 4 is "add" (the particle material's mode 3,
+                        // as the stock switch above maps it) and 7 is "blend add" (colour added, the destination dimmed by
+                        // the particle's alpha: kParticleBlendBlendAdd, see M2Scene.h). Neither is alpha tested. Any
+                        // other value keeps the blend the model already carries, which the stock mapping above resolves.
                         if (wxlMulti->blending == 4) {
                             material.m_blendMode = 3;
+                            material.m_flags &= ~4u;
+                        } else if (wxlMulti->blending == 7) {
+                            material.m_blendMode = kParticleBlendBlendAdd;
                             material.m_flags &= ~4u;
                         }
                     } else {
@@ -7544,7 +7548,8 @@ int32_t CM2Model::InitializeLoaded() {
                     }
 
                     wxl::LogCat("PARTICLE", "%s: emitter %u combines %u textures (%s, CSV blend %d)", this->m_shared->m_fileName, i, wxlLayerCount,
-                                wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply ? "multiply" : "add", wxlMulti->blending);
+                                wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Add ? "add"
+                                : wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Mask ? "mask" : "multiply", wxlMulti->blending);
                 } else {
                     for (uint32_t l = 0; l < wxlLayerCount; l++) {
                         HandleClose(reinterpret_cast<HOBJECT>(wxlLayers[l]));
@@ -7562,7 +7567,9 @@ int32_t CM2Model::InitializeLoaded() {
             }
 
             if (wxlLayerCount) {
-                emitter->SetLayerMode(wxl::particlecsv::Blend() == wxl::particlecsv::LayerBlend::Multiply ? CParticleEmitter2::kLayersMultiply : CParticleEmitter2::kLayersAdd,
+                const wxl::particlecsv::LayerBlend wxlBlend = wxl::particlecsv::Blend();
+                emitter->SetLayerMode(wxlBlend == wxl::particlecsv::LayerBlend::Add ? CParticleEmitter2::kLayersAdd
+                                      : wxlBlend == wxl::particlecsv::LayerBlend::Mask ? CParticleEmitter2::kLayersMask : CParticleEmitter2::kLayersMultiply,
                                       wxl::particlecsv::Gain());
             }
 

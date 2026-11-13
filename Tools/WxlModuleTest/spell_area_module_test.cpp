@@ -31,7 +31,9 @@ static float g_periodicPos[3] = {}, g_missilePos[3] = {};
 static int g_instantRotated = 0;
 static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
 static std::string g_dir;
-static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0;
+static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0, g_tickDraws = 0, g_otherTickDraws = 0;
+static uint64_t g_eventCaster = 1, g_eventTarget = 0;
+static float g_tickPos[3] = {}, g_otherTickPos[3] = {};
 static float g_centerPos[3] = {}, g_dynCenterPos[3] = {};
 
 int main()
@@ -61,7 +63,7 @@ int main()
     api.spellAreaCastEvents = [](uint64_t after, WxlSpellAreaCastEvent* out, uint32_t) -> uint32_t
     {
         if (!g_eventsMade || g_eventsMade <= after) return 0;
-        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = 1; out[0].spellId = g_eventSpell; out[0].instant = g_eventInstant;
+        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = g_eventCaster; out[0].objectTarget = g_eventTarget; out[0].spellId = g_eventSpell; out[0].instant = g_eventInstant;
         out[0].casterIsPlayer = 1; out[0].atMs = g_eventAt; out[0].delayMs = g_eventDelay; out[0].targetFlags = g_eventTargetFlags;
         std::memcpy(out[0].dest, g_eventDest, sizeof(g_eventDest));
         return 1;
@@ -86,6 +88,8 @@ int main()
         if (sp == 71) { o->targetA[0] = 16; o->radius[0] = 5.0f; }   // the grenade's spell: an area at its destination
         if (sp == 67) { o->targetA[0] = 18; o->targetB[0] = 16; o->radius[0] = 4.0f; }   // an area written as destination = caster + a destination area
         if (sp == 69) { o->targetA[0] = 28; o->radius[0] = 3.0f; }                         // an area around the spell's dynamic object
+        if (sp == 85) { o->targetA[0] = 16; o->radius[0] = 2.5f; }                         // a spell the ground effect ticks: a destination area
+        if (sp == 86) { o->targetA[0] = 16; o->radius[0] = 2.0f; }                         // the same kind of spell, ticked by nothing
         if (sp == 60 || sp == 66 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
         return 1;
     };
@@ -96,7 +100,7 @@ int main()
         *o = {};
         if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
         if (sp == 66) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 67, 2000, 0 }; return 1; }    // an aura casting 67
-        if (sp == 10) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; return 1; }    // a ground effect's aura casting 69
+        if (sp == 10) { o->count = 2; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; o->trigger[1] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 85, 2000, 0 }; return 1; }    // a ground effect's aura casting 69 and 85
         if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
         if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
         return 0;
@@ -116,6 +120,8 @@ int main()
         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
         if (d->half == 4.0f) { ++g_centerDraws; std::memcpy(g_centerPos, d->pos, sizeof(g_centerPos)); }
         if (d->half == 3.0f) { ++g_dynCenterDraws; std::memcpy(g_dynCenterPos, d->pos, sizeof(g_dynCenterPos)); }
+        if (d->half == 2.5f) { ++g_tickDraws; std::memcpy(g_tickPos, d->pos, sizeof(g_tickPos)); }
+        if (d->half == 2.0f) { ++g_otherTickDraws; std::memcpy(g_otherTickPos, d->pos, sizeof(g_otherTickPos)); }
         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
         if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; if (d->rotate) ++g_instantRotated; }     // the instant spell's area (spell 40)
         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
@@ -199,6 +205,24 @@ int main()
     Check(g_dynCenterDraws == 0, "with no dynamic object to be seen, nothing is drawn for it (not around the carrier)");
     g_dynOn = 1; g_auraSpell = 60; g_auraOn = 0;
     g_fn(g_user, 0x200122, 5, 46800);
+
+    std::printf("5c. the tick of a ground effect (Blizzard): cast at the units it hits, centered on the ground effect\n");
+    g_instantOn = 1; g_eventCaster = 9; g_eventTarget = 50;            // caster 9 owns the ground effect (guid 5, at the origin); the hit unit 50 is at (10, 20)
+    g_eventSpell = 85; g_eventInstant = 1; g_eventTargetFlags = 0;
+    g_fn(g_user, 0x200122, 5, 52000);                                  // let the module see the ground effect
+    g_eventsMade += 1; g_eventAt = 52100; g_tickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 52100);
+    Check(g_tickDraws >= 1 && g_tickPos[0] == 0.0f && g_tickPos[1] == 0.0f, "the tick spell goes off at the unit it hits: its area is on the ground effect, not on that unit");
+    g_eventSpell = 86; g_eventsMade += 1; g_eventAt = 52300; g_otherTickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 52300);
+    Check(g_otherTickDraws >= 1 && g_otherTickPos[0] == 10.0f && g_otherTickPos[1] == 20.0f, "a spell the ground effect does not tick still goes on the unit it was aimed at");
+    g_dynOn = 0;
+    g_fn(g_user, 0x200122, 5, 53000);                                  // the ground effect is gone
+    g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 53100; g_tickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 53100);
+    Check(g_tickDraws >= 1 && g_tickPos[0] == 10.0f && g_tickPos[1] == 20.0f, "with no ground effect to be seen it falls back to the unit it was aimed at");
+    g_dynOn = 1; g_eventCaster = 1; g_eventTarget = 0; g_eventInstant = 0; g_instantOn = 0;
+    g_fn(g_user, 0x200122, 5, 54000);
 
     std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
     g_instantOn = 0;                                   // only the triggered spell is wanted

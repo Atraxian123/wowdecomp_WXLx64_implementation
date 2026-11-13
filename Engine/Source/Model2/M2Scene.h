@@ -130,13 +130,20 @@ class CM2Scene {
     void TransformHitTestVerticesBlendSSE(const CM2Model* model, const M2SkinProfile* skinData, const M2SkinSection* section, int32_t normals, const C3Vector& dir, float d);
 };
 
-extern const uint32_t s_blendModes[3][8];
+extern const uint32_t s_blendModes[3][9];
 
 // WXL: the screen blend an emitter whose record names a blend mode past the stock map resolves to. A particle
 // material carries kParticleBlendScreen; ParticleBlendToM2Blend turns it into the M2 blend index kM2BlendScreen,
 // and s_blendModes into GxBlend_ScreenAdd.
 constexpr uint32_t kParticleBlendScreen = 11;
 constexpr uint32_t kM2BlendScreen = 7;
+
+// WXL: M2 blend 7 of retail, "blend add": the colour is added and the destination is dimmed by the particle's alpha
+// (GxBlend_InvSrcAlphaAdd). The stock map has no place for it, so a multi-textured emitter that the CSV marks with
+// Blending 7 carries kParticleBlendBlendAdd, which ParticleBlendToM2Blend turns into kM2BlendBlendAdd and s_blendModes
+// into GxBlend_InvSrcAlphaAdd.
+constexpr uint32_t kParticleBlendBlendAdd = 12;
+constexpr uint32_t kM2BlendBlendAdd = 8;
 extern const uint32_t s_localLighting[7];
 
 uint32_t ParticleBlendToM2Blend(uint32_t blend);

@@ -152,7 +152,7 @@ class CParticleEmitter2 {
     static void Init();
     static void __stdcall RenderIndices(CGxBuf* buf);
     static void __stdcall RenderParticleVertices(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
-    static void RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+    static void RenderParticleVerticesEx(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount, bool defaultShaders, const C44Matrix* texMtx, bool leaveTexMtx);
 
     /* 0004 */ int32_t m_refCount;
     /* 0008 */ float m_emitAccumulator;
@@ -223,8 +223,11 @@ class CParticleEmitter2 {
     // How the layers combine: kLayersAdd draws each layer in its own pass, added into the frame; kLayersMultiply draws
     // one pass in which the layers multiply (colour and alpha) and the result is blended with the emitter's blend mode.
     // m_layerGain, for multiply: 1, 2 or 4, how far the product's colour is doubled (see WXL/ParticleCsv.h).
+    // kLayersMask: texture 0 gives only the shape (its alpha, times the particle's alpha track) and the colour is
+    // texture 1 * texture 2 * the particle's colour.
     static constexpr uint32_t kLayersAdd = 0;
     static constexpr uint32_t kLayersMultiply = 1;
+    static constexpr uint32_t kLayersMask = 2;
     uint32_t m_layerMode;
     uint32_t m_layerGain;
 
@@ -286,9 +289,10 @@ class CParticleEmitter2 {
     void SetTexture(CTexture* texture);
     void SetLayerTexture(uint32_t layer, CTexture* texture);
     void SetLayerMode(uint32_t mode, uint32_t gain);
+    void LayerTexMatrix(uint32_t texture, C44Matrix& out) const;
     bool RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+    void RenderUnmultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
-    void RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     void SetTextureDimensions(uint32_t rows, uint32_t cols);
     void SetTwinkleScale(const CRange& scale);
     void SetZsource(float zsource);

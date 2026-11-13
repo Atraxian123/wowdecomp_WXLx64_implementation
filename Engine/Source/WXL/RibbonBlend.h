@@ -18,6 +18,9 @@
 //              says), so the layers sum. A solid layer then adds a solid area: this suits ribbons whose layers are
 //              all soft masks.
 //
+// The second and third texture of a multi-textured ribbon can also move: [Ribbons] Texture2XTranslation and the
+// three like it, in texture lengths per second (see LayerScroll.h). That works in every mode, Off included.
+//
 // MultiTextureGain (Multiply): the colour of the product is multiplied once more by 2 (the last stage doubles: 2, the
 // default, which makes a 50 percent grey layer neutral), by 4 (the last two stages double), or not at all (1).
 //
@@ -53,9 +56,9 @@ namespace wxl::ribbonblend
     /// `plainAlpha` the alpha never doubles; without it the alpha follows the colour (the stock fold, gain 4).
     void StageOps(uint32_t layers, int colorGain, bool plainAlpha, StageOp* out);
 
-    /// WXLSetup.ini [Ribbons] MultiTextureBlend. Read once, logged once.
+    /// WXLSetup.ini [Ribbons] MultiTextureBlend. Re-read when the ini changes; a ribbon takes it when its model loads.
     Mode MultiTextureBlend();
 
-    /// WXLSetup.ini [Ribbons] MultiTextureGain (default 2). Read once.
+    /// WXLSetup.ini [Ribbons] MultiTextureGain (default 2). Re-read when the ini changes.
     int MultiTextureGain();
 }

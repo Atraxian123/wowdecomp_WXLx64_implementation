@@ -272,7 +272,8 @@ namespace wxl::particlecsv
                     // a trailing comment (";") is not part of the value; anything not clearly "add" is the default
                     const size_t semi = v.find(';');
                     if (semi != std::string::npos) v = Trim(v.substr(0, semi));
-                    s->blend = (v == "add" || v == "additive" || v == "plain" || v == "sum") ? LayerBlend::Add : LayerBlend::Multiply;
+                    s->blend = (v == "add" || v == "additive" || v == "plain" || v == "sum") ? LayerBlend::Add
+                             : (v == "mask") ? LayerBlend::Mask : LayerBlend::Multiply;
 
                     const int gain = wxl::ini::GetInt("Particles", "MultiTextureGain", 2);
                     s->gain = gain <= 1 ? 1u : (gain >= 3 ? 4u : 2u);
@@ -281,7 +282,8 @@ namespace wxl::particlecsv
                     if (!previous || previous->enabled != s->enabled || previous->blend != s->blend || previous->gain != s->gain)
                     {
                         wxl::LogCat("PARTICLE", "multi-textured particle CSVs: %s, textures combine by %s%s", s->enabled ? "on" : "off",
-                                    s->blend == LayerBlend::Add ? "adding" : "multiplying", s->blend == LayerBlend::Multiply ? (s->gain == 1 ? " (gain 1)" : s->gain == 4 ? " (gain 4)" : " (gain 2)") : "");
+                                    s->blend == LayerBlend::Add ? "adding" : s->blend == LayerBlend::Mask ? "masking with texture 0" : "multiplying",
+                                    s->blend != LayerBlend::Add ? (s->gain == 1 ? " (gain 1)" : s->gain == 4 ? " (gain 4)" : " (gain 2)") : "");
                     }
                     if (!previous || previous->enabled != s->enabled)
                     {

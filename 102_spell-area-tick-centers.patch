@@ -1,0 +1,205 @@
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+index d013ff4..8e517ca 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.cpp
+@@ -383,6 +383,7 @@ namespace wxl::spellarea
+         }
+ 
+         struct DynKey { uint64_t caster; uint32_t spell; uint64_t guid; };   // guid: the dynamic object itself
++        std::vector<DynKey> g_dynKeys;   // the ground effects seen at the last scan, for placing the spells they tick
+ 
+         void AddArea(const Area& a)
+         {
+@@ -515,13 +516,18 @@ namespace wxl::spellarea
+                     if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
+                     const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
+                     a.follow = true;
+-                    if (shapes[i].atDynObject)
++
++                    // A persistent area aura (Blizzard) puts its aura on every unit standing in the area, and the spell
++                    // that aura ticks is centered on the ground effect, not on the unit that carries the aura. The unit's
++                    // aura has the spell id and the caster of the ground effect, which is how the two are matched.
++                    uint64_t object = 0;
++                    for (const DynKey& d : dyn)
++                        if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
++
++                    if (!onCaster && object) a.guid = object;
++                    else if (shapes[i].atDynObject)
+                     {
+-                        // the area is around the spell's ground effect: that object, if it is there to be seen
+-                        uint64_t object = 0;
+-                        for (const DynKey& d : dyn)
+-                            if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
+-                        if (!object) continue;
++                        if (!object) continue;       // around a ground effect that is not there to be seen
+                         a.guid = object;
+                     }
+                     else a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
+@@ -545,6 +551,8 @@ namespace wxl::spellarea
+             const uint32_t dynCount = Api()->spellAreaDynamicObjects(dynBuf, kMaxScan);
+             for (uint32_t i = 0; i < dynCount; ++i) AddDynamicObject(dynBuf[i], dyn);
+ 
++            g_dynKeys = dyn;
++
+             // a ground effect that now exists draws the real area: the fading circle of the same cast goes
+             g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [&dyn](const Fading& f)
+             {
+@@ -582,11 +590,50 @@ namespace wxl::spellarea
+ 
+         // Where one shape of an event goes: around or in front of the caster, on the ground point it was aimed at, or
+         // around its target. A missile's circle is where the missile lands, never on the caster unless that is all there is.
+-        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, float pos[3], float* facing)
++        // The ground effect of the caster whose aura ticks `spell` (Blizzard's damage spell is cast at the units it hits,
++        // but it is centered on the ground effect). With `anyEffect` a ground effect that ticks nothing of the kind still
++        // counts: for a spell whose targets say "around the ground effect". Of several, the one nearest `reference` (the
++        // unit the cast was aimed at). false when there is none.
++        bool FindTickCenter(uint64_t caster, uint32_t spell, uint64_t reference, bool anyEffect, uint64_t& object)
++        {
++            float refPos[3] = {}, refFacing = 0;
++            const bool haveRef = reference && Api()->spellAreaObjectPose(reference, refPos, &refFacing) != 0;
++            bool found = false;
++            float bestDist = 0;
++            for (const DynKey& d : g_dynKeys)
++            {
++                if (d.caster != caster) continue;
++                bool ticks = false;
++                if (d.spell != spell)     // the ground effect's own spell is the cast that made it, not one of its ticks
++                {
++                    const TriggerInfo& info = TriggersOf(d.spell);
++                    for (uint32_t k = 0; info.any && k < info.t.count; ++k)
++                        if (info.t.trigger[k].kind == WXL_SPELLAREA_TRIGGER_PERIODIC && info.t.trigger[k].spellId == spell) ticks = true;
++                }
++                if (!ticks && !anyEffect) continue;
++                if (!ticks && d.spell == spell) continue;
++
++                float p[3] = {}, f = 0;
++                float dist = 0;
++                if (haveRef && Api()->spellAreaObjectPose(d.guid, p, &f))
++                {
++                    const float dx = p[0] - refPos[0], dy = p[1] - refPos[1], dz = p[2] - refPos[2];
++                    dist = dx * dx + dy * dy + dz * dz;
++                }
++                if (!found || dist < bestDist) { found = true; bestDist = dist; object = d.guid; }
++            }
++            return found;
++        }
++
++        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, uint32_t shapeSpell, float pos[3], float* facing)
+         {
+             const bool onCaster = s.kind != ShapeKind::Circle || s.anchor == Anchor::Caster;
+             bool placed = false;
+-            if (onCaster && !(missile && s.kind == ShapeKind::Circle))
++            uint64_t center = 0;
++            if (!onCaster && s.kind == ShapeKind::Circle && FindTickCenter(e.casterGuid, shapeSpell, e.objectTarget, s.atDynObject, center) &&
++                Api()->spellAreaObjectPose(center, pos, facing) != 0)
++                placed = true;                                                                 // around the ground effect that ticks it
++            else if (onCaster && !(missile && s.kind == ShapeKind::Circle))
+                 placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;      // around or in front of the caster
+             else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
+             {
+@@ -627,7 +674,7 @@ namespace wxl::spellarea
+             for (size_t i = 0; i < n; ++i)
+             {
+                 float pos[3] = {}, facing = 0;
+-                if (PlaceEventShape(e, shapes[i], false, pos, &facing))
++                if (PlaceEventShape(e, shapes[i], false, e.spellId, pos, &facing))
+                     PushFading(shapes[i], pos, facing, e.atMs, e.atMs, e.atMs + durationMs, e.casterGuid, e.spellId);
+             }
+         }
+@@ -660,7 +707,7 @@ namespace wxl::spellarea
+                     if (duplicate) continue;
+ 
+                     float pos[3] = {}, facing = 0;
+-                    if (!PlaceEventShape(e, shapes[i], missile, pos, &facing)) continue;
++                    if (!PlaceEventShape(e, shapes[i], missile, trigger.spellId, pos, &facing)) continue;
+ 
+                     // how long until it lands: the packet's own number, else the distance over the missile speed
+                     float flightMs = 0;
+diff --git a/Engine/Source/WXLModules/SpellArea/SpellArea.md b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+index 60e8629..98fd547 100644
+--- a/Engine/Source/WXLModules/SpellArea/SpellArea.md
++++ b/Engine/Source/WXLModules/SpellArea/SpellArea.md
+@@ -161,6 +161,7 @@ A spell's own targets say what its area is around, and the indicator follows the
+ | an area around the caster (targets 7, 15, 20, 30, 33 ...) or a cone | the caster |
+ | target 18 (destination = the caster) with a destination area next to it (16, 31, 34 ...) | **the caster**, not the unit the cast was aimed at. Most area spells, and almost every spell the server triggers, are written this way |
+ | targets 28 / 29 (around the spell's dynamic object) | **the dynamic object** of the spell (an aura that ticks it, such as the one a ground effect puts on a unit, is drawn around that object, not around the unit carrying the aura) |
++| **a spell a ground effect ticks** (Blizzard's damage), whatever its own targets are | **the ground effect**. The server casts it at each unit it hits, so the packet names those units; the area is the ground effect's, so the indicator, for the aura on a unit as well as for the cast itself, sits on the dynamic object of the same caster whose spell ticks it, and not on the units that were hit |
+ | any other destination area | the cast's ground point, else the unit it was aimed at; for a periodic aura, the unit that carries it |
+ 
+ A row in `SpellAreaOverride.csv` still decides the shape of a spell it lists.
+diff --git a/Tools/WxlModuleTest/spell_area_module_test.cpp b/Tools/WxlModuleTest/spell_area_module_test.cpp
+index 9cdc974..eb34d67 100644
+--- a/Tools/WxlModuleTest/spell_area_module_test.cpp
++++ b/Tools/WxlModuleTest/spell_area_module_test.cpp
+@@ -31,7 +31,9 @@ static float g_periodicPos[3] = {}, g_missilePos[3] = {};
+ static int g_instantRotated = 0;
+ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCone = 0, g_frontLine = 0;
+ static std::string g_dir;
+-static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0;
++static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0, g_tickDraws = 0, g_otherTickDraws = 0;
++static uint64_t g_eventCaster = 1, g_eventTarget = 0;
++static float g_tickPos[3] = {}, g_otherTickPos[3] = {};
+ static float g_centerPos[3] = {}, g_dynCenterPos[3] = {};
+ 
+ int main()
+@@ -61,7 +63,7 @@ int main()
+     api.spellAreaCastEvents = [](uint64_t after, WxlSpellAreaCastEvent* out, uint32_t) -> uint32_t
+     {
+         if (!g_eventsMade || g_eventsMade <= after) return 0;
+-        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = 1; out[0].spellId = g_eventSpell; out[0].instant = g_eventInstant;
++        out[0] = {}; out[0].sequence = g_eventsMade; out[0].casterGuid = g_eventCaster; out[0].objectTarget = g_eventTarget; out[0].spellId = g_eventSpell; out[0].instant = g_eventInstant;
+         out[0].casterIsPlayer = 1; out[0].atMs = g_eventAt; out[0].delayMs = g_eventDelay; out[0].targetFlags = g_eventTargetFlags;
+         std::memcpy(out[0].dest, g_eventDest, sizeof(g_eventDest));
+         return 1;
+@@ -86,6 +88,8 @@ int main()
+         if (sp == 71) { o->targetA[0] = 16; o->radius[0] = 5.0f; }   // the grenade's spell: an area at its destination
+         if (sp == 67) { o->targetA[0] = 18; o->targetB[0] = 16; o->radius[0] = 4.0f; }   // an area written as destination = caster + a destination area
+         if (sp == 69) { o->targetA[0] = 28; o->radius[0] = 3.0f; }                         // an area around the spell's dynamic object
++        if (sp == 85) { o->targetA[0] = 16; o->radius[0] = 2.5f; }                         // a spell the ground effect ticks: a destination area
++        if (sp == 86) { o->targetA[0] = 16; o->radius[0] = 2.0f; }                         // the same kind of spell, ticked by nothing
+         if (sp == 60 || sp == 66 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
+         return 1;
+     };
+@@ -96,7 +100,7 @@ int main()
+         *o = {};
+         if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
+         if (sp == 66) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 67, 2000, 0 }; return 1; }    // an aura casting 67
+-        if (sp == 10) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; return 1; }    // a ground effect's aura casting 69
++        if (sp == 10) { o->count = 2; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; o->trigger[1] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 85, 2000, 0 }; return 1; }    // a ground effect's aura casting 69 and 85
+         if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
+         if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
+         return 0;
+@@ -116,6 +120,8 @@ int main()
+         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
+         if (d->half == 4.0f) { ++g_centerDraws; std::memcpy(g_centerPos, d->pos, sizeof(g_centerPos)); }
+         if (d->half == 3.0f) { ++g_dynCenterDraws; std::memcpy(g_dynCenterPos, d->pos, sizeof(g_dynCenterPos)); }
++        if (d->half == 2.5f) { ++g_tickDraws; std::memcpy(g_tickPos, d->pos, sizeof(g_tickPos)); }
++        if (d->half == 2.0f) { ++g_otherTickDraws; std::memcpy(g_otherTickPos, d->pos, sizeof(g_otherTickPos)); }
+         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
+         if (d->half == 6.0f) { ++g_instantDraws; g_lastAlpha = d->a; if (d->rotate) ++g_instantRotated; }     // the instant spell's area (spell 40)
+         if (d->half == 10.0f && d->rotate && std::fabs(d->facing - 3.14159265f) < 0.001f) ++g_backCone;   // spell 20: behind the caster
+@@ -200,6 +206,24 @@ int main()
+     g_dynOn = 1; g_auraSpell = 60; g_auraOn = 0;
+     g_fn(g_user, 0x200122, 5, 46800);
+ 
++    std::printf("5c. the tick of a ground effect (Blizzard): cast at the units it hits, centered on the ground effect\n");
++    g_instantOn = 1; g_eventCaster = 9; g_eventTarget = 50;            // caster 9 owns the ground effect (guid 5, at the origin); the hit unit 50 is at (10, 20)
++    g_eventSpell = 85; g_eventInstant = 1; g_eventTargetFlags = 0;
++    g_fn(g_user, 0x200122, 5, 52000);                                  // let the module see the ground effect
++    g_eventsMade += 1; g_eventAt = 52100; g_tickDraws = 0;
++    g_fn(g_user, 0x200122, 5, 52100);
++    Check(g_tickDraws >= 1 && g_tickPos[0] == 0.0f && g_tickPos[1] == 0.0f, "the tick spell goes off at the unit it hits: its area is on the ground effect, not on that unit");
++    g_eventSpell = 86; g_eventsMade += 1; g_eventAt = 52300; g_otherTickDraws = 0;
++    g_fn(g_user, 0x200122, 5, 52300);
++    Check(g_otherTickDraws >= 1 && g_otherTickPos[0] == 10.0f && g_otherTickPos[1] == 20.0f, "a spell the ground effect does not tick still goes on the unit it was aimed at");
++    g_dynOn = 0;
++    g_fn(g_user, 0x200122, 5, 53000);                                  // the ground effect is gone
++    g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 53100; g_tickDraws = 0;
++    g_fn(g_user, 0x200122, 5, 53100);
++    Check(g_tickDraws >= 1 && g_tickPos[0] == 10.0f && g_tickPos[1] == 20.0f, "with no ground effect to be seen it falls back to the unit it was aimed at");
++    g_dynOn = 1; g_eventCaster = 1; g_eventTarget = 0; g_eventInstant = 0; g_instantOn = 0;
++    g_fn(g_user, 0x200122, 5, 54000);
++
+     std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
+     g_instantOn = 0;                                   // only the triggered spell is wanted
+     g_fn(g_user, 0x200122, 5, 47000);

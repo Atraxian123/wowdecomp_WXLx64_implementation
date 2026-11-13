@@ -385,6 +385,7 @@ namespace wxl::spellarea
         }
 
         struct DynKey { uint64_t caster; uint32_t spell; uint64_t guid; };   // guid: the dynamic object itself
+        std::vector<DynKey> g_dynKeys;   // the ground effects seen at the last scan, for placing the spells they tick
 
         void AddArea(const Area& a)
         {
@@ -517,13 +518,18 @@ namespace wxl::spellarea
                     if (!own && aura.casterHostile) a.shape.intent = Intent::Harmful;
                     const bool onCaster = shapes[i].kind != ShapeKind::Circle || shapes[i].anchor == Anchor::Caster;
                     a.follow = true;
-                    if (shapes[i].atDynObject)
+
+                    // A persistent area aura (Blizzard) puts its aura on every unit standing in the area, and the spell
+                    // that aura ticks is centered on the ground effect, not on the unit that carries the aura. The unit's
+                    // aura has the spell id and the caster of the ground effect, which is how the two are matched.
+                    uint64_t object = 0;
+                    for (const DynKey& d : dyn)
+                        if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
+
+                    if (!onCaster && object) a.guid = object;
+                    else if (shapes[i].atDynObject)
                     {
-                        // the area is around the spell's ground effect: that object, if it is there to be seen
-                        uint64_t object = 0;
-                        for (const DynKey& d : dyn)
-                            if (d.caster == aura.casterGuid && d.spell == aura.spellId) { object = d.guid; break; }
-                        if (!object) continue;
+                        if (!object) continue;       // around a ground effect that is not there to be seen
                         a.guid = object;
                     }
                     else a.guid = onCaster && aura.casterGuid ? aura.casterGuid : aura.holderGuid;
@@ -546,6 +552,8 @@ namespace wxl::spellarea
             std::vector<DynKey> dyn;
             const uint32_t dynCount = Api()->spellAreaDynamicObjects(dynBuf, kMaxScan);
             for (uint32_t i = 0; i < dynCount; ++i) AddDynamicObject(dynBuf[i], dyn);
+
+            g_dynKeys = dyn;
 
             // a ground effect that now exists draws the real area: the fading circle of the same cast goes
             g_fading.erase(std::remove_if(g_fading.begin(), g_fading.end(), [&dyn](const Fading& f)
@@ -584,11 +592,50 @@ namespace wxl::spellarea
 
         // Where one shape of an event goes: around or in front of the caster, on the ground point it was aimed at, or
         // around its target. A missile's circle is where the missile lands, never on the caster unless that is all there is.
-        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, float pos[3], float* facing)
+        // The ground effect of the caster whose aura ticks `spell` (Blizzard's damage spell is cast at the units it hits,
+        // but it is centered on the ground effect). With `anyEffect` a ground effect that ticks nothing of the kind still
+        // counts: for a spell whose targets say "around the ground effect". Of several, the one nearest `reference` (the
+        // unit the cast was aimed at). false when there is none.
+        bool FindTickCenter(uint64_t caster, uint32_t spell, uint64_t reference, bool anyEffect, uint64_t& object)
+        {
+            float refPos[3] = {}, refFacing = 0;
+            const bool haveRef = reference && Api()->spellAreaObjectPose(reference, refPos, &refFacing) != 0;
+            bool found = false;
+            float bestDist = 0;
+            for (const DynKey& d : g_dynKeys)
+            {
+                if (d.caster != caster) continue;
+                bool ticks = false;
+                if (d.spell != spell)     // the ground effect's own spell is the cast that made it, not one of its ticks
+                {
+                    const TriggerInfo& info = TriggersOf(d.spell);
+                    for (uint32_t k = 0; info.any && k < info.t.count; ++k)
+                        if (info.t.trigger[k].kind == WXL_SPELLAREA_TRIGGER_PERIODIC && info.t.trigger[k].spellId == spell) ticks = true;
+                }
+                if (!ticks && !anyEffect) continue;
+                if (!ticks && d.spell == spell) continue;
+
+                float p[3] = {}, f = 0;
+                float dist = 0;
+                if (haveRef && Api()->spellAreaObjectPose(d.guid, p, &f))
+                {
+                    const float dx = p[0] - refPos[0], dy = p[1] - refPos[1], dz = p[2] - refPos[2];
+                    dist = dx * dx + dy * dy + dz * dz;
+                }
+                if (!found || dist < bestDist) { found = true; bestDist = dist; object = d.guid; }
+            }
+            return found;
+        }
+
+        bool PlaceEventShape(const WxlSpellAreaCastEvent& e, const Shape& s, bool missile, uint32_t shapeSpell, float pos[3], float* facing)
         {
             const bool onCaster = s.kind != ShapeKind::Circle || s.anchor == Anchor::Caster;
             bool placed = false;
-            if (onCaster && !(missile && s.kind == ShapeKind::Circle))
+            uint64_t center = 0;
+            if (!onCaster && s.kind == ShapeKind::Circle && FindTickCenter(e.casterGuid, shapeSpell, e.objectTarget, s.atDynObject, center) &&
+                Api()->spellAreaObjectPose(center, pos, facing) != 0)
+                placed = true;                                                                 // around the ground effect that ticks it
+            else if (onCaster && !(missile && s.kind == ShapeKind::Circle))
                 placed = Api()->spellAreaObjectPose(e.casterGuid, pos, facing) != 0;      // around or in front of the caster
             else if (e.targetFlags & WXL_SPELLAREA_TARGET_DEST)
             {
@@ -629,7 +676,7 @@ namespace wxl::spellarea
             for (size_t i = 0; i < n; ++i)
             {
                 float pos[3] = {}, facing = 0;
-                if (PlaceEventShape(e, shapes[i], false, pos, &facing))
+                if (PlaceEventShape(e, shapes[i], false, e.spellId, pos, &facing))
                     PushFading(shapes[i], pos, facing, e.atMs, e.atMs, e.atMs + durationMs, e.casterGuid, e.spellId);
             }
         }
@@ -662,7 +709,7 @@ namespace wxl::spellarea
                     if (duplicate) continue;
 
                     float pos[3] = {}, facing = 0;
-                    if (!PlaceEventShape(e, shapes[i], missile, pos, &facing)) continue;
+                    if (!PlaceEventShape(e, shapes[i], missile, trigger.spellId, pos, &facing)) continue;
 
                     // how long until it lands: the packet's own number, else the distance over the missile speed
                     float flightMs = 0;

@@ -7,6 +7,7 @@
 #include "Engine/Source/Gx/Gx.h"
 #include "Engine/Source/Services/Texture.h"
 #include "Engine/Source/ShaderEffect/ShaderEffect.h"
+#include "Engine/Source/WXL/LayerScroll.h"
 #include "Engine/Source/WXL/RibbonBlend.h"
 #include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/Tempest/C44Matrix.h"
@@ -539,6 +540,7 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
     // alpha alike, for the x4 of the whole chain. The opt-in multiply ([Ribbons] MultiTextureBlend=Multiply) keeps the
     // alpha a plain product and takes the colour gain from MultiTextureGain: 1 none, 2 the last stage doubles, 4 the
     // last two do.
+    const wxl::layerscroll::Speeds& speeds = wxl::layerscroll::Ribbons();
     wxl::ribbonblend::StageOp stageOps[kRibbonFoldMaxLayers];
     wxl::ribbonblend::StageOp* ops = stageOps;
     wxl::ribbonblend::StageOps(layers, plainAlpha ? wxl::ribbonblend::MultiTextureGain() : 4, plainAlpha, ops);
@@ -549,19 +551,56 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
 
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_ColorOp0 + k), static_cast<int32_t>(colorOp));
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_AlphaOp0 + k), static_cast<int32_t>(alphaOp));
-        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), 0);
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), speeds.Moves(k) ? 1 : 0);
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TexGen0 + k), 0);
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureCoord0 + k), 0); // all layers share the ribbon's one UV set
     }
 
+    // WXL: the second and third texture move at the speeds of [Ribbons] Texture2XTranslation .. Texture3YTranslation (see
+    // WXL/LayerScroll.h). Their UV matrices are set the way CShaderEffect::SetTexMtx does for the fixed-function pipeline
+    // (it would write shader constants instead while shaders are on, and the shaders are off for this pass).
+    const double seconds = wxl::layerscroll::Seconds();
+
+    for (uint32_t k = 0; k < layers; k++) {
+        if (!speeds.Moves(k)) {
+            continue;
+        }
+
+        float du = 0.0f;
+        float dv = 0.0f;
+        wxl::layerscroll::Offset(speeds, k, seconds, du, dv);
+
+        C44Matrix matrix;
+        matrix.Identity();
+        matrix.d0 = du;
+        matrix.d1 = dv;
+
+        CGxMatrixStack& stack = g_theGxDevicePtr->m_xforms[k];
+        stack.m_dirty = 1;
+        stack.m_flags[stack.m_level] &= ~CGxMatrixStack::F_Identity;
+        stack.m_mtx[stack.m_level] = matrix;
+    }
+
     for (uint32_t k = 0; k < layers; k++) {
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_Texture0 + k), layerTex[k]);
-        GxTexSetWrap(layerTex[k], GxTex_Clamp, GxTex_Clamp);
+
+        // a moving picture has to repeat, not smear its edge pixels
+        if (speeds.Moves(k)) {
+            GxTexSetWrap(layerTex[k], GxTex_Wrap, GxTex_Wrap);
+        } else {
+            GxTexSetWrap(layerTex[k], GxTex_Clamp, GxTex_Clamp);
+        }
     }
 
     // No SetDefaultShaders / UpdateWorldViewMatrix here: both only feed the shader pipeline, and the first would
     // bind the effect's shaders straight back.
     g_theGxDevicePtr->Draw(const_cast<CGxBatch*>(&batch), 1);
+
+    for (uint32_t k = 0; k < layers; k++) {
+        if (speeds.Moves(k)) {
+            g_theGxDevicePtr->m_xforms[k].Identity();   // the matrix stacks are not part of RsPush / RsPop
+        }
+    }
 
     g_theGxDevicePtr->RsPop();
 }
@@ -667,11 +706,32 @@ int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
         CGxTex* gxTex = TextureGetGxTex(this->m_textures.m_data[i], 0, nullptr);
 
         if (gxTex) {
+            // WXL: the second and third texture of a multi-textured ribbon move at the speeds of [Ribbons]
+            // Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); a moving picture repeats.
+            const bool moves = i >= 1 && wxl::layerscroll::Ribbons().Moves(i);
+
             g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
-            GxTexSetWrap(gxTex, GxTex_Clamp, GxTex_Clamp);
+            GxTexSetWrap(gxTex, moves ? GxTex_Wrap : GxTex_Clamp, moves ? GxTex_Wrap : GxTex_Clamp);
             CShaderEffect::SetDefaultShaders(0);
             CShaderEffect::UpdateWorldViewMatrix();
+
+            if (moves) {
+                float du = 0.0f;
+                float dv = 0.0f;
+                wxl::layerscroll::Offset(wxl::layerscroll::Ribbons(), i, wxl::layerscroll::Seconds(), du, dv);
+
+                C44Matrix matrix;
+                matrix.Identity();
+                matrix.d0 = du;
+                matrix.d1 = dv;
+                CShaderEffect::SetTexMtx(matrix, 0);
+            }
+
             g_theGxDevicePtr->Draw(&batch, 1);
+
+            if (moves) {
+                CShaderEffect::SetTexMtx_Identity(0);
+            }
         }
 
         g_theGxDevicePtr->RsPop();

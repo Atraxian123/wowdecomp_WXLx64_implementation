@@ -6,7 +6,7 @@
 //
 //     [Particles]
 //     MultiTextureCsv=1
-//     MultiTextureBlend=Multiply     ; or Add
+//     MultiTextureBlend=Multiply     ; or Add, or Mask
 //     MultiTextureGain=2             ; Multiply only: 1, 2 or 4
 //
 // the model loader looks for a CSV named like the model, in the model's folder, and for every emitter the CSV marks
@@ -22,6 +22,13 @@
 //                       alpha tracks are kept.
 //   Add                 one pass per texture, each added into the frame on its own. A solid filler texture then
 //                       adds a solid square, so this only suits emitters whose layers are all soft masks.
+//   Mask                one pass: texture 0 is only the shape (its alpha times the particle's alpha track) and the
+//                       colour is texture 1 * texture 2 * the particle's colour. For a smoke puff or shockwave mask
+//                       in front of two energy textures.
+//
+// The second and third texture can also move: [Particles] Texture2XTranslation and the three like it, see LayerScroll.h.
+// The "Blending" column is the M2 blend mode as extracted: 4 is "add", 7 is "blend add" (colour added, the destination
+// dimmed by the particle's alpha); another value keeps the blend the converted model carries.
 // MultiTextureGain (Multiply): the colour of the product is doubled once (2, the default: a 50 % grey layer is then
 // neutral), twice (4), or not at all (1). Alpha is never scaled.
 //
@@ -78,9 +85,9 @@ namespace wxl::particlecsv
     bool Enabled();
 
     /// How the textures of a multi-textured emitter combine. See the top of this file.
-    enum class LayerBlend : uint32_t { Add = 0, Multiply = 1 };
+    enum class LayerBlend : uint32_t { Add = 0, Multiply = 1, Mask = 2 };
 
-    /// WXLSetup.ini [Particles] MultiTextureBlend: "Add" or "Multiply" (default). Anything else is Multiply. Read once.
+    /// WXLSetup.ini [Particles] MultiTextureBlend: "Add", "Multiply" (default) or "Mask". Anything else is Multiply.
     LayerBlend Blend();
 
     /// WXLSetup.ini [Particles] MultiTextureGain: 1, 2 (default) or 4; other values round to the nearest. Read once.

@@ -751,8 +751,7 @@ void CM2SceneRender::RenderBatchedParticle(CParticleEmitter2* emitter, CGxBuf* b
 
     // WXL: a multi-textured emitter either multiplies its layers in one pass or adds the extra ones in passes of their own
     if (!emitter->RenderMultiplied(buf, format, vertexCount, indexCount)) {
-        CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
-        emitter->RenderLayers(buf, format, vertexCount, indexCount);
+        emitter->RenderUnmultiplied(buf, format, vertexCount, indexCount);
     }
 }
 

@@ -162,6 +162,7 @@ A spell's own targets say what its area is around, and the indicator follows the
 | an area around the caster (targets 7, 15, 20, 30, 33 ...) or a cone | the caster |
 | target 18 (destination = the caster) with a destination area next to it (16, 31, 34 ...) | **the caster**, not the unit the cast was aimed at. Most area spells, and almost every spell the server triggers, are written this way |
 | targets 28 / 29 (around the spell's dynamic object) | **the dynamic object** of the spell (an aura that ticks it, such as the one a ground effect puts on a unit, is drawn around that object, not around the unit carrying the aura) |
+| **a spell a ground effect ticks** (Blizzard's damage), whatever its own targets are | **the ground effect**. The server casts it at each unit it hits, so the packet names those units; the area is the ground effect's, so the indicator, for the aura on a unit as well as for the cast itself, sits on the dynamic object of the same caster whose spell ticks it, and not on the units that were hit |
 | any other destination area | the cast's ground point, else the unit it was aimed at; for a periodic aura, the unit that carries it |
 
 A row in `SpellAreaOverride.csv` still decides the shape of a spell it lists.

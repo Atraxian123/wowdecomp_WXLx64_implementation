@@ -1,0 +1,271 @@
+diff --git a/Engine/Source/Services/RibbonEmitter.cpp b/Engine/Source/Services/RibbonEmitter.cpp
+index fd1e248..1da5800 100644
+--- a/Engine/Source/Services/RibbonEmitter.cpp
++++ b/Engine/Source/Services/RibbonEmitter.cpp
+@@ -7,6 +7,7 @@
+ #include "Engine/Source/Gx/Gx.h"
+ #include "Engine/Source/Services/Texture.h"
+ #include "Engine/Source/ShaderEffect/ShaderEffect.h"
++#include "Engine/Source/WXL/LayerScroll.h"
+ #include "Engine/Source/WXL/RibbonBlend.h"
+ #include "Engine/Source/Storm/H/storm.h"
+ #include "Engine/Source/Tempest/C44Matrix.h"
+@@ -539,6 +540,7 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
+     // alpha alike, for the x4 of the whole chain. The opt-in multiply ([Ribbons] MultiTextureBlend=Multiply) keeps the
+     // alpha a plain product and takes the colour gain from MultiTextureGain: 1 none, 2 the last stage doubles, 4 the
+     // last two do.
++    const wxl::layerscroll::Speeds& speeds = wxl::layerscroll::Ribbons();
+     wxl::ribbonblend::StageOp stageOps[kRibbonFoldMaxLayers];
+     wxl::ribbonblend::StageOp* ops = stageOps;
+     wxl::ribbonblend::StageOps(layers, plainAlpha ? wxl::ribbonblend::MultiTextureGain() : 4, plainAlpha, ops);
+@@ -549,20 +551,57 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
+ 
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_ColorOp0 + k), static_cast<int32_t>(colorOp));
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_AlphaOp0 + k), static_cast<int32_t>(alphaOp));
+-        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), 0);
++        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), speeds.Moves(k) ? 1 : 0);
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TexGen0 + k), 0);
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureCoord0 + k), 0); // all layers share the ribbon's one UV set
+     }
+ 
++    // WXL: the second and third texture move at the speeds of [Ribbons] Texture2XTranslation .. Texture3YTranslation (see
++    // WXL/LayerScroll.h). Their UV matrices are set the way CShaderEffect::SetTexMtx does for the fixed-function pipeline
++    // (it would write shader constants instead while shaders are on, and the shaders are off for this pass).
++    const double seconds = wxl::layerscroll::Seconds();
++
++    for (uint32_t k = 0; k < layers; k++) {
++        if (!speeds.Moves(k)) {
++            continue;
++        }
++
++        float du = 0.0f;
++        float dv = 0.0f;
++        wxl::layerscroll::Offset(speeds, k, seconds, du, dv);
++
++        C44Matrix matrix;
++        matrix.Identity();
++        matrix.d0 = du;
++        matrix.d1 = dv;
++
++        CGxMatrixStack& stack = g_theGxDevicePtr->m_xforms[k];
++        stack.m_dirty = 1;
++        stack.m_flags[stack.m_level] &= ~CGxMatrixStack::F_Identity;
++        stack.m_mtx[stack.m_level] = matrix;
++    }
++
+     for (uint32_t k = 0; k < layers; k++) {
+         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_Texture0 + k), layerTex[k]);
+-        GxTexSetWrap(layerTex[k], GxTex_Clamp, GxTex_Clamp);
++
++        // a moving picture has to repeat, not smear its edge pixels
++        if (speeds.Moves(k)) {
++            GxTexSetWrap(layerTex[k], GxTex_Wrap, GxTex_Wrap);
++        } else {
++            GxTexSetWrap(layerTex[k], GxTex_Clamp, GxTex_Clamp);
++        }
+     }
+ 
+     // No SetDefaultShaders / UpdateWorldViewMatrix here: both only feed the shader pipeline, and the first would
+     // bind the effect's shaders straight back.
+     g_theGxDevicePtr->Draw(const_cast<CGxBatch*>(&batch), 1);
+ 
++    for (uint32_t k = 0; k < layers; k++) {
++        if (speeds.Moves(k)) {
++            g_theGxDevicePtr->m_xforms[k].Identity();   // the matrix stacks are not part of RsPush / RsPop
++        }
++    }
++
+     g_theGxDevicePtr->RsPop();
+ }
+ 
+@@ -667,11 +706,32 @@ int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
+         CGxTex* gxTex = TextureGetGxTex(this->m_textures.m_data[i], 0, nullptr);
+ 
+         if (gxTex) {
++            // WXL: the second and third texture of a multi-textured ribbon move at the speeds of [Ribbons]
++            // Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); a moving picture repeats.
++            const bool moves = i >= 1 && wxl::layerscroll::Ribbons().Moves(i);
++
+             g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
+-            GxTexSetWrap(gxTex, GxTex_Clamp, GxTex_Clamp);
++            GxTexSetWrap(gxTex, moves ? GxTex_Wrap : GxTex_Clamp, moves ? GxTex_Wrap : GxTex_Clamp);
+             CShaderEffect::SetDefaultShaders(0);
+             CShaderEffect::UpdateWorldViewMatrix();
++
++            if (moves) {
++                float du = 0.0f;
++                float dv = 0.0f;
++                wxl::layerscroll::Offset(wxl::layerscroll::Ribbons(), i, wxl::layerscroll::Seconds(), du, dv);
++
++                C44Matrix matrix;
++                matrix.Identity();
++                matrix.d0 = du;
++                matrix.d1 = dv;
++                CShaderEffect::SetTexMtx(matrix, 0);
++            }
++
+             g_theGxDevicePtr->Draw(&batch, 1);
++
++            if (moves) {
++                CShaderEffect::SetTexMtx_Identity(0);
++            }
+         }
+ 
+         g_theGxDevicePtr->RsPop();
+diff --git a/Engine/Source/WXL/RibbonBlend.cpp b/Engine/Source/WXL/RibbonBlend.cpp
+index f3ae5fe..ed668e8 100644
+--- a/Engine/Source/WXL/RibbonBlend.cpp
++++ b/Engine/Source/WXL/RibbonBlend.cpp
+@@ -3,45 +3,21 @@
+ 
+ #include "Engine/Source/WXL/RibbonBlend.h"
+ 
++#include "Engine/Source/WXL/Ini.h"
+ #include "Engine/Source/WXL/Log.h"
+ 
+-#ifdef _WIN32
+-#include <windows.h>
+-#endif
+-
+-#include <cstdio>
+-#include <cstring>
++#include <atomic>
++#include <mutex>
+ 
+ namespace wxl::ribbonblend
+ {
+     namespace
+     {
+-        // WXLSetup.ini sits in the WXL folder beside the client executable; a copy left beside the executable (the
+-        // old place) is still read. The lookup is repeated here because WXLCore keeps no shared ini helper, as in
+-        // ParticleCsv.cpp and Culling.cpp. Missing file, section or key: the default.
+-        std::string IniString(const char* section, const char* key, const char* def)
++        // The text of a [Ribbons] key, through the shared ini reader: found in the WXL folder or beside the executable,
++        // and seeing a console override (`wxl set Ribbons MultiTextureBlend Add`) at once. Missing: the default.
++        std::string IniString(const char* key, const char* def)
+         {
+-#ifdef _WIN32
+-            char path[MAX_PATH] = {};
+-            const DWORD n = GetModuleFileNameA(nullptr, path, static_cast<DWORD>(sizeof(path)));
+-            if (n == 0 || n >= sizeof(path)) return def;
+-            char* slash = std::strrchr(path, '\\');
+-            const char* name = "WXLSetup.ini";
+-            if (!slash || static_cast<size_t>(slash - path) + 1 + std::strlen(name) >= sizeof(path)) return def;
+-            std::strcpy(slash + 1, name);
+-            char inWxl[MAX_PATH] = {};
+-            if (static_cast<size_t>(slash - path) + 5 + std::strlen(name) < sizeof(inWxl))
+-            {
+-                std::snprintf(inWxl, sizeof(inWxl), "%.*sWXL\\%s", static_cast<int>(slash - path) + 1, path, name);
+-                if (GetFileAttributesA(inWxl) != INVALID_FILE_ATTRIBUTES) std::strcpy(path, inWxl);
+-            }
+-            char value[64] = {};
+-            GetPrivateProfileStringA(section, key, def, value, static_cast<DWORD>(sizeof(value)), path);
+-            return value;
+-#else
+-            (void)section; (void)key;
+-            return def;
+-#endif
++            return wxl::ini::GetText("Ribbons", key, def);
+         }
+ 
+         std::string Normalize(const std::string& s)
+@@ -88,28 +64,52 @@ namespace wxl::ribbonblend
+         }
+     }
+ 
+-    Mode MultiTextureBlend()
++    namespace
+     {
+-        static const Mode mode = [] {
+-            const std::string text = IniString("Ribbons", "MultiTextureBlend", "");
+-            bool ok = true;
+-            const Mode m = ParseMode(text, &ok);
+-            if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureBlend='%s' is not Off, Multiply or Add; Off", text.c_str());
+-            wxl::LogCat("RIBBON", "multi-textured ribbons: %s", m == Mode::Multiply ? "multiply" : m == Mode::Add ? "add" : "off (as the model has it)");
+-            return m;
+-        }();
+-        return mode;
+-    }
++        struct Settings
++        {
++            Mode mode = Mode::Off;
++            int  gain = 2;
++        };
+ 
+-    int MultiTextureGain()
+-    {
+-        static const int gain = [] {
+-            const std::string text = IniString("Ribbons", "MultiTextureGain", "");
+-            bool ok = true;
+-            const int g = ParseGain(text, &ok);
+-            if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureGain='%s' is not 1, 2 or 4; 2", text.c_str());
+-            return g;
+-        }();
+-        return gain;
++        // The two settings as the ini has them now. Re-read when the ini changes (a save, or a console override); a
++        // ribbon takes the mode when its model loads, so a change applies to models loaded afterwards. The old Settings are
++        // never freed: a thread that fetched them a moment ago may still be reading them.
++        const Settings& Current()
++        {
++            static std::atomic<const Settings*> current{nullptr};
++            static std::atomic<uint32_t> seen{0xFFFFFFFFu};
++            static std::mutex m;
++            const uint32_t gen = wxl::ini::Generation();
++            if (seen.load(std::memory_order_acquire) != gen || !current.load(std::memory_order_acquire))
++            {
++                std::lock_guard<std::mutex> lock(m);
++                if (seen.load(std::memory_order_relaxed) != gen || !current.load(std::memory_order_relaxed))
++                {
++                    auto* s = new Settings();
++                    const std::string modeText = IniString("MultiTextureBlend", "");
++                    bool ok = true;
++                    s->mode = ParseMode(modeText, &ok);
++                    if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureBlend='%s' is not Off, Multiply or Add; Off", modeText.c_str());
++
++                    const std::string gainText = IniString("MultiTextureGain", "");
++                    ok = true;
++                    s->gain = ParseGain(gainText, &ok);
++                    if (!ok) wxl::LogCat("RIBBON", "[Ribbons] MultiTextureGain='%s' is not 1, 2 or 4; 2", gainText.c_str());
++
++                    const Settings* previous = current.load(std::memory_order_relaxed);
++                    if (!previous || previous->mode != s->mode)
++                        wxl::LogCat("RIBBON", "multi-textured ribbons: %s", s->mode == Mode::Multiply ? "multiply" : s->mode == Mode::Add ? "add" : "off (as the model has it)");
++
++                    current.store(s, std::memory_order_release);
++                    seen.store(gen, std::memory_order_release);
++                }
++            }
++            return *current.load(std::memory_order_acquire);
++        }
+     }
++
++    Mode MultiTextureBlend() { return Current().mode; }
++
++    int MultiTextureGain() { return Current().gain; }
+ }
+diff --git a/Engine/Source/WXL/RibbonBlend.h b/Engine/Source/WXL/RibbonBlend.h
+index 38c8721..99a0e5d 100644
+--- a/Engine/Source/WXL/RibbonBlend.h
++++ b/Engine/Source/WXL/RibbonBlend.h
+@@ -18,6 +18,9 @@
+ //              says), so the layers sum. A solid layer then adds a solid area: this suits ribbons whose layers are
+ //              all soft masks.
+ //
++// The second and third texture of a multi-textured ribbon can also move: [Ribbons] Texture2XTranslation and the
++// three like it, in texture lengths per second (see LayerScroll.h). That works in every mode, Off included.
++//
+ // MultiTextureGain (Multiply): the colour of the product is multiplied once more by 2 (the last stage doubles: 2, the
+ // default, which makes a 50 percent grey layer neutral), by 4 (the last two stages double), or not at all (1).
+ //
+@@ -53,9 +56,9 @@ namespace wxl::ribbonblend
+     /// `plainAlpha` the alpha never doubles; without it the alpha follows the colour (the stock fold, gain 4).
+     void StageOps(uint32_t layers, int colorGain, bool plainAlpha, StageOp* out);
+ 
+-    /// WXLSetup.ini [Ribbons] MultiTextureBlend. Read once, logged once.
++    /// WXLSetup.ini [Ribbons] MultiTextureBlend. Re-read when the ini changes; a ribbon takes it when its model loads.
+     Mode MultiTextureBlend();
+ 
+-    /// WXLSetup.ini [Ribbons] MultiTextureGain (default 2). Read once.
++    /// WXLSetup.ini [Ribbons] MultiTextureGain (default 2). Re-read when the ini changes.
+     int MultiTextureGain();
+ }

@@ -27,9 +27,9 @@
 const uint32_t s_localLighting[7] = { 1, 1, 1, 1, 1, 0, 0 };
 
 // STATIC: 0x00A453B0
-const uint32_t s_blendModes[3][8] = { { 0, 1, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 }, { 2, 2, 2, 10, 3, 4, 5, 12 } };
+const uint32_t s_blendModes[3][9] = { { 0, 1, 2, 10, 3, 4, 5, 12, 7 }, { 2, 2, 2, 10, 3, 4, 5, 12, 7 }, { 2, 2, 2, 10, 3, 4, 5, 12, 7 } };
 
-static_assert(sizeof(s_blendModes[0]) / sizeof(s_blendModes[0][0]) > kM2BlendScreen, "s_blendModes must reach the screen blend index");
+static_assert(sizeof(s_blendModes[0]) / sizeof(s_blendModes[0][0]) > kM2BlendBlendAdd, "s_blendModes must reach the blend-add index");
 static_assert(GxBlend_ScreenAdd == 12 && GxBlend_ScreenAdd < GxBlends_Last, "the screen state must be inside the device tables");
 
 // STATIC: 0x00AF5898
@@ -95,6 +95,8 @@ uint32_t ParticleBlendToM2Blend(uint32_t blend) {
             return 3;
         case kParticleBlendScreen:
             return kM2BlendScreen;
+        case kParticleBlendBlendAdd:
+            return kM2BlendBlendAdd;
         default:
             return 0;
     }

@@ -15,6 +15,7 @@
 #include "Engine/Source/Model2/M2Model.h"
 #include "Engine/Source/Model2/M2Scene.h"
 #include "Engine/Source/Model2/M2Shared.h"
+#include "Engine/Source/WXL/LayerScroll.h"
 #include "Engine/Source/Services/GfxSingletonManager.h"
 #include "Engine/Source/Services/Texture.h"
 #include "Engine/Source/ShaderEffect/ShaderEffect.h"
@@ -294,14 +295,32 @@ void CParticleEmitter2::SetLayerTexture(uint32_t layer, CTexture* texture) {
 
 // WXL: how a multi-textured emitter's layers combine (see m_layerMode).
 void CParticleEmitter2::SetLayerMode(uint32_t mode, uint32_t gain) {
-    this->m_layerMode = mode == kLayersMultiply ? kLayersMultiply : kLayersAdd;
+    this->m_layerMode = mode == kLayersMultiply ? kLayersMultiply : (mode == kLayersMask ? kLayersMask : kLayersAdd);
     this->m_layerGain = gain >= 4 ? 4 : (gain <= 1 ? 1 : 2);
 }
 
-// WXL: RenderParticleVertices without CShaderEffect::SetDefaultShaders. That call selects the particle vertex and pixel
-// shaders again, and those sample ONE texture, so a pass that had switched the shaders off to let the fixed-function
-// texture stages multiply its layers would be drawn by the shaders after all and lose every layer but the first.
-void CParticleEmitter2::RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
+// WXL: the texture matrix of one of the emitter's textures right now: the second and third texture move at the speeds
+// of [Particles] Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); the first never does. `texture`
+// is 0 for the base texture, 1 and 2 for the layers.
+void CParticleEmitter2::LayerTexMatrix(uint32_t texture, C44Matrix& out) const {
+    out.Identity();
+
+    float du = 0.0f;
+    float dv = 0.0f;
+    wxl::layerscroll::Offset(wxl::layerscroll::Particles(), texture, wxl::layerscroll::Seconds(), du, dv);
+
+    out.d0 = du;
+    out.d1 = dv;
+}
+
+// WXL: RenderParticleVertices with the choices a multi-textured emitter needs.
+//   defaultShaders  false leaves the vertex and pixel shaders as they are. RenderParticleVertices calls
+//                   CShaderEffect::SetDefaultShaders, which selects the particle shaders again, and those sample ONE
+//                   texture: a pass that had switched them off to let the fixed-function texture stages combine its
+//                   layers would be drawn by the shaders after all and lose every layer but the first.
+//   texMtx          the texture matrix of stage 0 for this draw (null: identity, as the stock function does).
+//   leaveTexMtx     true leaves the texture matrices alone (the fixed-function pass has set them per stage).
+void CParticleEmitter2::RenderParticleVerticesEx(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount, bool defaultShaders, const C44Matrix* texMtx, bool leaveTexMtx) {
     if (!s_particleRenderEnable) {
         return;
     }
@@ -316,7 +335,18 @@ void CParticleEmitter2::RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVert
     GxPrimVertexPtr(buf, format);
     g_theGxDevicePtr->PrimIndexPtr(CParticleEmitter2::s_indexBuf);
 
-    CShaderEffect::SetTexMtx_Identity(0);
+    if (!leaveTexMtx) {
+        if (texMtx) {
+            CShaderEffect::SetTexMtx(*texMtx, 0);
+        } else {
+            CShaderEffect::SetTexMtx_Identity(0);
+        }
+    }
+
+    if (defaultShaders) {
+        CShaderEffect::SetDefaultShaders(0);
+    }
+
     CShaderEffect::UpdateWorldViewMatrix();
 
     CGxBatch batch;
@@ -328,24 +358,28 @@ void CParticleEmitter2::RenderParticleVerticesFixedFunction(CGxBuf* buf, EGxVert
     g_theGxDevicePtr->Draw(&batch, 1);
 }
 
-// WXL: the multiply mode of a multi-textured emitter. Draws the vertices already built for this emitter in ONE
-// fixed-function pass: stage k samples layer k and modulates the result of the stage before it (stage 0 modulates the
-// vertex colour), so the frame receives  layer0 * layer1 [* layer2] * vertex colour  in colour, blended with the blend
-// mode SetupMaterial already set. The colour is doubled by the last stage (gain 2) or the last two (gain 4). The alpha
-// is layer 0's alpha times the particle's own alpha track and nothing else: the later layers shape the colour, and a
-// soft layer with little alpha of its own must not thin the whole particle out. All layers share the particle's one UV
-// set. The same way CRibbonEmitter::RenderFolded folds a ribbon's layers.
+// WXL: the multiply and mask modes of a multi-textured emitter. Draws the vertices already built for this emitter in
+// ONE fixed-function pass: stage k samples texture k and modulates the result of the stage before it (stage 0 modulates
+// the vertex colour), blended with the blend mode SetupMaterial already set.
+//   Multiply  colour = texture0 * texture1 [* texture2] * vertex colour.
+//   Mask      colour = texture1 [* texture2] * vertex colour: stage 0 passes the vertex colour through, so texture 0
+//             contributes only its alpha.
+// The colour is doubled by the last stage (gain 2) or the last two (gain 4). The alpha is texture 0's alpha times the
+// particle's own alpha track and nothing else: the later layers shape the colour, and a soft layer with little alpha
+// of its own must not thin the whole particle out. Each texture has its own UV matrix when the emitter's textures
+// scroll or tile. The same way CRibbonEmitter::RenderFolded folds a ribbon's layers.
 //
-// Returns false when the emitter is not in multiply mode or has fewer than two layers (draw it the normal way), and
-// true when it took the draw over. A layer whose texture is still loading holds the whole particle back, so it
-// never shows as a different look while it streams in.
+// Returns false when the emitter is in neither mode or has fewer than two textures (draw it the normal way), and true
+// when it took the draw over. A texture that is still loading holds the whole particle back, so it never shows as a
+// different look while it streams in.
 bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
-    if (this->m_layerMode != kLayersMultiply || !this->HasLayerTextures()) {
+    if ((this->m_layerMode != kLayersMultiply && this->m_layerMode != kLayersMask) || !this->HasLayerTextures()) {
         return false;
     }
 
     CTexture* sources[kLayerTextureCount + 1] = { this->m_texture, this->m_layerTextures[0], this->m_layerTextures[1] };
     CGxTex* layerTex[kLayerTextureCount + 1] = {};
+    uint32_t textureOf[kLayerTextureCount + 1] = {};   // which of the emitter's textures stage k samples
     uint32_t layers = 0;
     bool ready = true;
 
@@ -355,6 +389,7 @@ bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat form
         }
 
         layerTex[layers] = TextureGetGxTex(sources[i], 0, nullptr);
+        textureOf[layers] = i;
 
         if (!layerTex[layers]) {
             ready = false;
@@ -404,36 +439,75 @@ bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat form
     }
 
     // Stage ops first, then the textures: binding a texture applies its stage's op. Every stage multiplies the result
-    // of the one before it. Colour doubles on the last stage (gain 2) or the last two (gain 4). Alpha is taken from stage 0
-    // (layer 0 times the vertex alpha) and passed through the others unchanged.
+    // of the one before it. Colour doubles on the last stage (gain 2) or the last two (gain 4). Alpha is taken from
+    // stage 0 (texture 0 times the vertex alpha) and passed through the others unchanged. In mask mode stage 0 also
+    // passes the vertex colour through, so texture 0's colour is not used.
+    const wxl::layerscroll::Speeds& speeds = wxl::layerscroll::Particles();
+    const bool mask = this->m_layerMode == kLayersMask;
     const uint32_t doubled = this->m_layerGain >= 4 ? 2 : (this->m_layerGain == 2 ? 1 : 0);
 
     for (uint32_t k = 0; k < layers; k++) {
-        EGxTexOp colorOp = k + doubled >= layers ? GxTexOp_Mod2x : GxTexOp_Mod;
+        EGxTexOp colorOp = (mask && k == 0) ? GxTexOp_PassThru : (k + doubled >= layers ? GxTexOp_Mod2x : GxTexOp_Mod);
 
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_ColorOp0 + k), static_cast<int32_t>(colorOp));
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_AlphaOp0 + k), static_cast<int32_t>(k == 0 ? GxTexOp_Mod : GxTexOp_PassThru));
-        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), 0);
+        g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureShader0 + k), speeds.Moves(textureOf[k]) ? 1 : 0);
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TexGen0 + k), 0);
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureCoord0 + k), 0); // all layers share the particle's one UV set
+    }
+
+    // The moving textures' UV matrices, set the way CShaderEffect::SetTexMtx does for the fixed-function pipeline (it
+    // would write shader constants instead while shaders are on, and the shaders are off for this pass).
+    if (speeds.Any()) {
+        for (uint32_t k = 0; k < layers; k++) {
+            if (!speeds.Moves(textureOf[k])) {
+                continue;
+            }
+
+            C44Matrix matrix;
+            this->LayerTexMatrix(textureOf[k], matrix);
+
+            CGxMatrixStack& stack = g_theGxDevicePtr->m_xforms[k];
+            stack.m_dirty = 1;
+            stack.m_flags[stack.m_level] &= ~CGxMatrixStack::F_Identity;
+            stack.m_mtx[stack.m_level] = matrix;
+        }
     }
 
     for (uint32_t k = 0; k < layers; k++) {
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_Texture0 + k), layerTex[k]);
     }
 
-    // not RenderParticleVertices: it would put the shaders back (see RenderParticleVerticesFixedFunction)
-    CParticleEmitter2::RenderParticleVerticesFixedFunction(buf, format, vertexCount, indexCount);
+    // not RenderParticleVertices: it would put the shaders back (see RenderParticleVerticesEx)
+    CParticleEmitter2::RenderParticleVerticesEx(buf, format, vertexCount, indexCount, false, nullptr, true);
+
+    if (speeds.Any()) {
+        for (uint32_t k = 0; k < layers; k++) {
+            if (speeds.Moves(textureOf[k])) {
+                g_theGxDevicePtr->m_xforms[k].Identity();   // the matrix stacks are not part of RsPush / RsPop
+            }
+        }
+    }
 
     g_theGxDevicePtr->RsPop();
     return true;
 }
 
-// WXL: draws the vertices already built for this emitter once more for each extra texture layer. The shader, the
-// lighting and the blend state are still the ones the first draw set up; only texture 0 changes. A layer whose
-// texture is not loaded yet is skipped, and the base texture is put back afterwards.
-void CParticleEmitter2::RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
+// WXL: draws a multi-textured emitter that is not multiplied: the base texture as the stock function does, then once
+// more for each extra layer, each added into the frame on its own. The shader, the lighting and the blend state are
+// still the ones the first draw set up; only texture 0 and, for a moving layer, its UV matrix change. A layer whose
+// texture is not loaded yet is skipped, and the base texture is put back afterwards. An emitter without extra layers
+// draws exactly as the stock function does.
+void CParticleEmitter2::RenderUnmultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount) {
+    CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
+
+    if (!this->HasLayerTextures()) {
+        return;
+    }
+
+    const wxl::layerscroll::Speeds& speeds = wxl::layerscroll::Particles();
     bool drawn = false;
+    bool moved = false;
 
     for (uint32_t i = 0; i < kLayerTextureCount; i++) {
         if (!this->m_layerTextures[i]) {
@@ -447,12 +521,25 @@ void CParticleEmitter2::RenderLayers(CGxBuf* buf, EGxVertexBufferFormat format, 
         }
 
         g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
-        CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
+
+        if (speeds.Moves(i + 1)) {
+            C44Matrix matrix;
+            this->LayerTexMatrix(i + 1, matrix);
+            CParticleEmitter2::RenderParticleVerticesEx(buf, format, vertexCount, indexCount, true, &matrix, false);
+            moved = true;
+        } else {
+            CParticleEmitter2::RenderParticleVertices(buf, format, vertexCount, indexCount);
+        }
+
         drawn = true;
     }
 
     if (drawn) {
         g_theGxDevicePtr->RsSet(GxRs_Texture0, TextureGetGxTex(this->m_texture, 0, nullptr));
+    }
+
+    if (moved) {
+        CShaderEffect::SetTexMtx_Identity(0);
     }
 }
 
@@ -2574,8 +2661,7 @@ void CParticleEmitter2::RenderParticles(const C44Matrix* frameOfReference, void*
 
         if (this->m_renderedParticles) {
             if (!this->RenderMultiplied(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle)) {
-                CParticleEmitter2::RenderParticleVertices(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
-                this->RenderLayers(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
+                this->RenderUnmultiplied(buf, format, vertex.m_count, this->m_renderedParticles * this->m_indicesPerParticle);
             }
             g_theGxDevicePtr->XformSetView(view);
         }
