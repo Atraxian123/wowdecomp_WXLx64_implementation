@@ -215,9 +215,9 @@ class CParticleEmitter2 {
     /* 0230 */ uint32_t unused_0230;
 
     // WXL: the extra texture layers of a multi-textured emitter (see WXL/ParticleCsv.h). m_texture is layer 0; these
-    // are layers 1 and 2, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
+    // are layers 1, 2 and 3, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
     // ordinary emitter, which then draws exactly as before.
-    static constexpr uint32_t kLayerTextureCount = 2;
+    static constexpr uint32_t kLayerTextureCount = 3;
     CTexture* m_layerTextures[kLayerTextureCount];
 
     // How the layers combine: kLayersAdd draws each layer in its own pass, added into the frame; kLayersMultiply draws
@@ -292,7 +292,7 @@ class CParticleEmitter2 {
     void LayerTexMatrix(uint32_t texture, C44Matrix& out) const;
     bool RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
     void RenderUnmultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
-    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
+    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1] || m_layerTextures[2]; }
     void SetTextureDimensions(uint32_t rows, uint32_t cols);
     void SetTwinkleScale(const CRange& scale);
     void SetZsource(float zsource);

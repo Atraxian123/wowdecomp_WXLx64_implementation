@@ -771,6 +771,7 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
     CTexture* texture = emitter->m_texture;
     CTexture* const layer0 = emitter->m_layerTextures[0];   // WXL: emitters batch only with the same extra layers
     CTexture* const layer1 = emitter->m_layerTextures[1];
+    CTexture* const layer2 = emitter->m_layerTextures[2];
     const uint32_t layerMode = emitter->m_layerMode;
     uint32_t particles = 0x4000 / emitter->m_vertsPerParticle;
 
@@ -824,7 +825,7 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
             break;
         }
 
-        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1 || otherEmitter->m_layerMode != layerMode) {
+        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1 || otherEmitter->m_layerTextures[2] != layer2 || otherEmitter->m_layerMode != layerMode) {
             break;
         }
 

@@ -14,7 +14,7 @@
 // without a CSV, and the setting off all render as before.
 //
 // How the textures of a multi-textured emitter combine (MultiTextureBlend):
-//   Multiply (default)  one pass: texture0 * texture1 * texture2 * vertex colour in colour, and texture0's alpha times
+//   Multiply (default)  one pass: texture0 * texture1 * texture2 * ... * vertex colour in colour, and texture0's alpha times
 //                       the particle's own alpha track in alpha, then blended
 //                       into the frame the way the CSV says the emitter blends: Blending 4 is "add"; any other value keeps
 //                       the blend the converted model carries.
@@ -23,10 +23,11 @@
 //   Add                 one pass per texture, each added into the frame on its own. A solid filler texture then
 //                       adds a solid square, so this only suits emitters whose layers are all soft masks.
 //   Mask                one pass: texture 0 is only the shape (its alpha times the particle's alpha track) and the
-//                       colour is texture 1 * texture 2 * the particle's colour. For a smoke puff or shockwave mask
+//                       colour is texture 1 * texture 2 * ... * the particle's colour. For a smoke puff or shockwave mask
 //                       in front of two energy textures.
 //
-// The second and third texture can also move: [Particles] Texture2XTranslation and the three like it, see LayerScroll.h.
+// The second, third and fourth texture can also slide and turn: [Particles] Texture2XTranslation, Texture2Rotation and
+// the others like them, see LayerScroll.h.
 // The "Blending" column is the M2 blend mode as extracted: 4 is "add", 7 is "blend add" (colour added, the destination
 // dimmed by the particle's alpha); another value keeps the blend the converted model carries.
 // MultiTextureGain (Multiply): the colour of the product is doubled once (2, the default: a 50 % grey layer is then
@@ -42,7 +43,7 @@
 //     2,0,spells/bubble_soft_distortion.blp,No,4
 //
 // "Emitter ID" is the emitter's index in the model's particle emitter list, "Particle texture ID" its texture slot
-// (0..2). Only the rows of a "Yes" emitter with at least two texture paths are used.
+// (0..3). Only the rows of a "Yes" emitter with at least two texture paths are used.
 //
 // The file is looked for at <model path without extension>.csv. A model that comes from a virtual path (a collection
 // key <stem>_wxl_..._cmo<hex>.m2, or a global key <stem>[_oh]_<displayId>.m2) uses the CSV of the original model:
@@ -58,7 +59,7 @@
 
 namespace wxl::particlecsv
 {
-    constexpr uint32_t kMaxLayers = 3;   // the texture slots of one emitter
+    constexpr uint32_t kMaxLayers = 4;   // the texture slots of one emitter (retail uses up to three; a fourth costs nothing)
 
     struct Emitter
     {

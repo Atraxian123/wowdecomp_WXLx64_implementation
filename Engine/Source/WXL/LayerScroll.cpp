@@ -17,10 +17,15 @@ namespace wxl::layerscroll
         Speeds ReadSection(const char* section)
         {
             Speeds s;
-            s.x[0] = wxl::ini::GetFloat(section, "Texture2XTranslation", 0.0f);
-            s.y[0] = wxl::ini::GetFloat(section, "Texture2YTranslation", 0.0f);
-            s.x[1] = wxl::ini::GetFloat(section, "Texture3XTranslation", 0.0f);
-            s.y[1] = wxl::ini::GetFloat(section, "Texture3YTranslation", 0.0f);
+            static const char* const kX[kMovingTextures]   = {"Texture2XTranslation", "Texture3XTranslation", "Texture4XTranslation"};
+            static const char* const kY[kMovingTextures]   = {"Texture2YTranslation", "Texture3YTranslation", "Texture4YTranslation"};
+            static const char* const kTurn[kMovingTextures] = {"Texture2Rotation", "Texture3Rotation", "Texture4Rotation"};
+            for (uint32_t i = 0; i < kMovingTextures; ++i)
+            {
+                s.x[i] = wxl::ini::GetFloat(section, kX[i], 0.0f);
+                s.y[i] = wxl::ini::GetFloat(section, kY[i], 0.0f);
+                s.turn[i] = wxl::ini::GetFloat(section, kTurn[i], 0.0f);
+            }
             return s;
         }
 
@@ -46,11 +51,13 @@ namespace wxl::layerscroll
                     {
                         const Speeds* previous = current.load(std::memory_order_relaxed);
                         auto* s = new Speeds(ReadSection(section));
-                        const bool changed = !previous || previous->x[0] != s->x[0] || previous->y[0] != s->y[0] ||
-                                             previous->x[1] != s->x[1] || previous->y[1] != s->y[1];
+                        bool changed = !previous;
+                        for (uint32_t i = 0; previous && i < kMovingTextures; ++i)
+                            changed = changed || previous->x[i] != s->x[i] || previous->y[i] != s->y[i] || previous->turn[i] != s->turn[i];
                         if (changed && (previous || s->Any()))
-                            wxl::LogCat("SCROLL", "%s: texture 2 moves (%.2f, %.2f), texture 3 moves (%.2f, %.2f) lengths per second", name,
-                                        s->x[0], s->y[0], s->x[1], s->y[1]);
+                            wxl::LogCat("SCROLL", "%s: texture 2 (%.2f, %.2f) @ %.2f turns, texture 3 (%.2f, %.2f) @ %.2f, texture 4 (%.2f, %.2f) @ %.2f "
+                                        "(lengths and turns per second)", name,
+                                        s->x[0], s->y[0], s->turn[0], s->x[1], s->y[1], s->turn[1], s->x[2], s->y[2], s->turn[2]);
                         current.store(s, std::memory_order_release);
                         seen.store(gen, std::memory_order_release);
                     }

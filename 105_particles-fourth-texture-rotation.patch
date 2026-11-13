@@ -1,0 +1,326 @@
+diff --git a/Engine/Source/Model2/CM2SceneRender.cpp b/Engine/Source/Model2/CM2SceneRender.cpp
+index 10b3c6a..04fef48 100644
+--- a/Engine/Source/Model2/CM2SceneRender.cpp
++++ b/Engine/Source/Model2/CM2SceneRender.cpp
+@@ -771,6 +771,7 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
+     CTexture* texture = emitter->m_texture;
+     CTexture* const layer0 = emitter->m_layerTextures[0];   // WXL: emitters batch only with the same extra layers
+     CTexture* const layer1 = emitter->m_layerTextures[1];
++    CTexture* const layer2 = emitter->m_layerTextures[2];
+     const uint32_t layerMode = emitter->m_layerMode;
+     uint32_t particles = 0x4000 / emitter->m_vertsPerParticle;
+ 
+@@ -824,7 +825,7 @@ uint32_t CM2SceneRender::DrawBatchedParticle(uint32_t index, M2Element* elements
+             break;
+         }
+ 
+-        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1 || otherEmitter->m_layerMode != layerMode) {
++        if (otherEmitter->m_layerTextures[0] != layer0 || otherEmitter->m_layerTextures[1] != layer1 || otherEmitter->m_layerTextures[2] != layer2 || otherEmitter->m_layerMode != layerMode) {
+             break;
+         }
+ 
+diff --git a/Engine/Source/Services/ParticleSystem2.cpp b/Engine/Source/Services/ParticleSystem2.cpp
+index a60337f..c68636c 100644
+--- a/Engine/Source/Services/ParticleSystem2.cpp
++++ b/Engine/Source/Services/ParticleSystem2.cpp
+@@ -299,18 +299,20 @@ void CParticleEmitter2::SetLayerMode(uint32_t mode, uint32_t gain) {
+     this->m_layerGain = gain >= 4 ? 4 : (gain <= 1 ? 1 : 2);
+ }
+ 
+-// WXL: the texture matrix of one of the emitter's textures right now: the second and third texture move at the speeds
+-// of [Particles] Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); the first never does. `texture`
+-// is 0 for the base texture, 1 and 2 for the layers.
++// WXL: the texture matrix of one of the emitter's textures right now: the second, third and fourth texture slide and
++// turn as [Particles] Texture2XTranslation .. Texture4Rotation say (see WXL/LayerScroll.h); the first never does.
++// `texture` is 0 for the base texture, 1 to 3 for the layers.
+ void CParticleEmitter2::LayerTexMatrix(uint32_t texture, C44Matrix& out) const {
+     out.Identity();
+ 
+-    float du = 0.0f;
+-    float dv = 0.0f;
+-    wxl::layerscroll::Offset(wxl::layerscroll::Particles(), texture, wxl::layerscroll::Seconds(), du, dv);
++    const wxl::layerscroll::Uv uv = wxl::layerscroll::Transform(wxl::layerscroll::Particles(), texture, wxl::layerscroll::Seconds());
+ 
+-    out.d0 = du;
+-    out.d1 = dv;
++    out.a0 = uv.a0;
++    out.b0 = uv.b0;
++    out.d0 = uv.d0;
++    out.a1 = uv.a1;
++    out.b1 = uv.b1;
++    out.d1 = uv.d1;
+ }
+ 
+ // WXL: RenderParticleVertices with the choices a multi-textured emitter needs.
+@@ -377,7 +379,7 @@ bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat form
+         return false;
+     }
+ 
+-    CTexture* sources[kLayerTextureCount + 1] = { this->m_texture, this->m_layerTextures[0], this->m_layerTextures[1] };
++    CTexture* sources[kLayerTextureCount + 1] = { this->m_texture, this->m_layerTextures[0], this->m_layerTextures[1], this->m_layerTextures[2] };
+     CGxTex* layerTex[kLayerTextureCount + 1] = {};
+     uint32_t textureOf[kLayerTextureCount + 1] = {};   // which of the emitter's textures stage k samples
+     uint32_t layers = 0;
+@@ -2453,6 +2455,7 @@ CParticleEmitter2::CParticleEmitter2() : m_random(0) {
+     this->m_texture = nullptr;
+     this->m_layerTextures[0] = nullptr;
+     this->m_layerTextures[1] = nullptr;
++    this->m_layerTextures[2] = nullptr;
+     this->m_layerMode = kLayersAdd;
+     this->m_layerGain = 2;
+     this->unused_012C = 0;
+diff --git a/Engine/Source/Services/ParticleSystem2.h b/Engine/Source/Services/ParticleSystem2.h
+index 0069a5d..81afc14 100644
+--- a/Engine/Source/Services/ParticleSystem2.h
++++ b/Engine/Source/Services/ParticleSystem2.h
+@@ -215,9 +215,9 @@ class CParticleEmitter2 {
+     /* 0230 */ uint32_t unused_0230;
+ 
+     // WXL: the extra texture layers of a multi-textured emitter (see WXL/ParticleCsv.h). m_texture is layer 0; these
+-    // are layers 1 and 2, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
++    // are layers 1, 2 and 3, drawn over it with the same vertices and the emitter's (additive) blend. Null on an
+     // ordinary emitter, which then draws exactly as before.
+-    static constexpr uint32_t kLayerTextureCount = 2;
++    static constexpr uint32_t kLayerTextureCount = 3;
+     CTexture* m_layerTextures[kLayerTextureCount];
+ 
+     // How the layers combine: kLayersAdd draws each layer in its own pass, added into the frame; kLayersMultiply draws
+@@ -292,7 +292,7 @@ class CParticleEmitter2 {
+     void LayerTexMatrix(uint32_t texture, C44Matrix& out) const;
+     bool RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+     void RenderUnmultiplied(CGxBuf* buf, EGxVertexBufferFormat format, uint32_t vertexCount, uint32_t indexCount);
+-    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1]; }
++    bool HasLayerTextures() const { return m_layerTextures[0] || m_layerTextures[1] || m_layerTextures[2]; }
+     void SetTextureDimensions(uint32_t rows, uint32_t cols);
+     void SetTwinkleScale(const CRange& scale);
+     void SetZsource(float zsource);
+diff --git a/Engine/Source/WXL/LayerScroll.cpp b/Engine/Source/WXL/LayerScroll.cpp
+index 6852a0b..bc3e87f 100644
+--- a/Engine/Source/WXL/LayerScroll.cpp
++++ b/Engine/Source/WXL/LayerScroll.cpp
+@@ -17,10 +17,15 @@ namespace wxl::layerscroll
+         Speeds ReadSection(const char* section)
+         {
+             Speeds s;
+-            s.x[0] = wxl::ini::GetFloat(section, "Texture2XTranslation", 0.0f);
+-            s.y[0] = wxl::ini::GetFloat(section, "Texture2YTranslation", 0.0f);
+-            s.x[1] = wxl::ini::GetFloat(section, "Texture3XTranslation", 0.0f);
+-            s.y[1] = wxl::ini::GetFloat(section, "Texture3YTranslation", 0.0f);
++            static const char* const kX[kMovingTextures]   = {"Texture2XTranslation", "Texture3XTranslation", "Texture4XTranslation"};
++            static const char* const kY[kMovingTextures]   = {"Texture2YTranslation", "Texture3YTranslation", "Texture4YTranslation"};
++            static const char* const kTurn[kMovingTextures] = {"Texture2Rotation", "Texture3Rotation", "Texture4Rotation"};
++            for (uint32_t i = 0; i < kMovingTextures; ++i)
++            {
++                s.x[i] = wxl::ini::GetFloat(section, kX[i], 0.0f);
++                s.y[i] = wxl::ini::GetFloat(section, kY[i], 0.0f);
++                s.turn[i] = wxl::ini::GetFloat(section, kTurn[i], 0.0f);
++            }
+             return s;
+         }
+ 
+@@ -46,11 +51,13 @@ namespace wxl::layerscroll
+                     {
+                         const Speeds* previous = current.load(std::memory_order_relaxed);
+                         auto* s = new Speeds(ReadSection(section));
+-                        const bool changed = !previous || previous->x[0] != s->x[0] || previous->y[0] != s->y[0] ||
+-                                             previous->x[1] != s->x[1] || previous->y[1] != s->y[1];
++                        bool changed = !previous;
++                        for (uint32_t i = 0; previous && i < kMovingTextures; ++i)
++                            changed = changed || previous->x[i] != s->x[i] || previous->y[i] != s->y[i] || previous->turn[i] != s->turn[i];
+                         if (changed && (previous || s->Any()))
+-                            wxl::LogCat("SCROLL", "%s: texture 2 moves (%.2f, %.2f), texture 3 moves (%.2f, %.2f) lengths per second", name,
+-                                        s->x[0], s->y[0], s->x[1], s->y[1]);
++                            wxl::LogCat("SCROLL", "%s: texture 2 (%.2f, %.2f) @ %.2f turns, texture 3 (%.2f, %.2f) @ %.2f, texture 4 (%.2f, %.2f) @ %.2f "
++                                        "(lengths and turns per second)", name,
++                                        s->x[0], s->y[0], s->turn[0], s->x[1], s->y[1], s->turn[1], s->x[2], s->y[2], s->turn[2]);
+                         current.store(s, std::memory_order_release);
+                         seen.store(gen, std::memory_order_release);
+                     }
+diff --git a/Engine/Source/WXL/LayerScroll.h b/Engine/Source/WXL/LayerScroll.h
+index a799321..89fdd70 100644
+--- a/Engine/Source/WXL/LayerScroll.h
++++ b/Engine/Source/WXL/LayerScroll.h
+@@ -1,19 +1,32 @@
+-// The animation of the second and third texture of a multi-textured particle emitter or ribbon emitter.
++// The animation of the second, third and fourth texture of a multi-textured particle emitter or ribbon emitter:
++// they can slide and they can turn.
+ // Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
+ //
+ //     [Particles]                         [Ribbons]
+ //     Texture2XTranslation=0.00           Texture2XTranslation=0.00
+ //     Texture2YTranslation=0.00           Texture2YTranslation=0.00
+-//     Texture3XTranslation=0.00           Texture3XTranslation=0.00
+-//     Texture3YTranslation=0.00           Texture3YTranslation=0.00
++//     Texture2Rotation=0.00               Texture2Rotation=0.00
++//     Texture3XTranslation=0.00           ... and the same for Texture3 and Texture4
++//     Texture3YTranslation=0.00
++//     Texture3Rotation=0.00
++//     Texture4XTranslation=0.00
++//     Texture4YTranslation=0.00
++//     Texture4Rotation=0.00
+ //
+-// Each value is a speed in texture lengths per second: 1.0 moves the picture across its own width once a second, 0.25
+-// once every four seconds. It may be negative, and a decimal comma (0,25) is accepted. Positive X moves the picture
+-// from left to right, positive Y from top to bottom. Texture 2 is the second texture of the emitter and texture 3 the
+-// third; the first texture never moves. All zero (the default, also for a missing key) leaves everything as it was.
++// Translation is a speed in texture lengths per second: 1.0 moves the picture across its own width once a second, 0.25
++// once every four seconds. Positive X moves the picture from left to right, positive Y from top to bottom. It may be
++// negative. The picture moves along its own axes, so a texture that also turns drifts along its own turning axes.
+ //
+-// Read through wxl::ini, so a save of the file or `wxl set Particles Texture2XTranslation 0.25` takes effect on the
+-// next frame, with no restart.
++// Rotation is a speed in whole turns per second: 1.0 is one full turn a second, 0.1 one turn in ten seconds. The turn
++// is about the centre of the texture; positive is clockwise, negative counterclockwise. It is done in texture
++// coordinates, so on a stretched surface (a long ribbon) the picture stretches with it, and on a particle that uses
++// one cell of a picture atlas the centre is the centre of the whole picture, not of the cell.
++//
++// A decimal comma (0,25) is accepted. Texture 2 is the second texture of the emitter, 3 the third, 4 the fourth; the
++// first texture never moves. Everything zero (the default, also for a missing key) leaves everything as it was.
++//
++// Read through wxl::ini, so a save of the file or `wxl set Particles Texture2Rotation 0.25` takes effect on the next
++// frame, with no restart.
+ #pragma once
+ 
+ #include <cmath>
+@@ -21,17 +34,29 @@
+ 
+ namespace wxl::layerscroll
+ {
+-    /// The speeds of one kind of emitter. Index 0 is texture 2, index 1 is texture 3.
++    constexpr uint32_t kMovingTextures = 3;   // textures 2, 3 and 4
++
++    /// The motion of one kind of emitter. Index 0 is texture 2, 1 is texture 3, 2 is texture 4.
+     struct Speeds
+     {
+-        float x[2] = {0.0f, 0.0f};
+-        float y[2] = {0.0f, 0.0f};
++        float x[kMovingTextures]   = {0.0f, 0.0f, 0.0f};   // lengths per second, + = left to right
++        float y[kMovingTextures]   = {0.0f, 0.0f, 0.0f};   // lengths per second, + = top to bottom
++        float turn[kMovingTextures] = {0.0f, 0.0f, 0.0f};  // whole turns per second, + = clockwise
+ 
+-        /// True when any of the four is not zero.
+-        bool Any() const { return x[0] != 0.0f || x[1] != 0.0f || y[0] != 0.0f || y[1] != 0.0f; }
++        /// True when anything moves.
++        bool Any() const
++        {
++            for (uint32_t i = 0; i < kMovingTextures; ++i)
++                if (x[i] != 0.0f || y[i] != 0.0f || turn[i] != 0.0f) return true;
++            return false;
++        }
+ 
+-        /// True when texture `layer` (0 = first, 1 = second, 2 = third) moves.
+-        bool Moves(uint32_t layer) const { return layer >= 1 && layer <= 2 && (x[layer - 1] != 0.0f || y[layer - 1] != 0.0f); }
++        /// True when texture `layer` (0 = first, 1 = second, ... 3 = fourth) moves or turns.
++        bool Moves(uint32_t layer) const
++        {
++            return layer >= 1 && layer <= kMovingTextures &&
++                   (x[layer - 1] != 0.0f || y[layer - 1] != 0.0f || turn[layer - 1] != 0.0f);
++        }
+     };
+ 
+     /// [Particles] / [Ribbons] as the ini has them now. Re-read when the ini changes; the reference stays valid.
+@@ -41,15 +66,54 @@ namespace wxl::layerscroll
+     /// A clock for the animation, in seconds, the same for every emitter so their layers stay in step.
+     double Seconds();
+ 
+-    /// How far to add to the texture coordinates of texture `layer` (0 = first) at `seconds`, so the picture moves at
+-    /// the configured speed. The first texture gets 0. The result is the fractional part of the travelled distance, in
+-    /// [0, 1): a texture that wraps repeats every whole length, and the small number keeps the precision at any uptime.
++    /// A texture's UV transform as the six numbers that matter for 2D coordinates:
++    ///     u' = a0 * u + b0 * v + d0
++    ///     v' = a1 * u + b1 * v + d1
++    /// which are the fields of the same names in C44Matrix (and the rows of the shader constants SetTexMtx writes).
++    /// The identity is a0 = 1, b0 = 0, d0 = 0, a1 = 0, b1 = 1, d1 = 0.
++    struct Uv
++    {
++        float a0 = 1.0f, b0 = 0.0f, d0 = 0.0f;
++        float a1 = 0.0f, b1 = 1.0f, d1 = 0.0f;
++    };
++
++    /// The transform of texture `layer` (0 = first) at `seconds`: a turn about the centre of the texture, then the
++    /// slide. The first texture, and any other that does not move, get the identity. The turn and the slide are
++    /// reduced to their last turn and last whole length in double precision, so they stay exact after days of uptime.
++    inline Uv Transform(const Speeds& speeds, uint32_t layer, double seconds)
++    {
++        Uv uv;
++        if (layer < 1 || layer > kMovingTextures) return uv;
++        const uint32_t i = layer - 1;
++
++        // The picture moves toward +X when the coordinates it is looked up with move toward -X; the same for Y.
++        const double su = -static_cast<double>(speeds.x[i]) * seconds;
++        const double sv = -static_cast<double>(speeds.y[i]) * seconds;
++        const float du = static_cast<float>(su - std::floor(su));
++        const float dv = static_cast<float>(sv - std::floor(sv));
++
++        // The picture turns clockwise (V runs down the screen) when the coordinates it is looked up with turn the other
++        // way: u' - 0.5 = cos * (u - 0.5) + sin * (v - 0.5), v' - 0.5 = -sin * (u - 0.5) + cos * (v - 0.5).
++        const double turns = static_cast<double>(speeds.turn[i]) * seconds;
++        const double angle = (turns - std::floor(turns)) * 6.283185307179586;
++        const float c = static_cast<float>(std::cos(angle));
++        const float s = static_cast<float>(std::sin(angle));
++
++        uv.a0 = c;
++        uv.b0 = s;
++        uv.a1 = -s;
++        uv.b1 = c;
++        uv.d0 = 0.5f - 0.5f * c - 0.5f * s + du;
++        uv.d1 = 0.5f + 0.5f * s - 0.5f * c + dv;
++        return uv;
++    }
++
++    /// The translation alone, for callers that only slide (kept for the code that was written first).
+     inline void Offset(const Speeds& speeds, uint32_t layer, double seconds, float& du, float& dv)
+     {
+         du = 0.0f;
+         dv = 0.0f;
+-        if (layer < 1 || layer > 2) return;
+-        // The picture moves toward +X when the coordinates it is looked up with move toward -X.
++        if (layer < 1 || layer > kMovingTextures) return;
+         const double u = -static_cast<double>(speeds.x[layer - 1]) * seconds;
+         const double v = -static_cast<double>(speeds.y[layer - 1]) * seconds;
+         du = static_cast<float>(u - std::floor(u));
+diff --git a/Engine/Source/WXL/ParticleCsv.h b/Engine/Source/WXL/ParticleCsv.h
+index a11eecb..1ab921f 100644
+--- a/Engine/Source/WXL/ParticleCsv.h
++++ b/Engine/Source/WXL/ParticleCsv.h
+@@ -14,7 +14,7 @@
+ // without a CSV, and the setting off all render as before.
+ //
+ // How the textures of a multi-textured emitter combine (MultiTextureBlend):
+-//   Multiply (default)  one pass: texture0 * texture1 * texture2 * vertex colour in colour, and texture0's alpha times
++//   Multiply (default)  one pass: texture0 * texture1 * texture2 * ... * vertex colour in colour, and texture0's alpha times
+ //                       the particle's own alpha track in alpha, then blended
+ //                       into the frame the way the CSV says the emitter blends: Blending 4 is "add"; any other value keeps
+ //                       the blend the converted model carries.
+@@ -23,10 +23,11 @@
+ //   Add                 one pass per texture, each added into the frame on its own. A solid filler texture then
+ //                       adds a solid square, so this only suits emitters whose layers are all soft masks.
+ //   Mask                one pass: texture 0 is only the shape (its alpha times the particle's alpha track) and the
+-//                       colour is texture 1 * texture 2 * the particle's colour. For a smoke puff or shockwave mask
++//                       colour is texture 1 * texture 2 * ... * the particle's colour. For a smoke puff or shockwave mask
+ //                       in front of two energy textures.
+ //
+-// The second and third texture can also move: [Particles] Texture2XTranslation and the three like it, see LayerScroll.h.
++// The second, third and fourth texture can also slide and turn: [Particles] Texture2XTranslation, Texture2Rotation and
++// the others like them, see LayerScroll.h.
+ // The "Blending" column is the M2 blend mode as extracted: 4 is "add", 7 is "blend add" (colour added, the destination
+ // dimmed by the particle's alpha); another value keeps the blend the converted model carries.
+ // MultiTextureGain (Multiply): the colour of the product is doubled once (2, the default: a 50 % grey layer is then
+@@ -42,7 +43,7 @@
+ //     2,0,spells/bubble_soft_distortion.blp,No,4
+ //
+ // "Emitter ID" is the emitter's index in the model's particle emitter list, "Particle texture ID" its texture slot
+-// (0..2). Only the rows of a "Yes" emitter with at least two texture paths are used.
++// (0..3). Only the rows of a "Yes" emitter with at least two texture paths are used.
+ //
+ // The file is looked for at <model path without extension>.csv. A model that comes from a virtual path (a collection
+ // key <stem>_wxl_..._cmo<hex>.m2, or a global key <stem>[_oh]_<displayId>.m2) uses the CSV of the original model:
+@@ -58,7 +59,7 @@
+ 
+ namespace wxl::particlecsv
+ {
+-    constexpr uint32_t kMaxLayers = 3;   // the texture slots of one emitter
++    constexpr uint32_t kMaxLayers = 4;   // the texture slots of one emitter (retail uses up to three; a fourth costs nothing)
+ 
+     struct Emitter
+     {

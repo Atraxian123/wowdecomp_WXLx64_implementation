@@ -18,8 +18,9 @@
 //              says), so the layers sum. A solid layer then adds a solid area: this suits ribbons whose layers are
 //              all soft masks.
 //
-// The second and third texture of a multi-textured ribbon can also move: [Ribbons] Texture2XTranslation and the
-// three like it, in texture lengths per second (see LayerScroll.h). That works in every mode, Off included.
+// The second, third and fourth texture of a multi-textured ribbon can also slide and turn: [Ribbons]
+// Texture2XTranslation, Texture2Rotation and the others like them (see LayerScroll.h). That works in every mode, Off
+// included.
 //
 // MultiTextureGain (Multiply): the colour of the product is multiplied once more by 2 (the last stage doubles: 2, the
 // default, which makes a 50 percent grey layer neutral), by 4 (the last two stages double), or not at all (1).

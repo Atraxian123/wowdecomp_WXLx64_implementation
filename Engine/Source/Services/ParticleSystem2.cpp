@@ -299,18 +299,20 @@ void CParticleEmitter2::SetLayerMode(uint32_t mode, uint32_t gain) {
     this->m_layerGain = gain >= 4 ? 4 : (gain <= 1 ? 1 : 2);
 }
 
-// WXL: the texture matrix of one of the emitter's textures right now: the second and third texture move at the speeds
-// of [Particles] Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); the first never does. `texture`
-// is 0 for the base texture, 1 and 2 for the layers.
+// WXL: the texture matrix of one of the emitter's textures right now: the second, third and fourth texture slide and
+// turn as [Particles] Texture2XTranslation .. Texture4Rotation say (see WXL/LayerScroll.h); the first never does.
+// `texture` is 0 for the base texture, 1 to 3 for the layers.
 void CParticleEmitter2::LayerTexMatrix(uint32_t texture, C44Matrix& out) const {
     out.Identity();
 
-    float du = 0.0f;
-    float dv = 0.0f;
-    wxl::layerscroll::Offset(wxl::layerscroll::Particles(), texture, wxl::layerscroll::Seconds(), du, dv);
+    const wxl::layerscroll::Uv uv = wxl::layerscroll::Transform(wxl::layerscroll::Particles(), texture, wxl::layerscroll::Seconds());
 
-    out.d0 = du;
-    out.d1 = dv;
+    out.a0 = uv.a0;
+    out.b0 = uv.b0;
+    out.d0 = uv.d0;
+    out.a1 = uv.a1;
+    out.b1 = uv.b1;
+    out.d1 = uv.d1;
 }
 
 // WXL: RenderParticleVertices with the choices a multi-textured emitter needs.
@@ -377,7 +379,7 @@ bool CParticleEmitter2::RenderMultiplied(CGxBuf* buf, EGxVertexBufferFormat form
         return false;
     }
 
-    CTexture* sources[kLayerTextureCount + 1] = { this->m_texture, this->m_layerTextures[0], this->m_layerTextures[1] };
+    CTexture* sources[kLayerTextureCount + 1] = { this->m_texture, this->m_layerTextures[0], this->m_layerTextures[1], this->m_layerTextures[2] };
     CGxTex* layerTex[kLayerTextureCount + 1] = {};
     uint32_t textureOf[kLayerTextureCount + 1] = {};   // which of the emitter's textures stage k samples
     uint32_t layers = 0;
@@ -2453,6 +2455,7 @@ CParticleEmitter2::CParticleEmitter2() : m_random(0) {
     this->m_texture = nullptr;
     this->m_layerTextures[0] = nullptr;
     this->m_layerTextures[1] = nullptr;
+    this->m_layerTextures[2] = nullptr;
     this->m_layerMode = kLayersAdd;
     this->m_layerGain = 2;
     this->unused_012C = 0;

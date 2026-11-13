@@ -556,7 +556,7 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
         g_theGxDevicePtr->RsSet(static_cast<EGxRenderState>(GxRs_TextureCoord0 + k), 0); // all layers share the ribbon's one UV set
     }
 
-    // WXL: the second and third texture move at the speeds of [Ribbons] Texture2XTranslation .. Texture3YTranslation (see
+    // WXL: the second, third and fourth texture slide and turn as [Ribbons] Texture2XTranslation .. Texture4Rotation say (see
     // WXL/LayerScroll.h). Their UV matrices are set the way CShaderEffect::SetTexMtx does for the fixed-function pipeline
     // (it would write shader constants instead while shaders are on, and the shaders are off for this pass).
     const double seconds = wxl::layerscroll::Seconds();
@@ -566,14 +566,16 @@ void CRibbonEmitter::RenderFolded(const CGxBatch& batch, CGxTex* const* layerTex
             continue;
         }
 
-        float du = 0.0f;
-        float dv = 0.0f;
-        wxl::layerscroll::Offset(speeds, k, seconds, du, dv);
+        const wxl::layerscroll::Uv uv = wxl::layerscroll::Transform(speeds, k, seconds);
 
         C44Matrix matrix;
         matrix.Identity();
-        matrix.d0 = du;
-        matrix.d1 = dv;
+        matrix.a0 = uv.a0;
+        matrix.b0 = uv.b0;
+        matrix.d0 = uv.d0;
+        matrix.a1 = uv.a1;
+        matrix.b1 = uv.b1;
+        matrix.d1 = uv.d1;
 
         CGxMatrixStack& stack = g_theGxDevicePtr->m_xforms[k];
         stack.m_dirty = 1;
@@ -706,8 +708,8 @@ int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
         CGxTex* gxTex = TextureGetGxTex(this->m_textures.m_data[i], 0, nullptr);
 
         if (gxTex) {
-            // WXL: the second and third texture of a multi-textured ribbon move at the speeds of [Ribbons]
-            // Texture2XTranslation .. Texture3YTranslation (see WXL/LayerScroll.h); a moving picture repeats.
+            // WXL: the second, third and fourth texture of a multi-textured ribbon slide and turn as [Ribbons]
+            // Texture2XTranslation .. Texture4Rotation say (see WXL/LayerScroll.h); a moving picture repeats.
             const bool moves = i >= 1 && wxl::layerscroll::Ribbons().Moves(i);
 
             g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex);
@@ -716,14 +718,16 @@ int32_t CRibbonEmitter::Render(const C44Matrix* frameOfReference) {
             CShaderEffect::UpdateWorldViewMatrix();
 
             if (moves) {
-                float du = 0.0f;
-                float dv = 0.0f;
-                wxl::layerscroll::Offset(wxl::layerscroll::Ribbons(), i, wxl::layerscroll::Seconds(), du, dv);
+                const wxl::layerscroll::Uv uv = wxl::layerscroll::Transform(wxl::layerscroll::Ribbons(), i, wxl::layerscroll::Seconds());
 
                 C44Matrix matrix;
                 matrix.Identity();
-                matrix.d0 = du;
-                matrix.d1 = dv;
+                matrix.a0 = uv.a0;
+                matrix.b0 = uv.b0;
+                matrix.d0 = uv.d0;
+                matrix.a1 = uv.a1;
+                matrix.b1 = uv.b1;
+                matrix.d1 = uv.d1;
                 CShaderEffect::SetTexMtx(matrix, 0);
             }
 
