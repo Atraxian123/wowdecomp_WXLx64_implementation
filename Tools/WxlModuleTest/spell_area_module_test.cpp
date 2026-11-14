@@ -33,6 +33,7 @@ static int g_draws = 0, g_textures = 0, g_redHalf8 = 0, g_halfTen = 0, g_backCon
 static std::string g_dir;
 static int g_auraSpell = 60, g_dynOn = 1, g_centerDraws = 0, g_dynCenterDraws = 0, g_tickDraws = 0, g_otherTickDraws = 0;
 static uint64_t g_eventCaster = 1, g_eventTarget = 0;
+static int g_eightDraws = 0;
 static float g_tickPos[3] = {}, g_otherTickPos[3] = {};
 static float g_centerPos[3] = {}, g_dynCenterPos[3] = {};
 
@@ -90,6 +91,7 @@ int main()
         if (sp == 69) { o->targetA[0] = 28; o->radius[0] = 3.0f; }                         // an area around the spell's dynamic object
         if (sp == 85) { o->targetA[0] = 16; o->radius[0] = 2.5f; }                         // a spell the ground effect ticks: a destination area
         if (sp == 86) { o->targetA[0] = 16; o->radius[0] = 2.0f; }                         // the same kind of spell, ticked by nothing
+        if (sp == 87) { o->targetA[0] = 16; o->radius[0] = 8.0f; }                         // a tick as big as the ground effect itself
         if (sp == 60 || sp == 66 || sp == 70 || sp == 80) o->effect[0] = 0;       // the triggering spells have no area of their own
         return 1;
     };
@@ -100,7 +102,7 @@ int main()
         *o = {};
         if (sp == 60) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 61, 2000, 0 }; return 1; }    // an aura casting 61 every 2 s
         if (sp == 66) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 67, 2000, 0 }; return 1; }    // an aura casting 67
-        if (sp == 10) { o->count = 2; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; o->trigger[1] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 85, 2000, 0 }; return 1; }    // a ground effect's aura casting 69 and 85
+        if (sp == 10) { o->count = 3; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 69, 2000, 0 }; o->trigger[1] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 85, 2000, 0 }; o->trigger[2] = { WXL_SPELLAREA_TRIGGER_PERIODIC, 87, 2000, 0 }; return 1; }    // a ground effect's aura casting 69, 85 and 87
         if (sp == 70) { o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }       // a grenade
         if (sp == 80) { o->speed = 20.0f; o->count = 1; o->trigger[0] = { WXL_SPELLAREA_TRIGGER_MISSILE, 71, 0, 0 }; return 1; }
         return 0;
@@ -120,6 +122,7 @@ int main()
         if (d->half == 7.0f) { ++g_periodicDraws; std::memcpy(g_periodicPos, d->pos, sizeof(g_periodicPos)); if (d->r == 255 && d->g < 100) ++g_periodicRed; }
         if (d->half == 4.0f) { ++g_centerDraws; std::memcpy(g_centerPos, d->pos, sizeof(g_centerPos)); }
         if (d->half == 3.0f) { ++g_dynCenterDraws; std::memcpy(g_dynCenterPos, d->pos, sizeof(g_dynCenterPos)); }
+        if (d->half == 8.0f) ++g_eightDraws;
         if (d->half == 2.5f) { ++g_tickDraws; std::memcpy(g_tickPos, d->pos, sizeof(g_tickPos)); }
         if (d->half == 2.0f) { ++g_otherTickDraws; std::memcpy(g_otherTickPos, d->pos, sizeof(g_otherTickPos)); }
         if (d->half == 5.0f) { ++g_missileDraws; g_missileAlpha = d->a; std::memcpy(g_missilePos, d->pos, sizeof(g_missilePos)); }
@@ -216,20 +219,39 @@ int main()
     g_eventSpell = 86; g_eventsMade += 1; g_eventAt = 52300; g_otherTickDraws = 0;
     g_fn(g_user, 0x200122, 5, 52300);
     Check(g_otherTickDraws >= 1 && g_otherTickPos[0] == 10.0f && g_otherTickPos[1] == 20.0f, "a spell the ground effect does not tick still goes on the unit it was aimed at");
+
+    // one tick is a cast for every unit it hits: five casts at the same moment make one circle, not five
+    for (int k = 0; k < 5; ++k) { g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 52500 + k; g_fn(g_user, 0x200122, 5, 52500 + k); }
+    g_tickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 52600);
+    Check(g_tickDraws == 1, "five casts of the tick on five units: one circle on the screen, not five stacked");
+    // the next tick, a second later, starts the fade again; still one circle
+    g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 53500;
+    g_fn(g_user, 0x200122, 5, 53500);
+    g_tickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 53510);
+    Check(g_tickDraws == 1, "the next tick refreshes that circle instead of adding another");
+    // a tick as big as the ground effect's own circle (8 yards) adds nothing on top of it
+    g_eventSpell = 87; g_eventsMade += 1; g_eventAt = 53600;
+    g_fn(g_user, 0x200122, 5, 53600);
+    g_eightDraws = 0;
+    g_fn(g_user, 0x200122, 5, 53620);
+    Check(g_eightDraws == 1, "a tick the size of the ground effect's circle is not flashed on top of it: just the one circle");
+
     g_dynOn = 0;
-    g_fn(g_user, 0x200122, 5, 53000);                                  // the ground effect is gone
-    g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 53100; g_tickDraws = 0;
-    g_fn(g_user, 0x200122, 5, 53100);
+    g_fn(g_user, 0x200122, 5, 55000);                                  // the ground effect is gone
+    g_eventSpell = 85; g_eventsMade += 1; g_eventAt = 55100; g_tickDraws = 0;
+    g_fn(g_user, 0x200122, 5, 55100);
     Check(g_tickDraws >= 1 && g_tickPos[0] == 10.0f && g_tickPos[1] == 20.0f, "with no ground effect to be seen it falls back to the unit it was aimed at");
     g_dynOn = 1; g_eventCaster = 1; g_eventTarget = 0; g_eventInstant = 0; g_instantOn = 0;
-    g_fn(g_user, 0x200122, 5, 54000);
+    g_fn(g_user, 0x200122, 5, 56000);
 
     std::printf("6. a missile that triggers a spell (the packet says how long it flies)\n");
     g_instantOn = 0;                                   // only the triggered spell is wanted
     g_fn(g_user, 0x200122, 5, 47000);
     g_eventInstant = 0; g_eventSpell = 70; g_eventDelay = 1000; g_eventTargetFlags = WXL_SPELLAREA_TARGET_DEST;
     g_eventDest[0] = 30; g_eventDest[1] = 40; g_eventDest[2] = 5;
-    g_eventsMade = 10; g_eventAt = 50000;
+    g_eventsMade = 1000; g_eventAt = 50000;
     g_missileDraws = 0; g_missileAlpha = -1;
     g_fn(g_user, 0x200122, 5, 50000);
     Check(g_missileDraws == 1, "the area shows from the launch");
@@ -247,7 +269,7 @@ int main()
 
     std::printf("7. a missile whose flight time is its distance over the spell's speed\n");
     g_eventSpell = 80; g_eventDelay = 0; g_eventDest[0] = 40; g_eventDest[1] = 0; g_eventDest[2] = 0;
-    g_eventsMade = 11; g_eventAt = 60000;
+    g_eventsMade = 1001; g_eventAt = 60000;
     g_missileAlpha = -1;
     g_fn(g_user, 0x200122, 5, 61000);
     Check(g_missileAlpha == 120, "40 yards at 20 yards per second: half way after a second");

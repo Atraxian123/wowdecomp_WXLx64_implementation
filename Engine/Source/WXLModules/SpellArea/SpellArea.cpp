@@ -650,8 +650,40 @@ namespace wxl::spellarea
             return placed;
         }
 
+        bool NearPos(const float a[3], const float b[3], float yards)
+        {
+            const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+            return dx * dx + dy * dy + dz * dz <= yards * yards;
+        }
+
         void PushFading(const Shape& shape, const float pos[3], float facing, uint32_t startMs, uint32_t landMs, uint32_t endMs, uint64_t caster, uint32_t spell)
         {
+            // A ground effect's periodic spell (Blizzard's damage) is cast once for every unit it hits, so one tick is many
+            // casts of the same spell with the same area on the same spot. They are one circle: the later one only starts
+            // the fade again (several translucent circles on top of each other would turn the area solid).
+            for (Fading& other : g_fading)
+            {
+                if (other.caster != caster || other.spell != spell || !SameShape(other.area.shape, shape) || !NearPos(other.area.pos, pos, 0.5f)) continue;
+                if (static_cast<int32_t>(endMs - other.endMs) > 0)
+                {
+                    other.startMs = startMs;
+                    other.landMs = landMs;
+                    other.endMs = endMs;
+                    other.area.facing = facing;
+                }
+                return;
+            }
+
+            // An area that is already on the screen at that spot with that size, a ground effect's own circle, needs no
+            // flash on top of it each time it ticks; a tick of another size does (it shows what the tick really covers).
+            for (const Area& shown : g_areas)
+            {
+                if (!SameShape(shown.shape, shape)) continue;
+                float p[3] = {}, f = 0;
+                const bool known = shown.follow ? Api()->spellAreaObjectPose(shown.guid, p, &f) != 0 : (std::memcpy(p, shown.pos, sizeof(p)), true);
+                if (known && NearPos(p, pos, 0.5f)) return;
+            }
+
             Fading f;
             f.area.shape = shape;
             std::memcpy(f.area.pos, pos, 3 * sizeof(float));

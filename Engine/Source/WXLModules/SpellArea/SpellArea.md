@@ -165,6 +165,11 @@ A spell's own targets say what its area is around, and the indicator follows the
 | **a spell a ground effect ticks** (Blizzard's damage), whatever its own targets are | **the ground effect**. The server casts it at each unit it hits, so the packet names those units; the area is the ground effect's, so the indicator, for the aura on a unit as well as for the cast itself, sits on the dynamic object of the same caster whose spell ticks it, and not on the units that were hit |
 | any other destination area | the cast's ground point, else the unit it was aimed at; for a periodic aura, the unit that carries it |
 
+A ground effect's tick is cast once for every unit it hits, so a tick is many casts of the same spell on the same spot.
+They are drawn as one circle (a later cast of the same spell with the same area on the same spot only restarts the fade of the
+one that is there), and a tick whose area is the same size as the ground effect's own circle is not flashed on top of it at all.
+A tick of another size is, because it shows what the tick really covers.
+
 A row in `SpellAreaOverride.csv` still decides the shape of a spell it lists.
 
 ## Lines, odd cones, hiding a spell: SpellAreaOverride.csv
