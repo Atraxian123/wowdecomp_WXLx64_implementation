@@ -289,14 +289,20 @@ void GradingRenderer::SetGradingState(IDirect3DDevice9* dev, const D3DVIEWPORT9&
     dev->SetPixelShaderConstantF(0, &constants[0][0], kGradingConstants);
 }
 
-void GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
+// False, with the device untouched, when the client's state could not be saved: a state block that fails to capture
+// would put back the values of an earlier frame, and with nothing to restore from nothing may be changed.
+bool GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
                                  float strength)
 {
     IDirect3DVertexBuffer9* stream = nullptr;
     UINT streamOffset = 0;
     UINT streamStride = 0;
-    dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
-    m_state->Capture();
+    const d3d9guard::Seen streamSeen = d3d9guard::QueryStream0(dev, stream, streamOffset, streamStride);
+    if (!m_state || FAILED(m_state->Capture()))
+    {
+        SafeRelease(stream);
+        return false;
+    }
     for (DWORD i = 1; i < kRenderTargets; ++i)
         if (bound.colour[i])
             dev->SetRenderTarget(i, nullptr);
@@ -307,9 +313,12 @@ void GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& boun
         if (bound.colour[i])
             dev->SetRenderTarget(i, bound.colour[i]);
     m_state->Apply();
-    dev->SetDepthStencilSurface(bound.depth);
-    dev->SetStreamSource(0, stream, streamOffset, streamStride);
+    if (d3d9guard::Answered(bound.depthSeen))
+        dev->SetDepthStencilSurface(bound.depth);
+    if (d3d9guard::Answered(streamSeen))
+        dev->SetStreamSource(0, stream, streamOffset, streamStride);
     SafeRelease(stream);
+    return true;
 }
 
 bool GradingRenderer::GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
@@ -324,7 +333,8 @@ bool GradingRenderer::GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bou
         return Skip("world viewport outside the render target");
     if (!CopyWorld(dev, bound.colour[0], desc, world))
         return false;
-    DrawGraded(dev, bound, world, strength);
+    if (!DrawGraded(dev, bound, world, strength))
+        return Skip("the device state could not be saved");
     ++m_grades;
     return true;
 }
@@ -338,9 +348,12 @@ bool GradingRenderer::Grade(IDirect3DDevice9* dev, const D3DVIEWPORT9& world, co
         return false;
     BoundTargets bound;
     for (DWORD i = 0; i < kRenderTargets; ++i)
-        dev->GetRenderTarget(i, &bound.colour[i]);
-    dev->GetDepthStencilSurface(&bound.depth);
-    const bool graded = GradeTarget(dev, bound, world, strength);
+        bound.colourSeen[i] = d3d9guard::QueryRenderTarget(dev, i, bound.colour[i]);
+    bound.depthSeen = d3d9guard::QueryDepthStencil(dev, bound.depth);
+    // No saved state, no changes: target 0 and the depth surface are what the pass has to put back
+    const bool graded = d3d9guard::Answered(bound.colourSeen[0]) && d3d9guard::Answered(bound.depthSeen)
+                            ? GradeTarget(dev, bound, world, strength)
+                            : Skip("the device state cannot be read");
     for (IDirect3DSurface9*& colour : bound.colour)
         SafeRelease(colour);
     SafeRelease(bound.depth);

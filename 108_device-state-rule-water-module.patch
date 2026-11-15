@@ -1,0 +1,731 @@
+diff --git a/Engine/Source/WXL/Sdk/wxl_d3d9_guard.hpp b/Engine/Source/WXL/Sdk/wxl_d3d9_guard.hpp
+new file mode 100644
+index 0000000..4147d0d
+--- /dev/null
++++ b/Engine/Source/WXL/Sdk/wxl_d3d9_guard.hpp
+@@ -0,0 +1,161 @@
++// Safe handling of the client's Direct3D 9 device, for every module that draws or changes device state.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see ../Event.h)
++//
++// THE RULE: no saved state, no changes.
++//
++//   The client's device is shared with the client. It caches the states it believes are set and does not send them
++//   again, so anything a module changes and fails to put back stays changed: no depth test, no culling, the wrong
++//   viewport, an unbound vertex stream. The module's own frame may look fine; the client's goes wrong, and keeps going
++//   wrong until the client happens to set the same state again.
++//
++//   Two things make "put it back" less certain than it looks, and both were met in this client:
++//
++//   * Get* calls can fail. The client creates its device with D3DCREATE_PUREDEVICE, which does not answer for anything
++//     a state block can store, and a call that fails leaves its out-parameter untouched. Reading it anyway and writing
++//     it back later puts a stale or zero value into the device (a stencil function of 0 is not even a valid enum).
++//   * A state block can fail to be created or captured, most easily in the first frames after a loading screen, when
++//     video memory is full. A caller that ignores that goes on to change everything and restores nothing.
++//
++//   So: before the first change, read everything that will be needed to undo it, and check that every read worked.
++//   If any did not, do not start: skip the pass and say why in the log. After the work, restore only what was read.
++//   Nothing here ever writes back a value that was not first read successfully.
++//
++// What this header gives you:
++//
++//   Seen / QueryRenderTarget / QueryDepthStencil / QueryStream0
++//       The three bindings a pass most often replaces, read so that "the device said nothing is bound" and "the device
++//       did not answer" are different results. Only Seen::No means the state is unknown.
++//
++//   ReadRenderState / ReadRenderStates
++//       Render states read all-or-nothing: the values are only handed out when every read worked.
++//
++//   ScopedDeviceState
++//       A D3DSBT_ALL state block, created and captured in the constructor. Valid() says whether that worked; when it
++//       did not, the object does nothing and the caller must not change the device. Restore() (also run by the
++//       destructor) applies it once.
++//
++// This is a header-only helper with no dependency on the rest of WXL, so a module can include it on its own.
++#pragma once
++
++#include <cstddef>
++#include <d3d9.h>
++
++namespace wxl::d3d9guard
++{
++    /// What a query of the device answered.
++    enum class Seen : unsigned char
++    {
++        No = 0,   // the device did not answer: the state is unknown, and must not be written back
++        Empty,    // the device answered that nothing is bound
++        Bound,    // the device answered with an object; the caller owns one reference to it
++    };
++
++    /// True when the device answered, whatever it said.
++    inline bool Answered(Seen s) { return s != Seen::No; }
++
++    /// Render target `index`. `out` holds a reference only when the result is Bound. After a call that failed it is
++    /// set to null without being touched: a failed call is not trusted to have produced an object, and so there is
++    /// nothing to release. D3DERR_NOTFOUND is a real answer (no target in that slot).
++    inline Seen QueryRenderTarget(IDirect3DDevice9* dev, DWORD index, IDirect3DSurface9*& out)
++    {
++        out = nullptr;
++        if (!dev) return Seen::No;
++        const HRESULT hr = dev->GetRenderTarget(index, &out);
++        if (FAILED(hr))
++        {
++            out = nullptr;
++            return hr == D3DERR_NOTFOUND ? Seen::Empty : Seen::No;
++        }
++        return out ? Seen::Bound : Seen::Empty;
++    }
++
++    /// The depth-stencil surface. Same contract as QueryRenderTarget.
++    inline Seen QueryDepthStencil(IDirect3DDevice9* dev, IDirect3DSurface9*& out)
++    {
++        out = nullptr;
++        if (!dev) return Seen::No;
++        const HRESULT hr = dev->GetDepthStencilSurface(&out);
++        if (FAILED(hr))
++        {
++            out = nullptr;
++            return hr == D3DERR_NOTFOUND ? Seen::Empty : Seen::No;
++        }
++        return out ? Seen::Bound : Seen::Empty;
++    }
++
++    /// Vertex stream 0. `buffer` holds a reference only when the result is Bound; the offset and stride are 0 otherwise.
++    inline Seen QueryStream0(IDirect3DDevice9* dev, IDirect3DVertexBuffer9*& buffer, UINT& offset, UINT& stride)
++    {
++        buffer = nullptr;
++        offset = 0;
++        stride = 0;
++        if (!dev) return Seen::No;
++        const HRESULT hr = dev->GetStreamSource(0, &buffer, &offset, &stride);
++        if (FAILED(hr))
++        {
++            buffer = nullptr;
++            offset = 0;
++            stride = 0;
++            return Seen::No;
++        }
++        return buffer ? Seen::Bound : Seen::Empty;
++    }
++
++    /// One render state. `out` is only written when the read worked.
++    inline bool ReadRenderState(IDirect3DDevice9* dev, D3DRENDERSTATETYPE state, DWORD& out)
++    {
++        if (!dev) return false;
++        DWORD value = 0;
++        if (FAILED(dev->GetRenderState(state, &value))) return false;
++        out = value;
++        return true;
++    }
++
++    /// Several render states, all or nothing: `values` is only written when every read worked.
++    template <size_t N>
++    inline bool ReadRenderStates(IDirect3DDevice9* dev, const D3DRENDERSTATETYPE (&states)[N], DWORD (&values)[N])
++    {
++        DWORD read[N] = {};
++        for (size_t i = 0; i < N; ++i)
++            if (!ReadRenderState(dev, states[i], read[i])) return false;
++        for (size_t i = 0; i < N; ++i)
++            values[i] = read[i];
++        return true;
++    }
++
++    /// The whole device state in a state block, or nothing. See the rule at the top of this file.
++    class ScopedDeviceState
++    {
++    public:
++        explicit ScopedDeviceState(IDirect3DDevice9* dev)
++        {
++            if (dev && SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &state_)) && state_)
++            {
++                if (FAILED(state_->Capture()))
++                {
++                    state_->Release();
++                    state_ = nullptr;
++                }
++            }
++        }
++        ~ScopedDeviceState() { Restore(); }
++
++        ScopedDeviceState(const ScopedDeviceState&) = delete;
++        ScopedDeviceState& operator=(const ScopedDeviceState&) = delete;
++
++        /// False when the state could not be saved: the caller must leave the device alone.
++        bool Valid() const { return state_ != nullptr; }
++
++        /// Puts the saved state back, once. Safe to call when not Valid().
++        void Restore()
++        {
++            if (!state_) return;
++            state_->Apply();
++            state_->Release();
++            state_ = nullptr;
++        }
++
++    private:
++        IDirect3DStateBlock9* state_ = nullptr;
++    };
++}
+diff --git a/Engine/Source/WXLModules/Water/grading_renderer.cpp b/Engine/Source/WXLModules/Water/grading_renderer.cpp
+index bbe699e..080e4b0 100644
+--- a/Engine/Source/WXLModules/Water/grading_renderer.cpp
++++ b/Engine/Source/WXLModules/Water/grading_renderer.cpp
+@@ -289,14 +289,20 @@ void GradingRenderer::SetGradingState(IDirect3DDevice9* dev, const D3DVIEWPORT9&
+     dev->SetPixelShaderConstantF(0, &constants[0][0], kGradingConstants);
+ }
+ 
+-void GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
++// False, with the device untouched, when the client's state could not be saved: a state block that fails to capture
++// would put back the values of an earlier frame, and with nothing to restore from nothing may be changed.
++bool GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
+                                  float strength)
+ {
+     IDirect3DVertexBuffer9* stream = nullptr;
+     UINT streamOffset = 0;
+     UINT streamStride = 0;
+-    dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
+-    m_state->Capture();
++    const d3d9guard::Seen streamSeen = d3d9guard::QueryStream0(dev, stream, streamOffset, streamStride);
++    if (!m_state || FAILED(m_state->Capture()))
++    {
++        SafeRelease(stream);
++        return false;
++    }
+     for (DWORD i = 1; i < kRenderTargets; ++i)
+         if (bound.colour[i])
+             dev->SetRenderTarget(i, nullptr);
+@@ -307,9 +313,12 @@ void GradingRenderer::DrawGraded(IDirect3DDevice9* dev, const BoundTargets& boun
+         if (bound.colour[i])
+             dev->SetRenderTarget(i, bound.colour[i]);
+     m_state->Apply();
+-    dev->SetDepthStencilSurface(bound.depth);
+-    dev->SetStreamSource(0, stream, streamOffset, streamStride);
++    if (d3d9guard::Answered(bound.depthSeen))
++        dev->SetDepthStencilSurface(bound.depth);
++    if (d3d9guard::Answered(streamSeen))
++        dev->SetStreamSource(0, stream, streamOffset, streamStride);
+     SafeRelease(stream);
++    return true;
+ }
+ 
+ bool GradingRenderer::GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world,
+@@ -324,7 +333,8 @@ bool GradingRenderer::GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bou
+         return Skip("world viewport outside the render target");
+     if (!CopyWorld(dev, bound.colour[0], desc, world))
+         return false;
+-    DrawGraded(dev, bound, world, strength);
++    if (!DrawGraded(dev, bound, world, strength))
++        return Skip("the device state could not be saved");
+     ++m_grades;
+     return true;
+ }
+@@ -338,9 +348,12 @@ bool GradingRenderer::Grade(IDirect3DDevice9* dev, const D3DVIEWPORT9& world, co
+         return false;
+     BoundTargets bound;
+     for (DWORD i = 0; i < kRenderTargets; ++i)
+-        dev->GetRenderTarget(i, &bound.colour[i]);
+-    dev->GetDepthStencilSurface(&bound.depth);
+-    const bool graded = GradeTarget(dev, bound, world, strength);
++        bound.colourSeen[i] = d3d9guard::QueryRenderTarget(dev, i, bound.colour[i]);
++    bound.depthSeen = d3d9guard::QueryDepthStencil(dev, bound.depth);
++    // No saved state, no changes: target 0 and the depth surface are what the pass has to put back
++    const bool graded = d3d9guard::Answered(bound.colourSeen[0]) && d3d9guard::Answered(bound.depthSeen)
++                            ? GradeTarget(dev, bound, world, strength)
++                            : Skip("the device state cannot be read");
+     for (IDirect3DSurface9*& colour : bound.colour)
+         SafeRelease(colour);
+     SafeRelease(bound.depth);
+diff --git a/Engine/Source/WXLModules/Water/grading_renderer.h b/Engine/Source/WXLModules/Water/grading_renderer.h
+index cc9884d..fe76efd 100644
+--- a/Engine/Source/WXLModules/Water/grading_renderer.h
++++ b/Engine/Source/WXLModules/Water/grading_renderer.h
+@@ -3,6 +3,7 @@
+ #include "fog_data.h"
+ 
+ #include <d3d9.h>
++#include "wxl_d3d9_guard.hpp"
+ 
+ struct GradingStats
+ {
+@@ -32,6 +33,8 @@ private:
+     {
+         IDirect3DSurface9* colour[kRenderTargets] = {};
+         IDirect3DSurface9* depth = nullptr;
++        d3d9guard::Seen colourSeen[kRenderTargets] = {};   // whether the device really answered (wxl_d3d9_guard.hpp)
++        d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
+     };
+ 
+     bool Skip(const char* reason);
+@@ -43,7 +46,7 @@ private:
+     bool CopyWorld(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DSURFACE_DESC& desc,
+                    const D3DVIEWPORT9& world);
+     bool GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
+-    void DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
++    bool DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
+     void SetGradingState(IDirect3DDevice9* dev, const D3DVIEWPORT9& world, float strength);
+ 
+     IDirect3DVertexShader9* m_vs = nullptr;
+diff --git a/Engine/Source/WXLModules/Water/msaa_depth.cpp b/Engine/Source/WXLModules/Water/msaa_depth.cpp
+index 29549eb..644dad8 100644
+--- a/Engine/Source/WXLModules/Water/msaa_depth.cpp
++++ b/Engine/Source/WXLModules/Water/msaa_depth.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "fullscreen_triangle.h"
+ #include "log.h"
++#include "wxl_d3d9_guard.hpp"
+ 
+ #include "ps_depth_check.h"
+ #include "vs_fullscreen.h"
+@@ -182,16 +183,44 @@ struct ReszSavedState
+     DWORD states[kReszStateCount] = {};
+ };
+ 
+-void SaveReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
++// Reads everything RestoreReszState will write back. False when the device would not answer for any of it, with
++// nothing kept: values that were not read are never written back (see wxl_d3d9_guard.hpp), so the resolve must not
++// start.
++bool SaveReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
+ {
+-    dev->GetTexture(0, &saved.texture);
+-    dev->GetVertexShader(&saved.vertexShader);
+-    dev->GetPixelShader(&saved.pixelShader);
+-    dev->GetVertexDeclaration(&saved.declaration);
+-    dev->GetFVF(&saved.fvf);
+-    dev->GetStreamSource(0, &saved.stream, &saved.streamOffset, &saved.streamStride);
++    // A Get* that succeeds hands over one reference. One that fails is not trusted to have produced anything: its slot is
++    // set to null, not released.
++    auto took = [](HRESULT hr, auto*& slot) {
++        if (FAILED(hr))
++        {
++            slot = nullptr;
++            return false;
++        }
++        return true;
++    };
++
++    DWORD states[kReszStateCount] = {};
++    bool ok = d3d9guard::ReadRenderStates(dev, kReszStates, states);
++    ok = ok && took(dev->GetTexture(0, &saved.texture), saved.texture);
++    ok = ok && took(dev->GetVertexShader(&saved.vertexShader), saved.vertexShader);
++    ok = ok && took(dev->GetPixelShader(&saved.pixelShader), saved.pixelShader);
++    ok = ok && took(dev->GetVertexDeclaration(&saved.declaration), saved.declaration);
++    ok = ok && SUCCEEDED(dev->GetFVF(&saved.fvf));
++    ok = ok && d3d9guard::Answered(d3d9guard::QueryStream0(dev, saved.stream, saved.streamOffset, saved.streamStride));
++    if (!ok)
++    {
++        // give back the references the calls that did succeed took
++        SafeRelease(saved.texture);
++        SafeRelease(saved.vertexShader);
++        SafeRelease(saved.pixelShader);
++        SafeRelease(saved.declaration);
++        SafeRelease(saved.stream);
++        saved.fvf = 0;
++        return false;
++    }
+     for (int i = 0; i < kReszStateCount; ++i)
+-        dev->GetRenderState(kReszStates[i], &saved.states[i]);
++        saved.states[i] = states[i];
++    return true;
+ }
+ 
+ void RestoreReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
+@@ -215,7 +244,8 @@ void RestoreReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
+ bool ResolveThroughResz(IDirect3DDevice9* dev, IDirect3DTexture9* destination)
+ {
+     ReszSavedState saved;
+-    SaveReszState(dev, saved);
++    if (!SaveReszState(dev, saved))
++        return false;
+     dev->SetVertexShader(nullptr);
+     dev->SetPixelShader(nullptr);
+     dev->SetFVF(D3DFVF_XYZ);
+@@ -280,28 +310,51 @@ struct SavedDeviceState
+     IDirect3DVertexBuffer9* stream = nullptr;
+     UINT streamOffset = 0;
+     UINT streamStride = 0;
++    d3d9guard::Seen targetsSeen[kMaxRenderTargets] = {};   // whether the device really answered (wxl_d3d9_guard.hpp)
++    d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
++    d3d9guard::Seen streamSeen = d3d9guard::Seen::No;
+ };
+ 
++// No saved state, no changes: false, with nothing kept and the device untouched, when the state block cannot be made
++// or the device will not say what is bound as render target 0 and as the depth surface. The other target slots are
++// not demanded: a device that supports fewer than four refuses to be asked about the rest, and the restore only
++// writes back what was read.
+ bool SaveDeviceState(IDirect3DDevice9* dev, SavedDeviceState& saved)
+ {
+     if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved.state)) || !saved.state)
++    {
++        saved.state = nullptr;
+         return false;
++    }
+     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
+-        dev->GetRenderTarget(i, &saved.targets[i]);
+-    dev->GetDepthStencilSurface(&saved.depth);
+-    dev->GetStreamSource(0, &saved.stream, &saved.streamOffset, &saved.streamStride);
++        saved.targetsSeen[i] = d3d9guard::QueryRenderTarget(dev, i, saved.targets[i]);
++    saved.depthSeen = d3d9guard::QueryDepthStencil(dev, saved.depth);
++    saved.streamSeen = d3d9guard::QueryStream0(dev, saved.stream, saved.streamOffset, saved.streamStride);
++    if (!d3d9guard::Answered(saved.targetsSeen[0]) || !d3d9guard::Answered(saved.depthSeen))
++    {
++        for (IDirect3DSurface9*& target : saved.targets)
++            SafeRelease(target);
++        SafeRelease(saved.depth);
++        SafeRelease(saved.stream);
++        SafeRelease(saved.state);
++        return false;
++    }
+     return true;
+ }
+ 
+ void RestoreDeviceState(IDirect3DDevice9* dev, SavedDeviceState& saved)
+ {
++    // only what the device really answered for is written back
+     if (saved.targets[0])
+         dev->SetRenderTarget(0, saved.targets[0]);
+     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
+-        dev->SetRenderTarget(i, saved.targets[i]);
+-    dev->SetDepthStencilSurface(saved.depth);
++        if (d3d9guard::Answered(saved.targetsSeen[i]))
++            dev->SetRenderTarget(i, saved.targets[i]);
++    if (d3d9guard::Answered(saved.depthSeen))
++        dev->SetDepthStencilSurface(saved.depth);
+     saved.state->Apply();
+-    dev->SetStreamSource(0, saved.stream, saved.streamOffset, saved.streamStride);
++    if (d3d9guard::Answered(saved.streamSeen))
++        dev->SetStreamSource(0, saved.stream, saved.streamOffset, saved.streamStride);
+     for (IDirect3DSurface9*& target : saved.targets)
+         SafeRelease(target);
+     SafeRelease(saved.depth);
+diff --git a/Engine/Source/WXLModules/Water/renderer.cpp b/Engine/Source/WXLModules/Water/renderer.cpp
+index 66c5599..93f24c3 100644
+--- a/Engine/Source/WXLModules/Water/renderer.cpp
++++ b/Engine/Source/WXLModules/Water/renderer.cpp
+@@ -659,8 +659,9 @@ void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* s
+     fullDepthRange.MaxZ = 1.0f;
+     const D3DRECT world = {static_cast<LONG>(vp.X), static_cast<LONG>(vp.Y), static_cast<LONG>(vp.X + vp.Width),
+                            static_cast<LONG>(vp.Y + vp.Height)};
+-    DWORD colourWrites = 0;
+-    dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colourWrites);
++    DWORD colourWrites = 0xF;   // all four channels, which is what it is unless the device says otherwise; a read that
++                                // failed must not leave 0 here, or the colour writes would be switched off afterwards
++    d3d9guard::ReadRenderState(dev, D3DRS_COLORWRITEENABLE, colourWrites);
+     dev->SetDepthStencilSurface(sampleDepth);
+     dev->SetViewport(&fullDepthRange);
+     dev->Clear(1, &world, D3DCLEAR_STENCIL, 0, 1.0f, kUnmarkedSamples);
+@@ -1085,34 +1086,44 @@ bool Renderer::ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, con
+ template <typename Passes>
+ bool Renderer::WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes)
+ {
++    // No saved state, no changes (see wxl_d3d9_guard.hpp): everything needed to undo the passes is read first, and if the
++    // device will not answer, or the state block cannot capture, the passes do not run.
+     IDirect3DSurface9* saved[4] = {};
++    d3d9guard::Seen savedSeen[4] = {};
+     for (DWORD i = 0; i < 4; ++i)
+-        dev->GetRenderTarget(i, &saved[i]);
++        savedSeen[i] = d3d9guard::QueryRenderTarget(dev, i, saved[i]);
+     IDirect3DSurface9* savedDepth = nullptr;
+-    dev->GetDepthStencilSurface(&savedDepth);
++    const d3d9guard::Seen depthSeen = d3d9guard::QueryDepthStencil(dev, savedDepth);
+ 
+     bool ok = false;
+     D3DSURFACE_DESC depthDesc = {};
+-    if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
++    if (!d3d9guard::Answered(savedSeen[0]) || !d3d9guard::Answered(depthSeen))
++        Skip("the device state cannot be read");
++    else if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
+         Skip(unusable);
+     else
+     {
+         IDirect3DVertexBuffer9* stream = nullptr;
+         UINT streamOffset = 0;
+         UINT streamStride = 0;
+-        dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
+-        m_state->Capture();
+-        for (DWORD i = 1; i < 4; ++i)
+-            if (saved[i])
+-                dev->SetRenderTarget(i, nullptr);
+-        ok = passes(saved[0], depthDesc);
+-        dev->SetRenderTarget(0, saved[0]);
+-        for (DWORD i = 1; i < 4; ++i)
+-            if (saved[i])
+-                dev->SetRenderTarget(i, saved[i]);
+-        m_state->Apply();
+-        dev->SetDepthStencilSurface(savedDepth);
+-        dev->SetStreamSource(0, stream, streamOffset, streamStride);
++        const d3d9guard::Seen streamSeen = d3d9guard::QueryStream0(dev, stream, streamOffset, streamStride);
++        if (!m_state || FAILED(m_state->Capture()))
++            Skip("the device state could not be saved");
++        else
++        {
++            for (DWORD i = 1; i < 4; ++i)
++                if (saved[i])
++                    dev->SetRenderTarget(i, nullptr);
++            ok = passes(saved[0], depthDesc);
++            dev->SetRenderTarget(0, saved[0]);
++            for (DWORD i = 1; i < 4; ++i)
++                if (saved[i])
++                    dev->SetRenderTarget(i, saved[i]);
++            m_state->Apply();
++            dev->SetDepthStencilSurface(savedDepth);
++            if (d3d9guard::Answered(streamSeen))
++                dev->SetStreamSource(0, stream, streamOffset, streamStride);
++        }
+         SafeRelease(stream);
+     }
+ 
+diff --git a/Engine/Source/WXLModules/Water/renderer.h b/Engine/Source/WXLModules/Water/renderer.h
+index ac64db7..bfa38df 100644
+--- a/Engine/Source/WXLModules/Water/renderer.h
++++ b/Engine/Source/WXLModules/Water/renderer.h
+@@ -9,6 +9,7 @@
+ #include "transparent_fog.h"
+ 
+ #include <d3d9.h>
++#include "wxl_d3d9_guard.hpp"
+ 
+ void ForceFogParams(const FogParams* fog);
+ 
+diff --git a/Engine/Source/WXLModules/Water/water_fft.cpp b/Engine/Source/WXLModules/Water/water_fft.cpp
+index 77c1223..b1a3f4f 100644
+--- a/Engine/Source/WXLModules/Water/water_fft.cpp
++++ b/Engine/Source/WXLModules/Water/water_fft.cpp
+@@ -340,7 +340,7 @@ void WaterFftPasses::Begin(IDirect3DDevice9* dev)
+         m_boundTextures[stage] = nullptr;
+         m_samplerKnown[stage] = false;
+     }
+-    dev->GetScissorRect(&m_callerScissor);
++    m_callerScissorRead = SUCCEEDED(dev->GetScissorRect(&m_callerScissor));
+     dev->SetVertexShader(m_vs);
+     dev->SetVertexDeclaration(m_decl);
+     for (DWORD stage = kFirstUnusedStage; stage < kSamplerStages; ++stage)
+@@ -355,7 +355,9 @@ void WaterFftPasses::Begin(IDirect3DDevice9* dev)
+ void WaterFftPasses::End()
+ {
+     BindTarget(1, nullptr, 0);
+-    m_passDevice->SetScissorRect(&m_callerScissor);
++    if (m_callerScissorRead)
++        m_passDevice->SetScissorRect(&m_callerScissor);
++    m_callerScissorRead = false;
+     m_passDevice = nullptr;
+ }
+ 
+diff --git a/Engine/Source/WXLModules/Water/water_fft.h b/Engine/Source/WXLModules/Water/water_fft.h
+index 6be9d0d..861f5cf 100644
+--- a/Engine/Source/WXLModules/Water/water_fft.h
++++ b/Engine/Source/WXLModules/Water/water_fft.h
+@@ -113,6 +113,7 @@ private:
+     std::vector<float> m_noiseTexels;
+     std::vector<float> m_butterflyTexels;
+     RECT m_callerScissor = {};
++    bool m_callerScissorRead = false;   // the device said what it was; a rectangle that was not read is not written back
+     IDirect3DPixelShader9* m_boundShader = nullptr;
+     IDirect3DSurface9* m_boundTargets[2] = {};
+     bool m_targetKnown[2] = {};
+diff --git a/Engine/Source/WXLModules/Water/water_renderer.cpp b/Engine/Source/WXLModules/Water/water_renderer.cpp
+index 81d8780..d96e748 100644
+--- a/Engine/Source/WXLModules/Water/water_renderer.cpp
++++ b/Engine/Source/WXLModules/Water/water_renderer.cpp
+@@ -811,9 +811,37 @@ void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
+ {
+     ReleaseTargets();
+     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
+-        dev->GetRenderTarget(i, &m_saved.colour[i]);
+-    dev->GetDepthStencilSurface(&m_saved.depth);
+-    dev->GetStreamSource(0, &m_saved.stream, &m_saved.streamOffset, &m_saved.streamStride);
++        m_saved.colourSeen[i] = d3d9guard::QueryRenderTarget(dev, i, m_saved.colour[i]);
++    m_saved.depthSeen = d3d9guard::QueryDepthStencil(dev, m_saved.depth);
++    m_saved.streamSeen = d3d9guard::QueryStream0(dev, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
++}
++
++// True when the device answered for render target 0 and the depth surface, the two the pass cannot do without. The
++// other slots are not demanded: a device that supports fewer than four simultaneous targets refuses to be asked about
++// the rest (D3DERR_INVALIDCALL), and nothing is lost, because the restore only writes back what was read. Nor is the
++// vertex stream: the recorded state block puts it back, and the explicit restore only runs when it was read.
++bool WaterRenderer::TargetsKnown() const
++{
++    return d3d9guard::Answered(m_saved.colourSeen[0]) && d3d9guard::Answered(m_saved.depthSeen);
++}
++
++// The client's stencil states, read before anything is changed. All of them or none: if the device will not say what
++// they are they cannot be put back, and the pass must not start.
++bool WaterRenderer::ReadClientStencil(IDirect3DDevice9* dev)
++{
++    DWORD read[kWaterStencilStates] = {};
++    for (int i = 0; i < kWaterStencilStates; ++i)
++    {
++        if (!d3d9guard::ReadRenderState(dev, kPassStencil[i].state, read[i]))
++        {
++            m_clientStencilRead = false;
++            return false;
++        }
++    }
++    for (int i = 0; i < kWaterStencilStates; ++i)
++        m_clientStencil[i] = read[i];
++    m_clientStencilRead = true;
++    return true;
+ }
+ 
+ void WaterRenderer::ReleaseTargets()
+@@ -823,25 +851,36 @@ void WaterRenderer::ReleaseTargets()
+         SafeRelease(surface);
+     SafeRelease(m_saved.depth);
+     SafeRelease(m_saved.stream);
++    for (auto& seen : m_saved.colourSeen)
++        seen = d3d9guard::Seen::No;
++    m_saved.depthSeen = d3d9guard::Seen::No;
++    m_saved.streamSeen = d3d9guard::Seen::No;
+ }
+ 
+-void WaterRenderer::CaptureClientState()
++// False when the client's state could not be saved: the caller must then not change anything, because there would be
++// nothing to put back (and applying a block that did not capture would put back the values of an earlier frame).
++bool WaterRenderer::CaptureClientState()
+ {
+-    m_state->Capture();
+-    m_stateCaptured = true;
++    m_stateCaptured = m_state && SUCCEEDED(m_state->Capture());
++    return m_stateCaptured;
+ }
+ 
+ void WaterRenderer::RestoreTargets(IDirect3DDevice9* dev)
+ {
+     const bool captured = m_stateCaptured;
+     m_stateCaptured = false;
+-    dev->SetRenderTarget(0, m_saved.colour[0]);
++    // Only what the device really answered for is written back (target 0 cannot be unbound, so an empty answer is left).
++    if (d3d9guard::Answered(m_saved.colourSeen[0]) && m_saved.colour[0])
++        dev->SetRenderTarget(0, m_saved.colour[0]);
+     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
+-        dev->SetRenderTarget(i, m_saved.colour[i]);
++        if (d3d9guard::Answered(m_saved.colourSeen[i]))
++            dev->SetRenderTarget(i, m_saved.colour[i]);
+     if (captured && m_state)
+         m_state->Apply();
+-    dev->SetDepthStencilSurface(m_saved.depth);
+-    dev->SetStreamSource(0, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
++    if (d3d9guard::Answered(m_saved.depthSeen))
++        dev->SetDepthStencilSurface(m_saved.depth);
++    if (d3d9guard::Answered(m_saved.streamSeen))
++        dev->SetStreamSource(0, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
+     ReleaseTargets();
+ }
+ 
+@@ -942,11 +981,10 @@ void WaterRenderer::ClearWaterStencil(IDirect3DDevice9* dev, IDirect3DSurface9*
+ 
+ void WaterRenderer::ArmStencilWrites(IDirect3DDevice9* dev)
+ {
++    if (!m_clientStencilRead)
++        return;   // never armed without the client's values in hand: they could not be put back
+     for (int i = 0; i < kWaterStencilStates; ++i)
+-    {
+-        dev->GetRenderState(kPassStencil[i].state, &m_clientStencil[i]);
+         dev->SetRenderState(kPassStencil[i].state, kPassStencil[i].value);
+-    }
+     m_stencilArmed = true;
+ }
+ 
+@@ -981,6 +1019,13 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const
+         return false;
+ 
+     SaveTargets(dev);
++    // No saved state, no changes: everything needed to undo this pass is read before the first change, and if the device
++    // will not answer, the pass does not start.
++    if (!TargetsKnown() || !ReadClientStencil(dev))
++    {
++        ReleaseTargets();
++        return Skip("the device state cannot be read");
++    }
+     D3DSURFACE_DESC depthDesc = {};
+     const D3DVIEWPORT9& vp = in.viewport;
+     if (!UsableTargets(depth.bound, vp, depthDesc) || !EnsureCopies(dev, m_saved.colour[0], vp.Width, vp.Height))
+@@ -997,7 +1042,12 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const
+ 
+     if (LogEnabled(LogLevel::Info))
+         m_gpuTimer.Begin(dev);
+-    CaptureClientState();
++    if (!CaptureClientState())
++    {
++        m_gpuTimer.Cancel();
++        ReleaseTargets();
++        return Skip("the device state could not be saved");
++    }
+     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
+         dev->SetRenderTarget(i, nullptr);
+     const bool colourCopied = CopySceneColour(dev, m_saved.colour[0], vp);
+@@ -1497,6 +1547,11 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& de
+         !m_sceneColour)
+         return Skip("device not ready");
+     SaveTargets(dev);
++    if (!TargetsKnown())
++    {
++        ReleaseTargets();
++        return Skip("the device state cannot be read");
++    }
+     D3DSURFACE_DESC depthDesc = {};
+     if (!UsableTargets(depth.bound, m_in.viewport, depthDesc))
+     {
+@@ -1510,7 +1565,11 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& de
+                          seconds - m_lastWaveSeconds + frameStep >= kWaveUpdateSeconds;
+     const bool wavesPrepared = waveDue && PrepareWaves(dev);
+     BuildReflectionFog();
+-    CaptureClientState();
++    if (!CaptureClientState())
++    {
++        ReleaseTargets();
++        return Skip("the device state could not be saved");
++    }
+     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
+         dev->SetRenderTarget(i, nullptr);
+     if (!depth.Refresh(dev))
+diff --git a/Engine/Source/WXLModules/Water/water_renderer.h b/Engine/Source/WXLModules/Water/water_renderer.h
+index b81a99b..3e4c642 100644
+--- a/Engine/Source/WXLModules/Water/water_renderer.h
++++ b/Engine/Source/WXLModules/Water/water_renderer.h
+@@ -12,6 +12,7 @@
+ #include "water_types.h"
+ 
+ #include <d3d9.h>
++#include "wxl_d3d9_guard.hpp"
+ 
+ #include <cstdint>
+ #include <string>
+@@ -130,6 +131,8 @@ private:
+         IDirect3DTexture9* texture;
+     };
+ 
++    // What the client had bound, and whether the device really said so (see wxl_d3d9_guard.hpp): a binding the device did
++    // not answer for is unknown, and is never written back.
+     struct SavedTargets
+     {
+         IDirect3DSurface9* colour[4] = {};
+@@ -137,6 +140,9 @@ private:
+         IDirect3DVertexBuffer9* stream = nullptr;
+         UINT streamOffset = 0;
+         UINT streamStride = 0;
++        d3d9guard::Seen colourSeen[4] = {};
++        d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
++        d3d9guard::Seen streamSeen = d3d9guard::Seen::No;
+     };
+ 
+     bool Skip(const char* reason);
+@@ -153,8 +159,10 @@ private:
+     bool MaskPresent(const WaterPreset& preset, int slot) const;
+     bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
+     void SaveTargets(IDirect3DDevice9* dev);
++    bool TargetsKnown() const;
++    bool ReadClientStencil(IDirect3DDevice9* dev);
+     void ReleaseTargets();
+-    void CaptureClientState();
++    bool CaptureClientState();
+     void RestoreTargets(IDirect3DDevice9* dev);
+     void SetPassState(IDirect3DDevice9* dev);
+     void CopyLinearDepth(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* copy);
+@@ -221,6 +229,7 @@ private:
+     DWORD m_clientStencil[kWaterStencilStates] = {};
+     unsigned m_draws[kWaterClassCount] = {};
+     bool m_stencilArmed = false;
++    bool m_clientStencilRead = false;   // m_clientStencil holds what the device said, so it may be written back
+     bool m_armed = false;
+     bool m_wavesSimulated = false;
+     bool m_wavesAttempted = false;

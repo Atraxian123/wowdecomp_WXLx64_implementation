@@ -659,8 +659,9 @@ void Renderer::MarkSilhouetteSamples(IDirect3DDevice9* dev, IDirect3DSurface9* s
     fullDepthRange.MaxZ = 1.0f;
     const D3DRECT world = {static_cast<LONG>(vp.X), static_cast<LONG>(vp.Y), static_cast<LONG>(vp.X + vp.Width),
                            static_cast<LONG>(vp.Y + vp.Height)};
-    DWORD colourWrites = 0;
-    dev->GetRenderState(D3DRS_COLORWRITEENABLE, &colourWrites);
+    DWORD colourWrites = 0xF;   // all four channels, which is what it is unless the device says otherwise; a read that
+                                // failed must not leave 0 here, or the colour writes would be switched off afterwards
+    d3d9guard::ReadRenderState(dev, D3DRS_COLORWRITEENABLE, colourWrites);
     dev->SetDepthStencilSurface(sampleDepth);
     dev->SetViewport(&fullDepthRange);
     dev->Clear(1, &world, D3DCLEAR_STENCIL, 0, 1.0f, kUnmarkedSamples);
@@ -1085,34 +1086,44 @@ bool Renderer::ReadyToRender(IDirect3DDevice9* dev, const SceneDepth& depth, con
 template <typename Passes>
 bool Renderer::WithClientStateSaved(IDirect3DDevice9* dev, const SceneDepth& depth, Passes passes)
 {
+    // No saved state, no changes (see wxl_d3d9_guard.hpp): everything needed to undo the passes is read first, and if the
+    // device will not answer, or the state block cannot capture, the passes do not run.
     IDirect3DSurface9* saved[4] = {};
+    d3d9guard::Seen savedSeen[4] = {};
     for (DWORD i = 0; i < 4; ++i)
-        dev->GetRenderTarget(i, &saved[i]);
+        savedSeen[i] = d3d9guard::QueryRenderTarget(dev, i, saved[i]);
     IDirect3DSurface9* savedDepth = nullptr;
-    dev->GetDepthStencilSurface(&savedDepth);
+    const d3d9guard::Seen depthSeen = d3d9guard::QueryDepthStencil(dev, savedDepth);
 
     bool ok = false;
     D3DSURFACE_DESC depthDesc = {};
-    if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
+    if (!d3d9guard::Answered(savedSeen[0]) || !d3d9guard::Answered(depthSeen))
+        Skip("the device state cannot be read");
+    else if (const char* unusable = UnusableTargets(saved[0], savedDepth, depth, depthDesc))
         Skip(unusable);
     else
     {
         IDirect3DVertexBuffer9* stream = nullptr;
         UINT streamOffset = 0;
         UINT streamStride = 0;
-        dev->GetStreamSource(0, &stream, &streamOffset, &streamStride);
-        m_state->Capture();
-        for (DWORD i = 1; i < 4; ++i)
-            if (saved[i])
-                dev->SetRenderTarget(i, nullptr);
-        ok = passes(saved[0], depthDesc);
-        dev->SetRenderTarget(0, saved[0]);
-        for (DWORD i = 1; i < 4; ++i)
-            if (saved[i])
-                dev->SetRenderTarget(i, saved[i]);
-        m_state->Apply();
-        dev->SetDepthStencilSurface(savedDepth);
-        dev->SetStreamSource(0, stream, streamOffset, streamStride);
+        const d3d9guard::Seen streamSeen = d3d9guard::QueryStream0(dev, stream, streamOffset, streamStride);
+        if (!m_state || FAILED(m_state->Capture()))
+            Skip("the device state could not be saved");
+        else
+        {
+            for (DWORD i = 1; i < 4; ++i)
+                if (saved[i])
+                    dev->SetRenderTarget(i, nullptr);
+            ok = passes(saved[0], depthDesc);
+            dev->SetRenderTarget(0, saved[0]);
+            for (DWORD i = 1; i < 4; ++i)
+                if (saved[i])
+                    dev->SetRenderTarget(i, saved[i]);
+            m_state->Apply();
+            dev->SetDepthStencilSurface(savedDepth);
+            if (d3d9guard::Answered(streamSeen))
+                dev->SetStreamSource(0, stream, streamOffset, streamStride);
+        }
         SafeRelease(stream);
     }
 

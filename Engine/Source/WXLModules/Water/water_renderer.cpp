@@ -811,9 +811,37 @@ void WaterRenderer::SaveTargets(IDirect3DDevice9* dev)
 {
     ReleaseTargets();
     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
-        dev->GetRenderTarget(i, &m_saved.colour[i]);
-    dev->GetDepthStencilSurface(&m_saved.depth);
-    dev->GetStreamSource(0, &m_saved.stream, &m_saved.streamOffset, &m_saved.streamStride);
+        m_saved.colourSeen[i] = d3d9guard::QueryRenderTarget(dev, i, m_saved.colour[i]);
+    m_saved.depthSeen = d3d9guard::QueryDepthStencil(dev, m_saved.depth);
+    m_saved.streamSeen = d3d9guard::QueryStream0(dev, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
+}
+
+// True when the device answered for render target 0 and the depth surface, the two the pass cannot do without. The
+// other slots are not demanded: a device that supports fewer than four simultaneous targets refuses to be asked about
+// the rest (D3DERR_INVALIDCALL), and nothing is lost, because the restore only writes back what was read. Nor is the
+// vertex stream: the recorded state block puts it back, and the explicit restore only runs when it was read.
+bool WaterRenderer::TargetsKnown() const
+{
+    return d3d9guard::Answered(m_saved.colourSeen[0]) && d3d9guard::Answered(m_saved.depthSeen);
+}
+
+// The client's stencil states, read before anything is changed. All of them or none: if the device will not say what
+// they are they cannot be put back, and the pass must not start.
+bool WaterRenderer::ReadClientStencil(IDirect3DDevice9* dev)
+{
+    DWORD read[kWaterStencilStates] = {};
+    for (int i = 0; i < kWaterStencilStates; ++i)
+    {
+        if (!d3d9guard::ReadRenderState(dev, kPassStencil[i].state, read[i]))
+        {
+            m_clientStencilRead = false;
+            return false;
+        }
+    }
+    for (int i = 0; i < kWaterStencilStates; ++i)
+        m_clientStencil[i] = read[i];
+    m_clientStencilRead = true;
+    return true;
 }
 
 void WaterRenderer::ReleaseTargets()
@@ -823,25 +851,36 @@ void WaterRenderer::ReleaseTargets()
         SafeRelease(surface);
     SafeRelease(m_saved.depth);
     SafeRelease(m_saved.stream);
+    for (auto& seen : m_saved.colourSeen)
+        seen = d3d9guard::Seen::No;
+    m_saved.depthSeen = d3d9guard::Seen::No;
+    m_saved.streamSeen = d3d9guard::Seen::No;
 }
 
-void WaterRenderer::CaptureClientState()
+// False when the client's state could not be saved: the caller must then not change anything, because there would be
+// nothing to put back (and applying a block that did not capture would put back the values of an earlier frame).
+bool WaterRenderer::CaptureClientState()
 {
-    m_state->Capture();
-    m_stateCaptured = true;
+    m_stateCaptured = m_state && SUCCEEDED(m_state->Capture());
+    return m_stateCaptured;
 }
 
 void WaterRenderer::RestoreTargets(IDirect3DDevice9* dev)
 {
     const bool captured = m_stateCaptured;
     m_stateCaptured = false;
-    dev->SetRenderTarget(0, m_saved.colour[0]);
+    // Only what the device really answered for is written back (target 0 cannot be unbound, so an empty answer is left).
+    if (d3d9guard::Answered(m_saved.colourSeen[0]) && m_saved.colour[0])
+        dev->SetRenderTarget(0, m_saved.colour[0]);
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
-        dev->SetRenderTarget(i, m_saved.colour[i]);
+        if (d3d9guard::Answered(m_saved.colourSeen[i]))
+            dev->SetRenderTarget(i, m_saved.colour[i]);
     if (captured && m_state)
         m_state->Apply();
-    dev->SetDepthStencilSurface(m_saved.depth);
-    dev->SetStreamSource(0, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
+    if (d3d9guard::Answered(m_saved.depthSeen))
+        dev->SetDepthStencilSurface(m_saved.depth);
+    if (d3d9guard::Answered(m_saved.streamSeen))
+        dev->SetStreamSource(0, m_saved.stream, m_saved.streamOffset, m_saved.streamStride);
     ReleaseTargets();
 }
 
@@ -942,11 +981,10 @@ void WaterRenderer::ClearWaterStencil(IDirect3DDevice9* dev, IDirect3DSurface9* 
 
 void WaterRenderer::ArmStencilWrites(IDirect3DDevice9* dev)
 {
+    if (!m_clientStencilRead)
+        return;   // never armed without the client's values in hand: they could not be put back
     for (int i = 0; i < kWaterStencilStates; ++i)
-    {
-        dev->GetRenderState(kPassStencil[i].state, &m_clientStencil[i]);
         dev->SetRenderState(kPassStencil[i].state, kPassStencil[i].value);
-    }
     m_stencilArmed = true;
 }
 
@@ -981,6 +1019,13 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const 
         return false;
 
     SaveTargets(dev);
+    // No saved state, no changes: everything needed to undo this pass is read before the first change, and if the device
+    // will not answer, the pass does not start.
+    if (!TargetsKnown() || !ReadClientStencil(dev))
+    {
+        ReleaseTargets();
+        return Skip("the device state cannot be read");
+    }
     D3DSURFACE_DESC depthDesc = {};
     const D3DVIEWPORT9& vp = in.viewport;
     if (!UsableTargets(depth.bound, vp, depthDesc) || !EnsureCopies(dev, m_saved.colour[0], vp.Width, vp.Height))
@@ -997,7 +1042,12 @@ bool WaterRenderer::Begin(IDirect3DDevice9* dev, const SceneDepth& depth, const 
 
     if (LogEnabled(LogLevel::Info))
         m_gpuTimer.Begin(dev);
-    CaptureClientState();
+    if (!CaptureClientState())
+    {
+        m_gpuTimer.Cancel();
+        ReleaseTargets();
+        return Skip("the device state could not be saved");
+    }
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
     const bool colourCopied = CopySceneColour(dev, m_saved.colour[0], vp);
@@ -1497,6 +1547,11 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& de
         !m_sceneColour)
         return Skip("device not ready");
     SaveTargets(dev);
+    if (!TargetsKnown())
+    {
+        ReleaseTargets();
+        return Skip("the device state cannot be read");
+    }
     D3DSURFACE_DESC depthDesc = {};
     if (!UsableTargets(depth.bound, m_in.viewport, depthDesc))
     {
@@ -1510,7 +1565,11 @@ bool WaterRenderer::ShadeTaggedWater(IDirect3DDevice9* dev, const SceneDepth& de
                          seconds - m_lastWaveSeconds + frameStep >= kWaveUpdateSeconds;
     const bool wavesPrepared = waveDue && PrepareWaves(dev);
     BuildReflectionFog();
-    CaptureClientState();
+    if (!CaptureClientState())
+    {
+        ReleaseTargets();
+        return Skip("the device state could not be saved");
+    }
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
         dev->SetRenderTarget(i, nullptr);
     if (!depth.Refresh(dev))

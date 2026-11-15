@@ -2,6 +2,8 @@
 
 #include "fullscreen_triangle.h"
 #include "log.h"
+#include "wxl_d3d9_guard.hpp"
+namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
 
 #include "ps_depth_check.h"
 #include "vs_fullscreen.h"
@@ -182,16 +184,44 @@ struct ReszSavedState
     DWORD states[kReszStateCount] = {};
 };
 
-void SaveReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
+// Reads everything RestoreReszState will write back. False when the device would not answer for any of it, with
+// nothing kept: values that were not read are never written back (see wxl_d3d9_guard.hpp), so the resolve must not
+// start.
+bool SaveReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
 {
-    dev->GetTexture(0, &saved.texture);
-    dev->GetVertexShader(&saved.vertexShader);
-    dev->GetPixelShader(&saved.pixelShader);
-    dev->GetVertexDeclaration(&saved.declaration);
-    dev->GetFVF(&saved.fvf);
-    dev->GetStreamSource(0, &saved.stream, &saved.streamOffset, &saved.streamStride);
+    // A Get* that succeeds hands over one reference. One that fails is not trusted to have produced anything: its slot is
+    // set to null, not released.
+    auto took = [](HRESULT hr, auto*& slot) {
+        if (FAILED(hr))
+        {
+            slot = nullptr;
+            return false;
+        }
+        return true;
+    };
+
+    DWORD states[kReszStateCount] = {};
+    bool ok = d3d9guard::ReadRenderStates(dev, kReszStates, states);
+    ok = ok && took(dev->GetTexture(0, &saved.texture), saved.texture);
+    ok = ok && took(dev->GetVertexShader(&saved.vertexShader), saved.vertexShader);
+    ok = ok && took(dev->GetPixelShader(&saved.pixelShader), saved.pixelShader);
+    ok = ok && took(dev->GetVertexDeclaration(&saved.declaration), saved.declaration);
+    ok = ok && SUCCEEDED(dev->GetFVF(&saved.fvf));
+    ok = ok && d3d9guard::Answered(d3d9guard::QueryStream0(dev, saved.stream, saved.streamOffset, saved.streamStride));
+    if (!ok)
+    {
+        // give back the references the calls that did succeed took
+        SafeRelease(saved.texture);
+        SafeRelease(saved.vertexShader);
+        SafeRelease(saved.pixelShader);
+        SafeRelease(saved.declaration);
+        SafeRelease(saved.stream);
+        saved.fvf = 0;
+        return false;
+    }
     for (int i = 0; i < kReszStateCount; ++i)
-        dev->GetRenderState(kReszStates[i], &saved.states[i]);
+        saved.states[i] = states[i];
+    return true;
 }
 
 void RestoreReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
@@ -215,7 +245,8 @@ void RestoreReszState(IDirect3DDevice9* dev, ReszSavedState& saved)
 bool ResolveThroughResz(IDirect3DDevice9* dev, IDirect3DTexture9* destination)
 {
     ReszSavedState saved;
-    SaveReszState(dev, saved);
+    if (!SaveReszState(dev, saved))
+        return false;
     dev->SetVertexShader(nullptr);
     dev->SetPixelShader(nullptr);
     dev->SetFVF(D3DFVF_XYZ);
@@ -280,28 +311,51 @@ struct SavedDeviceState
     IDirect3DVertexBuffer9* stream = nullptr;
     UINT streamOffset = 0;
     UINT streamStride = 0;
+    d3d9guard::Seen targetsSeen[kMaxRenderTargets] = {};   // whether the device really answered (wxl_d3d9_guard.hpp)
+    d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
+    d3d9guard::Seen streamSeen = d3d9guard::Seen::No;
 };
 
+// No saved state, no changes: false, with nothing kept and the device untouched, when the state block cannot be made
+// or the device will not say what is bound as render target 0 and as the depth surface. The other target slots are
+// not demanded: a device that supports fewer than four refuses to be asked about the rest, and the restore only
+// writes back what was read.
 bool SaveDeviceState(IDirect3DDevice9* dev, SavedDeviceState& saved)
 {
     if (FAILED(dev->CreateStateBlock(D3DSBT_ALL, &saved.state)) || !saved.state)
+    {
+        saved.state = nullptr;
         return false;
+    }
     for (DWORD i = 0; i < kMaxRenderTargets; ++i)
-        dev->GetRenderTarget(i, &saved.targets[i]);
-    dev->GetDepthStencilSurface(&saved.depth);
-    dev->GetStreamSource(0, &saved.stream, &saved.streamOffset, &saved.streamStride);
+        saved.targetsSeen[i] = d3d9guard::QueryRenderTarget(dev, i, saved.targets[i]);
+    saved.depthSeen = d3d9guard::QueryDepthStencil(dev, saved.depth);
+    saved.streamSeen = d3d9guard::QueryStream0(dev, saved.stream, saved.streamOffset, saved.streamStride);
+    if (!d3d9guard::Answered(saved.targetsSeen[0]) || !d3d9guard::Answered(saved.depthSeen))
+    {
+        for (IDirect3DSurface9*& target : saved.targets)
+            SafeRelease(target);
+        SafeRelease(saved.depth);
+        SafeRelease(saved.stream);
+        SafeRelease(saved.state);
+        return false;
+    }
     return true;
 }
 
 void RestoreDeviceState(IDirect3DDevice9* dev, SavedDeviceState& saved)
 {
+    // only what the device really answered for is written back
     if (saved.targets[0])
         dev->SetRenderTarget(0, saved.targets[0]);
     for (DWORD i = 1; i < kMaxRenderTargets; ++i)
-        dev->SetRenderTarget(i, saved.targets[i]);
-    dev->SetDepthStencilSurface(saved.depth);
+        if (d3d9guard::Answered(saved.targetsSeen[i]))
+            dev->SetRenderTarget(i, saved.targets[i]);
+    if (d3d9guard::Answered(saved.depthSeen))
+        dev->SetDepthStencilSurface(saved.depth);
     saved.state->Apply();
-    dev->SetStreamSource(0, saved.stream, saved.streamOffset, saved.streamStride);
+    if (d3d9guard::Answered(saved.streamSeen))
+        dev->SetStreamSource(0, saved.stream, saved.streamOffset, saved.streamStride);
     for (IDirect3DSurface9*& target : saved.targets)
         SafeRelease(target);
     SafeRelease(saved.depth);

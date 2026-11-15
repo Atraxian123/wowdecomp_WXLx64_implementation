@@ -1,0 +1,48 @@
+diff --git a/Engine/Source/WXLModules/Water/grading_renderer.h b/Engine/Source/WXLModules/Water/grading_renderer.h
+index fe76efd..4a2a20b 100644
+--- a/Engine/Source/WXLModules/Water/grading_renderer.h
++++ b/Engine/Source/WXLModules/Water/grading_renderer.h
+@@ -4,6 +4,7 @@
+ 
+ #include <d3d9.h>
+ #include "wxl_d3d9_guard.hpp"
++namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
+ 
+ struct GradingStats
+ {
+diff --git a/Engine/Source/WXLModules/Water/msaa_depth.cpp b/Engine/Source/WXLModules/Water/msaa_depth.cpp
+index 644dad8..2d9633a 100644
+--- a/Engine/Source/WXLModules/Water/msaa_depth.cpp
++++ b/Engine/Source/WXLModules/Water/msaa_depth.cpp
+@@ -3,6 +3,7 @@
+ #include "fullscreen_triangle.h"
+ #include "log.h"
+ #include "wxl_d3d9_guard.hpp"
++namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
+ 
+ #include "ps_depth_check.h"
+ #include "vs_fullscreen.h"
+diff --git a/Engine/Source/WXLModules/Water/renderer.h b/Engine/Source/WXLModules/Water/renderer.h
+index bfa38df..c217b6f 100644
+--- a/Engine/Source/WXLModules/Water/renderer.h
++++ b/Engine/Source/WXLModules/Water/renderer.h
+@@ -10,6 +10,7 @@
+ 
+ #include <d3d9.h>
+ #include "wxl_d3d9_guard.hpp"
++namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
+ 
+ void ForceFogParams(const FogParams* fog);
+ 
+diff --git a/Engine/Source/WXLModules/Water/water_renderer.h b/Engine/Source/WXLModules/Water/water_renderer.h
+index 3e4c642..01211cf 100644
+--- a/Engine/Source/WXLModules/Water/water_renderer.h
++++ b/Engine/Source/WXLModules/Water/water_renderer.h
+@@ -13,6 +13,7 @@
+ 
+ #include <d3d9.h>
+ #include "wxl_d3d9_guard.hpp"
++namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
+ 
+ #include <cstdint>
+ #include <string>

@@ -12,6 +12,8 @@
 #include "water_types.h"
 
 #include <d3d9.h>
+#include "wxl_d3d9_guard.hpp"
+namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
 
 #include <cstdint>
 #include <string>
@@ -130,6 +132,8 @@ private:
         IDirect3DTexture9* texture;
     };
 
+    // What the client had bound, and whether the device really said so (see wxl_d3d9_guard.hpp): a binding the device did
+    // not answer for is unknown, and is never written back.
     struct SavedTargets
     {
         IDirect3DSurface9* colour[4] = {};
@@ -137,6 +141,9 @@ private:
         IDirect3DVertexBuffer9* stream = nullptr;
         UINT streamOffset = 0;
         UINT streamStride = 0;
+        d3d9guard::Seen colourSeen[4] = {};
+        d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
+        d3d9guard::Seen streamSeen = d3d9guard::Seen::No;
     };
 
     bool Skip(const char* reason);
@@ -153,8 +160,10 @@ private:
     bool MaskPresent(const WaterPreset& preset, int slot) const;
     bool UsableTargets(IDirect3DSurface9* depthSurface, const D3DVIEWPORT9& vp, D3DSURFACE_DESC& depthDesc);
     void SaveTargets(IDirect3DDevice9* dev);
+    bool TargetsKnown() const;
+    bool ReadClientStencil(IDirect3DDevice9* dev);
     void ReleaseTargets();
-    void CaptureClientState();
+    bool CaptureClientState();
     void RestoreTargets(IDirect3DDevice9* dev);
     void SetPassState(IDirect3DDevice9* dev);
     void CopyLinearDepth(IDirect3DDevice9* dev, IDirect3DTexture9* depthTexture, IDirect3DTexture9* copy);
@@ -221,6 +230,7 @@ private:
     DWORD m_clientStencil[kWaterStencilStates] = {};
     unsigned m_draws[kWaterClassCount] = {};
     bool m_stencilArmed = false;
+    bool m_clientStencilRead = false;   // m_clientStencil holds what the device said, so it may be written back
     bool m_armed = false;
     bool m_wavesSimulated = false;
     bool m_wavesAttempted = false;

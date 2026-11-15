@@ -340,7 +340,7 @@ void WaterFftPasses::Begin(IDirect3DDevice9* dev)
         m_boundTextures[stage] = nullptr;
         m_samplerKnown[stage] = false;
     }
-    dev->GetScissorRect(&m_callerScissor);
+    m_callerScissorRead = SUCCEEDED(dev->GetScissorRect(&m_callerScissor));
     dev->SetVertexShader(m_vs);
     dev->SetVertexDeclaration(m_decl);
     for (DWORD stage = kFirstUnusedStage; stage < kSamplerStages; ++stage)
@@ -355,7 +355,9 @@ void WaterFftPasses::Begin(IDirect3DDevice9* dev)
 void WaterFftPasses::End()
 {
     BindTarget(1, nullptr, 0);
-    m_passDevice->SetScissorRect(&m_callerScissor);
+    if (m_callerScissorRead)
+        m_passDevice->SetScissorRect(&m_callerScissor);
+    m_callerScissorRead = false;
     m_passDevice = nullptr;
 }
 

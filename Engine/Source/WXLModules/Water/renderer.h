@@ -9,6 +9,8 @@
 #include "transparent_fog.h"
 
 #include <d3d9.h>
+#include "wxl_d3d9_guard.hpp"
+namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
 
 void ForceFogParams(const FogParams* fog);
 

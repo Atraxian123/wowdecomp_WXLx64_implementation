@@ -19,6 +19,7 @@
 
 #include "Hlsl.hpp"
 #include "QuestMatch.h"   // ParseHexColor (the shared, engine-free header in Engine/Source/WXLOutline)
+#include "wxl_d3d9_guard.hpp"
 #include "wxl_module.hpp"
 
 #include <windows.h>
@@ -202,39 +203,9 @@ namespace wxl::outline
             DrawQuad(dev, 0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h));
         }
 
-        class ScopedDeviceState final
-        {
-        public:
-            explicit ScopedDeviceState(IDirect3DDevice9* dev)
-            {
-                if (dev && SUCCEEDED(dev->CreateStateBlock(D3DSBT_ALL, &state_)) && state_)
-                {
-                    if (FAILED(state_->Capture()))
-                    {
-                        state_->Release();
-                        state_ = nullptr;
-                    }
-                }
-            }
-            ~ScopedDeviceState() { Restore(); }
-
-            // False when the device's state could not be saved (a state block is a driver allocation and can fail
-            // when video memory is short, which is just what the first frames after a loading screen look like). The
-            // caller must then leave the device alone: with nothing to restore from, every state it changed would stay
-            // changed, and the client, which caches its own states and does not re-send what it believes is already
-            // set, would keep drawing with them: no depth test, no culling, no shaders.
-            bool Valid() const { return state_ != nullptr; }
-            void Restore()
-            {
-                if (!state_) return;
-                state_->Apply();
-                state_->Release();
-                state_ = nullptr;
-            }
-
-        private:
-            IDirect3DStateBlock9* state_ = nullptr;
-        };
+        // The whole device state in a state block, or nothing: see wxl_d3d9_guard.hpp for the rule ("no saved state, no
+        // changes") and Valid(). Shared with the other modules that touch the client's device.
+        using ScopedDeviceState = d3d9guard::ScopedDeviceState;
 
         // True when render target 0 is the same size as the mask, i.e. the main frame. A batch drawn into anything
         // else (a model frame's offscreen target, a shadow or reflection map) is not part of the picture the mask
@@ -667,14 +638,15 @@ namespace wxl::outline
     {
         // No full state block: this runs once per model batch. Everything the stamp changes besides render targets
         // is in stampSave_; the targets, depth surface and viewport are saved by hand.
-        IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
-        IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
+        // A read that failed is not "nothing bound": a depth surface that could not be read must not be written back as null.
+        IDirect3DSurface9* oldRT = nullptr; d3d9guard::QueryRenderTarget(dev, 0, oldRT);
+        IDirect3DSurface9* oldDS = nullptr; const d3d9guard::Seen dsSeen = d3d9guard::QueryDepthStencil(dev, oldDS);
         D3DVIEWPORT9 oldVP{};
         const bool haveVP = SUCCEEDED(dev->GetViewport(&oldVP)) && oldVP.Width > 0 && oldVP.Height > 0;   // a pure device says no
 
         // Nothing below may run unless the way back is in hand: without the saved states the stamp's own changes
         // (no Z write, a depth bias, the fill shader) would be left on the client's device.
-        if (!oldRT || FAILED(stampSave_->Capture()))   // everything it records, the engine's viewport included
+        if (!oldRT || !d3d9guard::Answered(dsSeen) || FAILED(stampSave_->Capture()))   // everything it records, the engine's viewport included
         {
             SafeRelease(oldRT);
             SafeRelease(oldDS);
@@ -776,7 +748,7 @@ namespace wxl::outline
         dev->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(a.primType), a.baseVertex, a.minIndex, a.numVerts, a.startIndex, a.primCount);
 
         dev->SetRenderTarget(0, oldRT);
-        dev->SetDepthStencilSurface(oldDS);
+        dev->SetDepthStencilSurface(oldDS);   // answered: see the check above
         if (haveVP) dev->SetViewport(&oldVP);       // switching the target reset it again
         stampSave_->Apply();                        // also puts the viewport back when it could not be read
         SafeRelease(oldRT);
@@ -800,9 +772,10 @@ namespace wxl::outline
             }
             return false;
         }
-        IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
-        IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
-        if (!oldRT) { SafeRelease(oldDS); return false; }
+        IDirect3DSurface9* oldRT = nullptr; d3d9guard::QueryRenderTarget(dev, 0, oldRT);
+        IDirect3DSurface9* oldDS = nullptr; const d3d9guard::Seen dsSeen = d3d9guard::QueryDepthStencil(dev, oldDS);
+        // No render target, or a depth surface the device would not answer for: nothing can be put back, so nothing changes.
+        if (!oldRT || !d3d9guard::Answered(dsSeen)) { SafeRelease(oldRT); SafeRelease(oldDS); return false; }
         D3DSURFACE_DESC frame{};
         oldRT->GetDesc(&frame);
 
@@ -916,12 +889,12 @@ namespace wxl::outline
         ScopedDeviceState state(dev);
         if (!state.Valid())
             return false;   // see ScopedDeviceState::Valid: no saved state, no changes
-        IDirect3DSurface9* oldRT = nullptr; dev->GetRenderTarget(0, &oldRT);
-        IDirect3DSurface9* oldDS = nullptr; dev->GetDepthStencilSurface(&oldDS);
+        IDirect3DSurface9* oldRT = nullptr; d3d9guard::QueryRenderTarget(dev, 0, oldRT);
+        IDirect3DSurface9* oldDS = nullptr; const d3d9guard::Seen dsSeen = d3d9guard::QueryDepthStencil(dev, oldDS);
 
         dev->SetTexture(0, nullptr);
         dev->SetTexture(1, nullptr);
-        if (!oldRT || FAILED(dev->SetRenderTarget(0, mask_.surface)))
+        if (!oldRT || !d3d9guard::Answered(dsSeen) || FAILED(dev->SetRenderTarget(0, mask_.surface)))
         {
             SafeRelease(oldRT);
             SafeRelease(oldDS);

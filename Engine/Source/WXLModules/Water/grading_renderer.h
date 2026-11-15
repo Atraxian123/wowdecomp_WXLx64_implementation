@@ -3,6 +3,8 @@
 #include "fog_data.h"
 
 #include <d3d9.h>
+#include "wxl_d3d9_guard.hpp"
+namespace d3d9guard = wxl::d3d9guard;   // the Water module lives in the global namespace
 
 struct GradingStats
 {
@@ -32,6 +34,8 @@ private:
     {
         IDirect3DSurface9* colour[kRenderTargets] = {};
         IDirect3DSurface9* depth = nullptr;
+        d3d9guard::Seen colourSeen[kRenderTargets] = {};   // whether the device really answered (wxl_d3d9_guard.hpp)
+        d3d9guard::Seen depthSeen = d3d9guard::Seen::No;
     };
 
     bool Skip(const char* reason);
@@ -43,7 +47,7 @@ private:
     bool CopyWorld(IDirect3DDevice9* dev, IDirect3DSurface9* target, const D3DSURFACE_DESC& desc,
                    const D3DVIEWPORT9& world);
     bool GradeTarget(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
-    void DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
+    bool DrawGraded(IDirect3DDevice9* dev, const BoundTargets& bound, const D3DVIEWPORT9& world, float strength);
     void SetGradingState(IDirect3DDevice9* dev, const D3DVIEWPORT9& world, float strength);
 
     IDirect3DVertexShader9* m_vs = nullptr;

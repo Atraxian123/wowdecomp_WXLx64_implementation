@@ -113,6 +113,7 @@ private:
     std::vector<float> m_noiseTexels;
     std::vector<float> m_butterflyTexels;
     RECT m_callerScissor = {};
+    bool m_callerScissorRead = false;   // the device said what it was; a rectangle that was not read is not written back
     IDirect3DPixelShader9* m_boundShader = nullptr;
     IDirect3DSurface9* m_boundTargets[2] = {};
     bool m_targetKnown[2] = {};
