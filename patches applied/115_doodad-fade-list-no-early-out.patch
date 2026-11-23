@@ -1,0 +1,29 @@
+diff --git a/WoW/Source/WorldClient/World.cpp b/WoW/Source/WorldClient/World.cpp
+index 9b89d07..efb313a 100644
+--- a/WoW/Source/WorldClient/World.cpp
++++ b/WoW/Source/WorldClient/World.cpp
+@@ -101,6 +101,7 @@
+ #include "WoW/Source/Object/ObjectClient/Object_C.h"
+ #include "WoW/Source/Game/GameClient/ProjectTex.h"
+ #include "Engine/Source/WXL/WaterHooks.h"
++#include "Engine/Source/WXL/Ini.h"
+ 
+ // STATIC: 0x00ADEE48
+ static const char* s_zonePaths[11] = {
+@@ -3866,7 +3867,15 @@ void CWorldScene::CullDoodadsExterior(TSList<CMapBaseObjLink, TSGetExplicitLink<
+         CMapDoodadDef* doodadDef = static_cast<CMapDoodadDef*>(link->m_owner);
+ 
+         if (doodadDef->m_fadeLevel < fadeLevel) {
+-            if (CMap::header.m_flags & 0x8) {
++            // WXL: with the map header flag 0x8 ("doodad refs sorted by size") the stock client stops at the first
++            // doodad that is too small for the chunk's distance, assuming every later one is smaller still. That only
++            // holds if the ADT really is sorted by the same size classes AND every doodad already knows its class:
++            // m_fadeLevel is 0 until the doodad's model has loaded, so a doodad whose model is still streaming in
++            // ends the walk and hides every later doodad of the chunk, which then pop in as other models finish.
++            // [World] DoodadListEarlyOut=1 brings the stock behaviour back.
++            static const bool s_earlyOut = wxl::ini::GetBool("World", "DoodadListEarlyOut", false);
++
++            if (s_earlyOut && (CMap::header.m_flags & 0x8)) {
+                 return;
+             }
+         } else if (doodadDef->m_model && (doodadDef->m_flags & MAPOBJ_FLAG_PREPARED)) {
