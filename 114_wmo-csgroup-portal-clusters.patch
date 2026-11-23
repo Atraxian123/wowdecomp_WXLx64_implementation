@@ -1,0 +1,390 @@
+diff --git a/WoW/Source/WorldClient/MapObj.cpp b/WoW/Source/WorldClient/MapObj.cpp
+index 7da7e37..3ceed01 100644
+--- a/WoW/Source/WorldClient/MapObj.cpp
++++ b/WoW/Source/WorldClient/MapObj.cpp
+@@ -53,6 +53,7 @@
+ #include "WoW/Source/WorldClient/MapLight.h"
+ #include "WoW/Source/WorldClient/MapObjDef.h"
+ #include "WoW/Source/WorldClient/MapObjGroup.h"
++#include "WoW/Source/WorldClient/MapObjClusters.h"
+ #include "WoW/Source/WorldClient/MapObjShader23.h"
+ #include "WoW/Source/WorldClient/MapRenderChunk.h"
+ #include "WoW/Source/WorldClient/Types.h"
+@@ -1177,6 +1178,11 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+         return;
+     }
+ 
++    // WXL: a "<root>_csN" group is part of its root's cluster (see MapObjClusters.h). Whatever group the traversal
++    // arrives at, it continues from the cluster's root, draws every member and follows the portals of all of them.
++    groupNum = wxl::wmocs::RootOf(this, groupNum);
++    const uint32_t memberCount = wxl::wmocs::MemberCount(this, groupNum);
++
+     CMapObjGroup* group = this->GetGroup(groupNum, 0);
+ 
+     if (!group || (group->m_flags & 0x10000)) {
+@@ -1187,17 +1193,30 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+         interior = 0;
+     }
+ 
+-    s_curGroupIsInterior = interior;
++    uint32_t portalCount = 0;
+ 
+-    if (s_interiorPass && (group->m_flags & 0x40000)) {
+-        CWorldScene::s_interiorSkybox = this->m_skybox;
+-    }
++    for (uint32_t m = 0; m < memberCount; m++) {
++        const uint32_t memberNum = wxl::wmocs::Member(this, groupNum, m);
++        CMapObjGroup* member = m ? this->GetGroup(memberNum, 0) : group;
+ 
+-    if (CMapObj::gRenderCallback) {
+-        CMapObj::gRenderCallback(groupNum, CMapObj::gRenderUserParam);
++        if (!member) {
++            continue; // a member that is not loaded (yet) is drawn once it is
++        }
++
++        s_curGroupIsInterior = m && interior && (member->m_flags & 0x48) ? 0 : interior;
++
++        if (s_interiorPass && (member->m_flags & 0x40000)) {
++            CWorldScene::s_interiorSkybox = this->m_skybox;
++        }
++
++        if (CMapObj::gRenderCallback) {
++            CMapObj::gRenderCallback(memberNum, CMapObj::gRenderUserParam);
++        }
++
++        portalCount += member->m_portalCount;
+     }
+ 
+-    if (!group->m_portalCount) {
++    if (!portalCount) {
+         return;
+     }
+ 
+@@ -1209,9 +1228,17 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+         s_coveredRects.SetCount(0);
+     }
+ 
+-    SMOPortalRef* ref = &this->m_portalRefList[group->m_portalStart];
++    // the portals of every member of the cluster, one after the other
++    for (uint32_t m = 0; m < memberCount; m++) {
++    CMapObjGroup* portalGroup = m ? this->GetGroup(wxl::wmocs::Member(this, groupNum, m), 0) : group;
+ 
+-    for (uint32_t i = 0; i < group->m_portalCount; i++, ref++) {
++    if (!portalGroup) {
++        continue;
++    }
++
++    SMOPortalRef* ref = &this->m_portalRefList[portalGroup->m_portalStart];
++
++    for (uint32_t i = 0; i < portalGroup->m_portalCount; i++, ref++) {
+         uint32_t destGroup = ref->m_groupIndex;
+ 
+         if (destGroup == 0xFFFF) {
+@@ -1220,7 +1247,11 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+ 
+         SMOPortal* portal = &this->m_portalList[ref->m_portalIndex];
+ 
+-        if (destGroup == fromGroup) {
++        // a portal into a _csN group leads into its root's cluster; one back to where we came from (or inside this
++        // cluster) is not followed
++        const uint32_t destRoot = wxl::wmocs::RootOf(this, destGroup);
++
++        if (destRoot == fromGroup || destRoot == groupNum) {
+             continue;
+         }
+ 
+@@ -1231,7 +1262,7 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+             ext->m_stamp = s_portalStamp;
+             ext->m_flags = 0;
+ 
+-            if (!(destFlags & 0x8) && !(group->m_flags & 0x8)) {
++            if (!(destFlags & 0x8) && !(portalGroup->m_flags & 0x8)) {
+                 ext->m_flags = 0x10;
+             }
+ 
+@@ -1318,6 +1349,7 @@ void CMapObj::RenderThruPortals(uint32_t groupNum, uint32_t fromGroup, CRect& nd
+         this->RenderThruPortals(destGroup, groupNum, clip, depth + 1, interior);
+         CWorldScene::FrustumPop();
+     }
++    }
+ 
+     if (depth || !s_pendingPortalViews.Count()) {
+         return;
+@@ -1724,6 +1756,11 @@ void CMapObj::RenderInterior(C44Matrix& mat, C44Matrix& invMat, C3Vector& worldP
+     ndcRect.maxY = 1.0f;
+     ndcRect.maxX = 1.0f;
+ 
++    wxl::wmocs::Refresh(this);
++
++    // WXL: the camera can be inside a root and its _csN groups at once: the cluster is started (and drawn) only once
++    TSGrowableArray<uint32_t> startedRoots;
++
+     for (uint32_t i = 0; i < groups->Count(); i++) {
+         CMapObjGroup* group = this->GetGroup(groups->m_data[i], 0);
+ 
+@@ -1735,6 +1772,18 @@ void CMapObj::RenderInterior(C44Matrix& mat, C44Matrix& invMat, C3Vector& worldP
+             CWorldScene::s_unk_CD8620 = 1;
+         }
+ 
++        const uint32_t root = wxl::wmocs::RootOf(this, groups->m_data[i]);
++        uint32_t k = 0;
++
++        while (k < startedRoots.Count() && startedRoots[k] != root) {
++            k++;
++        }
++
++        if (k < startedRoots.Count()) {
++            continue;
++        }
++
++        startedRoots.Add(1, &root);
+         this->RenderThruPortals(groups->m_data[i], 0xFFFF, ndcRect, 0, 1);
+     }
+ 
+@@ -1774,6 +1823,7 @@ void CMapObj::RenderThruPortalsExterior(C44Matrix& mat, C44Matrix& invMat, C3Vec
+         s_stampedMapObjDef = CWorldScene::s_curMapObjDef;
+     }
+ 
++    wxl::wmocs::Refresh(this);
+     this->RenderThruPortals(groupNum, 0xFFFF, ndcRect, 0, 0);
+ }
+ 
+@@ -1867,6 +1917,7 @@ void CMapObj::Init() {
+ void CMapObj::Clear() {
+     // WXL: shader 23 sidecar data (textures, arrays) of this root
+     wxl::shader23::Unload(this);
++    wxl::wmocs::Unload(this);
+ 
+     int32_t freeData = 1;
+ 
+diff --git a/WoW/Source/WorldClient/MapObjClusters.cpp b/WoW/Source/WorldClient/MapObjClusters.cpp
+new file mode 100644
+index 0000000..dc9f881
+--- /dev/null
++++ b/WoW/Source/WorldClient/MapObjClusters.cpp
+@@ -0,0 +1,182 @@
++// WXL: "<root>_csN" WMO groups, see MapObjClusters.h.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++
++#include "WoW/Source/WorldClient/MapObjClusters.h"
++
++#include <cctype>
++#include <cstring>
++#include <memory>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "Engine/Source/WXL/Ini.h"
++#include "Engine/Source/WXL/Log.h"
++#include "WoW/Source/WorldClient/MapObj.h"
++#include "WoW/Source/WorldClient/MapObjGroup.h"
++
++namespace wxl::wmocs
++{
++    namespace
++    {
++        struct State
++        {
++            uint64_t signature = ~0ull;                 // which groups were loaded when the table was built
++            std::vector<uint16_t> root;                 // per group: its cluster's root (itself when none)
++            std::vector<std::vector<uint16_t>> members; // per root with a cluster: the root, then its _csN groups
++        };
++
++        std::unordered_map<const CMapObj*, std::unique_ptr<State>> s_states;
++
++        bool Enabled()
++        {
++            return wxl::ini::GetBool("WMO", "GroupClusters", true);
++        }
++
++        std::string Lower(const char* s)
++        {
++            std::string out(s);
++
++            for (char& c : out) {
++                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
++            }
++
++            return out;
++        }
++
++        // "name_cs12" -> "name"; empty when the name does not end in "_cs<digits>" (or has nothing in front of it)
++        std::string BaseOfCsName(const std::string& name)
++        {
++            size_t end = name.size();
++            size_t digits = end;
++
++            while (digits > 0 && std::isdigit(static_cast<unsigned char>(name[digits - 1]))) {
++                digits--;
++            }
++
++            if (digits == end || digits < 4 || name.compare(digits - 3, 3, "_cs") != 0) {
++                return std::string();
++            }
++
++            return name.substr(0, digits - 3);
++        }
++    }
++
++    void Refresh(CMapObj* mapObj)
++    {
++        if (!Enabled() || !mapObj->m_isGroupLoaded || mapObj->m_groupInfoCount <= 0) {
++            return;
++        }
++
++        const uint32_t count = static_cast<uint32_t>(mapObj->m_groupInfoCount);
++        std::vector<const char*> names(count, nullptr);
++        uint64_t signature = 1469598103934665603ull;
++
++        for (uint32_t i = 0; i < count; i++) {
++            const CMapObjGroup* group = mapObj->GetGroup(static_cast<int32_t>(i), 0);
++
++            if (group && group->m_groupName) {
++                names[i] = group->m_groupName;
++                signature = (signature ^ (i + 1)) * 1099511628211ull;
++            }
++        }
++
++        std::unique_ptr<State>& slot = s_states[mapObj];
++
++        if (slot && slot->signature == signature) {
++            return;
++        }
++
++        if (!slot) {
++            slot = std::make_unique<State>();
++        }
++
++        State& st = *slot;
++        st.signature = signature;
++        st.root.resize(count);
++        st.members.assign(count, std::vector<uint16_t>());
++
++        std::unordered_map<std::string, uint32_t> byName; // first group of each name
++
++        for (uint32_t i = 0; i < count; i++) {
++            st.root[i] = static_cast<uint16_t>(i);
++
++            if (names[i]) {
++                byName.emplace(Lower(names[i]), i);
++            }
++        }
++
++        for (uint32_t i = 0; i < count; i++) {
++            if (!names[i]) {
++                continue;
++            }
++
++            const std::string base = BaseOfCsName(Lower(names[i]));
++
++            if (base.empty()) {
++                continue;
++            }
++
++            const auto it = byName.find(base);
++
++            if (it == byName.end() || it->second == i) {
++                continue; // the root is not loaded (yet): the group stays on its own until it is
++            }
++
++            st.root[i] = static_cast<uint16_t>(it->second);
++            std::vector<uint16_t>& m = st.members[it->second];
++
++            if (m.empty()) {
++                m.push_back(static_cast<uint16_t>(it->second));
++            }
++
++            m.push_back(static_cast<uint16_t>(i));
++        }
++    }
++
++    void Unload(CMapObj* mapObj)
++    {
++        s_states.erase(mapObj);
++    }
++
++    uint32_t RootOf(const CMapObj* mapObj, uint32_t group)
++    {
++        if (s_states.empty()) {
++            return group;
++        }
++
++        const auto it = s_states.find(mapObj);
++
++        if (it == s_states.end() || group >= it->second->root.size()) {
++            return group;
++        }
++
++        return it->second->root[group];
++    }
++
++    uint32_t MemberCount(const CMapObj* mapObj, uint32_t root)
++    {
++        if (s_states.empty()) {
++            return 1;
++        }
++
++        const auto it = s_states.find(mapObj);
++
++        if (it == s_states.end() || root >= it->second->members.size() || it->second->members[root].empty()) {
++            return 1;
++        }
++
++        return static_cast<uint32_t>(it->second->members[root].size());
++    }
++
++    uint32_t Member(const CMapObj* mapObj, uint32_t root, uint32_t i)
++    {
++        const auto it = s_states.find(mapObj);
++
++        if (i == 0 || it == s_states.end() || root >= it->second->members.size() || i >= it->second->members[root].size()) {
++            return root;
++        }
++
++        return it->second->members[root][i];
++    }
++}
+diff --git a/WoW/Source/WorldClient/MapObjClusters.h b/WoW/Source/WorldClient/MapObjClusters.h
+new file mode 100644
+index 0000000..d37f15e
+--- /dev/null
++++ b/WoW/Source/WorldClient/MapObjClusters.h
+@@ -0,0 +1,37 @@
++// WXL: "<root>_csN" WMO groups are drawn and portal-culled as part of their "<root>" group.
++// Copyright (C) 2026 WarcraftXL (GPLv3, see Event.h)
++//
++// WMOs converted from modern ones have groups whose name is another group's name plus "_cs1", "_cs2", ... (a group that
++// was split off because of the vertex limit). They have no portals of their own, so portal culling only reaches them
++// when the camera stands inside their bounds. Here a "cluster" is a root group together with all of its _csN groups:
++//   - visiting any member of a cluster (as a portal destination or as a start group) visits the whole cluster;
++//   - the portals of every member count as portals of the cluster, so a chain of portals through a _csN group is
++//     unbroken (the same holds when a portal's destination is a _csN group: it leads into the root's cluster);
++//   - a group that is not part of a cluster is its own root: everything behaves as before.
++// Names live in the group headers, so a group's cluster is only known once the group is loaded. Refresh() is called at the
++// start of every portal traversal and rebuilds the table when a group was loaded or unloaded since the last call.
++//
++// [WMO] GroupClusters=0 in WXLSetup.ini turns it off (default 1).
++#pragma once
++
++#include <cstdint>
++
++class CMapObj;
++
++namespace wxl::wmocs
++{
++    /// Brings the cluster table of `mapObj` up to date with the groups that are loaded right now.
++    void Refresh(CMapObj* mapObj);
++
++    /// Frees the table of `mapObj`. Safe when there is none.
++    void Unload(CMapObj* mapObj);
++
++    /// The root group of `group`'s cluster; `group` itself when it has none (or is out of range / 0xFFFF).
++    uint32_t RootOf(const CMapObj* mapObj, uint32_t group);
++
++    /// Number of groups in the cluster of root group `root` (the root included), 1 for a group without a cluster.
++    uint32_t MemberCount(const CMapObj* mapObj, uint32_t root);
++
++    /// The i-th group of the cluster of `root`; index 0 is the root itself.
++    uint32_t Member(const CMapObj* mapObj, uint32_t root, uint32_t i);
++}
