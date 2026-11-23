@@ -1,0 +1,55 @@
+--- a/WoW/Source/WorldClient/MapObj.cpp
++++ b/WoW/Source/WorldClient/MapObj.cpp
+@@ -53,6 +53,7 @@
+ #include "WoW/Source/WorldClient/MapLight.h"
+ #include "WoW/Source/WorldClient/MapObjDef.h"
+ #include "WoW/Source/WorldClient/MapObjGroup.h"
++#include "WoW/Source/WorldClient/MapObjShader23.h"
+ #include "WoW/Source/WorldClient/MapRenderChunk.h"
+ #include "WoW/Source/WorldClient/Types.h"
+ #include "WoW/Source/WorldClient/World.h"
+@@ -949,6 +950,14 @@
+ 
+         batch.m_flags |= 0xF0;
+         SMOMaterial& material = this->m_materialList[batch.m_texture];
++
++        // WXL: a batch of a shader 23 material (listed in the root's .s23 sidecar) is drawn as the layer blend. Only the
++        // regular batches: the transparency batches keep their stock two-pass draw. Returns false when there is no
++        // sidecar, the batch is not one of its materials or a layer texture is still loading.
++        if (i >= static_cast<uint32_t>(group->m_transparencyBatchesCount) && wxl::shader23::HasData(this) && wxl::shader23::DrawBatch(this, group, batch, material, fogMode)) {
++            continue;
++        }
++
+         CTexture* texture = material.Textures()[0];
+         CGxTex* gxTex0 = TextureGetGxTex(texture, 0, nullptr);
+ 
+@@ -1856,6 +1865,9 @@
+ // VERIFY: b756cecb manual
+ // OFFSET: 0x007AE3B0
+ void CMapObj::Clear() {
++    // WXL: shader 23 sidecar data (textures, arrays) of this root
++    wxl::shader23::Unload(this);
++
+     int32_t freeData = 1;
+ 
+     if (this->m_asyncObject) {
+--- a/WoW/Source/WorldClient/MapObjRead.cpp
++++ b/WoW/Source/WorldClient/MapObjRead.cpp
+@@ -12,6 +12,7 @@
+ #include "WoW/Source/WorldClient/Map.h"
+ #include "WoW/Source/WorldClient/MapObj.h"
+ #include "WoW/Source/WorldClient/MapObjGroup.h"
++#include "WoW/Source/WorldClient/MapObjShader23.h"
+ 
+ // STATIC: 0x00ADFC4C
+ TSList<CMapObj, TSGetExplicitLink<CMapObj> > CMapObj::s_asyncLoadQueue = TSExplicitList<CMapObj, offsetof(CMapObj, m_asyncLoadLink)>();
+@@ -457,6 +458,9 @@
+ 
+     CMapObj::s_asyncLoadQueue.LinkToTail(this);
+ 
++    // WXL: "<root>.s23" beside the root WMO carries the layers, UV sets and weights of its shader 23 materials
++    wxl::shader23::Load(this, this->m_wmoName);
++
+     return true;
+ }
+ 

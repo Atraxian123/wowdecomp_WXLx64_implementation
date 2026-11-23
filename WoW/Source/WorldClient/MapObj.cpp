@@ -53,6 +53,7 @@
 #include "WoW/Source/WorldClient/MapLight.h"
 #include "WoW/Source/WorldClient/MapObjDef.h"
 #include "WoW/Source/WorldClient/MapObjGroup.h"
+#include "WoW/Source/WorldClient/MapObjShader23.h"
 #include "WoW/Source/WorldClient/MapRenderChunk.h"
 #include "WoW/Source/WorldClient/Types.h"
 #include "WoW/Source/WorldClient/World.h"
@@ -949,6 +950,14 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
 
         batch.m_flags |= 0xF0;
         SMOMaterial& material = this->m_materialList[batch.m_texture];
+
+        // WXL: a batch of a shader 23 material (listed in the root's .s23 sidecar) is drawn as the layer blend. Only the
+        // regular batches: the transparency batches keep their stock two-pass draw. Returns false when there is no
+        // sidecar, the batch is not one of its materials or a layer texture is still loading.
+        if (i >= static_cast<uint32_t>(group->m_transparencyBatchesCount) && wxl::shader23::HasData(this) && wxl::shader23::DrawBatch(this, group, batch, material, fogMode)) {
+            continue;
+        }
+
         CTexture* texture = material.Textures()[0];
         CGxTex* gxTex0 = TextureGetGxTex(texture, 0, nullptr);
 
@@ -1856,6 +1865,9 @@ void CMapObj::Init() {
 // VERIFY: b756cecb manual
 // OFFSET: 0x007AE3B0
 void CMapObj::Clear() {
+    // WXL: shader 23 sidecar data (textures, arrays) of this root
+    wxl::shader23::Unload(this);
+
     int32_t freeData = 1;
 
     if (this->m_asyncObject) {

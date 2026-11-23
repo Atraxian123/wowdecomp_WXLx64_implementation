@@ -12,6 +12,7 @@
 #include "WoW/Source/WorldClient/Map.h"
 #include "WoW/Source/WorldClient/MapObj.h"
 #include "WoW/Source/WorldClient/MapObjGroup.h"
+#include "WoW/Source/WorldClient/MapObjShader23.h"
 
 // STATIC: 0x00ADFC4C
 TSList<CMapObj, TSGetExplicitLink<CMapObj> > CMapObj::s_asyncLoadQueue = TSExplicitList<CMapObj, offsetof(CMapObj, m_asyncLoadLink)>();
@@ -456,6 +457,9 @@ bool CMapObj::Read(char* fileName) {
     AsyncFileReadObject(this->m_asyncObject, 0);
 
     CMapObj::s_asyncLoadQueue.LinkToTail(this);
+
+    // WXL: "<root>.s23" beside the root WMO carries the layers, UV sets and weights of its shader 23 materials
+    wxl::shader23::Load(this, this->m_wmoName);
 
     return true;
 }
