@@ -381,6 +381,11 @@ namespace wxl::shader23
             return false;
         }
 
+        // a material with a blend mode of its own (additive, alpha, ...) keeps the stock draw: the layer blend is opaque
+        if (material.m_blendMode != 0) {
+            return false;
+        }
+
         Root& r = *rootIt->second;
         const auto matIt = r.matByIndex.find(batch.m_texture);
 

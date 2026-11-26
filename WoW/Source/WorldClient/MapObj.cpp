@@ -952,10 +952,11 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
         batch.m_flags |= 0xF0;
         SMOMaterial& material = this->m_materialList[batch.m_texture];
 
-        // WXL: a batch of a shader 23 material (listed in the root's .s23 sidecar) is drawn as the layer blend. Only the
-        // regular batches: the transparency batches keep their stock two-pass draw. Returns false when there is no
-        // sidecar, the batch is not one of its materials or a layer texture is still loading.
-        if (i >= static_cast<uint32_t>(group->m_transparencyBatchesCount) && wxl::shader23::HasData(this) && wxl::shader23::DrawBatch(this, group, batch, material, fogMode)) {
+        // WXL: a batch of a shader 23 material (listed in the root's .s23 sidecar) is drawn as the layer blend, in the
+        // transparency range of the batch list too (converted groups can have all of their batches there). Returns
+        // false when there is no sidecar, the batch is not one of its materials, the material has a blend mode of its
+        // own or a layer texture is still loading.
+        if (wxl::shader23::HasData(this) && wxl::shader23::DrawBatch(this, group, batch, material, fogMode)) {
             continue;
         }
 
@@ -1008,7 +1009,11 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
         g_theGxDevicePtr->RsSet(GxRs_Texture1, gxTex1);
         effect->SetCurrent();
 
-        if (i >= group->m_transparencyBatchesCount) {
+        // WXL: the first "transparency" batches of a group get the two-pass interior/exterior mix (blend modes 9 then 7),
+        // which ignores the material's own blend mode. A converted group can have ALL of its batches in that range, so
+        // a material that asks for a blend mode (additive glow, alpha) would be drawn solid. Those take the regular
+        // path below, which honours the blend mode.
+        if (i >= group->m_transparencyBatchesCount || material.m_blendMode != 0) {
             if (group->m_flags & 0x48) {
                 CMapObjGroup::SetLighting(group, (material.m_flags & 0x1) == 0);
                 if (s_shadowInterior) {
@@ -1582,7 +1587,8 @@ void CMapObj::InteriorRender(CMapObjGroup* group, uint32_t index) {
         g_theGxDevicePtr->RsSet(GxRs_Texture1, gxTex1);
         effect->SetCurrent();
 
-        if (i >= group->m_transparencyBatchesCount) {
+        // WXL: see UnifiedRender: a batch with a blend mode of its own is not drawn as a two-pass transition batch
+        if (i >= group->m_transparencyBatchesCount || material.m_blendMode != 0) {
             bool interiorBatch = i < static_cast<uint32_t>(group->m_transparencyBatchesCount + group->m_intBatchCount);
             SetShaderFogFromDayNight((material.m_flags & 0x2) == 0 ? fogMode : 0);
 
