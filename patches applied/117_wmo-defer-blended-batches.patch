@@ -1,0 +1,38 @@
+diff --git a/WoW/Source/WorldClient/MapObj.cpp b/WoW/Source/WorldClient/MapObj.cpp
+index ff82fc7..94034b8 100644
+--- a/WoW/Source/WorldClient/MapObj.cpp
++++ b/WoW/Source/WorldClient/MapObj.cpp
+@@ -938,13 +938,24 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
+         defaultTex = TextureGetGxTex(CWorldScene::s_defaultTexture, 1, nullptr);
+     }
+ 
++    // WXL: two passes over the batch list. Batches whose material blends (alpha, additive, mod, ...) are drawn after all
++    // the others, so they blend over the finished interior instead of being drawn first (in a group they are often the
++    // first batches), and without writing depth, so they cannot hide whatever is drawn after them (the exterior seen
++    // through a window or door, doodads, other objects). Alpha-key cutouts (blend mode 1) are not deferred.
++    for (int32_t blendPass = 0; blendPass < 2; blendPass++)
+     for (uint32_t i = 0; i < static_cast<uint32_t>(group->m_batchListCount); i++) {
+         SMOBatch& batch = group->m_batchList[i];
+ 
+-        if (!index) {
++        if (!index && blendPass == 0) {
+             batch.m_flags &= 0xF;
+         }
+ 
++        const bool deferredBlend = batch.m_texture < this->m_header->m_nTextures && this->m_materialList[batch.m_texture].m_blendMode >= 2;
++
++        if (deferredBlend != (blendPass == 1)) {
++            continue;
++        }
++
+         if ((batch.m_flags & 0xF0) || CMapObj::CullBatch(&batch)) {
+             continue;
+         }
+@@ -1039,6 +1050,7 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
+                 SetShaderFogFromDayNight(fogMode);
+             }
+ 
++            GxRsSet(GxRs_DepthWrite, static_cast<int32_t>(material.m_blendMode < 2)); // WXL: blended batches do not write depth
+             GxRsSet(GxRs_BlendingMode, static_cast<int32_t>(material.m_blendMode));
+             CShaderEffect::SetAlphaRefDefault();
+             CMapObj::SelectWorldShaders();
