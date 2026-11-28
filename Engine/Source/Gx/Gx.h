@@ -70,6 +70,8 @@ void GxPrimIndexPtr(uint32_t indexCount, const uint16_t* indices);
 void GxPrimLockVertexPtrs(uint32_t vertexCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const uint8_t* bone, uint32_t boneStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride);
 void GxPrimVertexPtr(CGxBuf* buf, EGxVertexBufferFormat format);
 void GxPrimVertexPtr(uint32_t vertexCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride);
+// WXL: same, but writes only vertices [firstVertex, firstVertex + rangeCount) of the (element 0 based) source arrays.
+void GxPrimVertexPtrRange(uint32_t firstVertex, uint32_t rangeCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride);
 void GxPrimLockIndexPtr(EGxPrim primType, uint32_t indexCount, const uint16_t* indices);
 void GxPrimUnlockVertexPtrs();
 void GxTexParameters(const CGxTex* texId, CGxTexParms& parms);

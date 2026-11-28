@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "Engine/Source/Base/Handle.h"
+#include "Engine/Source/Services/AsyncFile.h"
+#include "Engine/Source/Storm/H/storm.h"
 #include "Engine/Source/BlizzardCore/SFile2-Core.h"
 #include "Engine/Source/Gx/CGxDevice/CGxDevice.h"
 #include "Engine/Source/Gx/CGxTex.h"
@@ -38,34 +40,60 @@
 
 namespace wxl::shader23
 {
+    constexpr uint32_t kMaxGroupRecords = 512;
+    constexpr uint32_t kMaxMaterialIndex = 0x10000;
+    constexpr uint32_t kMaxGroupNumber = 0x10000;
+
+    // Everything computed for one group record, built the first time a batch of that group is drawn.
+    struct GroupData
+    {
+        uint32_t first = 0;               // first stored vertex
+        uint32_t count = 0;               // stored vertices
+        std::vector<C2Vector> uv[S23_MAX_UV_SETS]; // indexed by absolute vertex number (the head is zero)
+        const uint8_t* weights = nullptr; // count * 4 bytes inside the file image, or null
+        std::vector<CImVector> colors[16][S23_LAYERS]; // [layer mask][layer], built when first needed
+
+        // Outdoor lighting of the whole stored range, rebuilt only when the sun / ambient / diffuse (or the group's
+        // orientation) changed: litKey holds the quantised light direction in the group's space and the 6 colour bytes.
+        std::vector<CImVector> lit;
+        int32_t litKey[9] = {};
+        bool litValid = false;
+    };
+
+    // One root WMO's sidecar. The file is read by the async file queue; the root is only used once `ready`.
+    struct Root
+    {
+        const CMapObj* owner = nullptr;
+        uint8_t* file = nullptr;          // SMemAlloc'd, filled by the async read
+        size_t fileSize = 0;
+        CAsyncObject* async = nullptr;    // pending read, null once it finished or was cancelled
+        bool ready = false;
+        const S23Header* hdr = nullptr;
+        const S23Material* mats = nullptr;
+        const S23Group* groups = nullptr;
+        const char* strings = nullptr;
+        std::vector<int32_t> matRecord;   // MOMT index -> material record, -1 when not a shader 23 material
+        std::vector<int32_t> groupRecord; // group number -> group record, -1 when the sidecar has none
+        const CMapObjGroup* cacheGroup = nullptr; // batches of one group are drawn back to back: remember its record
+        int32_t cacheRecord = -1;
+        std::vector<CTexture*> textures;                     // [record * S23_LAYERS + layer]
+        std::vector<uint8_t> textureTried;
+        std::vector<std::unique_ptr<GroupData>> groupData;   // [record]
+
+        Root() = default;
+        Root(const Root&) = delete;
+        Root& operator=(const Root&) = delete;
+
+        ~Root()
+        {
+            if (file) {
+                SMemFree(file, __FILE__, __LINE__, 0);
+            }
+        }
+    };
+
     namespace
     {
-        constexpr uint32_t kMaxGroupRecords = 512;
-
-        // Everything computed for one group record, built the first time a batch of that group is drawn.
-        struct GroupData
-        {
-            uint32_t first = 0;               // first stored vertex
-            uint32_t count = 0;               // stored vertices
-            std::vector<C2Vector> uv[S23_MAX_UV_SETS]; // indexed by absolute vertex number (the head is zero)
-            const uint8_t* weights = nullptr; // count * 4 bytes inside the file image, or null
-            std::vector<CImVector> colors[16][S23_LAYERS]; // [layer mask][layer], built when first needed
-        };
-
-        struct Root
-        {
-            std::vector<uint8_t> file;
-            const S23Header* hdr = nullptr;
-            const S23Material* mats = nullptr;
-            const S23Group* groups = nullptr;
-            const char* strings = nullptr;
-            std::unordered_map<uint32_t, uint32_t> matByIndex;   // MOMT index -> record
-            std::unordered_map<uint32_t, uint32_t> groupByIndex; // group number -> record
-            std::vector<CTexture*> textures;                     // [record * S23_LAYERS + layer]
-            std::vector<uint8_t> textureTried;
-            std::vector<std::unique_ptr<GroupData>> groupData;   // [record]
-        };
-
         std::unordered_map<const CMapObj*, std::unique_ptr<Root>> s_roots;
 
         bool Enabled()
@@ -73,31 +101,10 @@ namespace wxl::shader23
             return wxl::ini::GetBool("WMO", "Shader23", true);
         }
 
-        bool ReadWhole(const char* path, std::vector<uint8_t>& out)
-        {
-            SFileImpl* file = nullptr;
-
-            if (!SFileOpenFile(path, &file) || !file) {
-                return false;
-            }
-
-            const uint32_t size = SFileGetFileSize(file, nullptr);
-            bool ok = size >= sizeof(S23Header) && size < (1u << 30);
-
-            if (ok) {
-                out.resize(size);
-                uint32_t read = 0;
-                ok = SFileReadFile(file, out.data(), size, &read, nullptr, 0) && read == size;
-            }
-
-            SFileCloseFile(file);
-            return ok;
-        }
-
         bool Validate(Root& r)
         {
-            const uint8_t* base = r.file.data();
-            const size_t size = r.file.size();
+            const uint8_t* base = r.file;
+            const size_t size = r.fileSize;
             const S23Header* h = reinterpret_cast<const S23Header*>(base);
 
             if (h->magic != S23_MAGIC || h->version != S23_VERSION) {
@@ -117,8 +124,21 @@ namespace wxl::shader23
             r.groups = reinterpret_cast<const S23Group*>(base + h->groupsOffset);
             r.strings = reinterpret_cast<const char*>(base + h->stringsOffset);
 
+            uint32_t matSlots = 0;
+            uint32_t groupSlots = 0;
+
             for (uint32_t i = 0; i < h->materialCount; i++) {
-                r.matByIndex[r.mats[i].materialIndex] = i;
+                if (r.mats[i].materialIndex < kMaxMaterialIndex) {
+                    matSlots = std::max(matSlots, r.mats[i].materialIndex + 1);
+                }
+            }
+
+            r.matRecord.assign(matSlots, -1);
+
+            for (uint32_t i = 0; i < h->materialCount; i++) {
+                if (r.mats[i].materialIndex < matSlots) {
+                    r.matRecord[r.mats[i].materialIndex] = static_cast<int32_t>(i);
+                }
             }
 
             for (uint32_t i = 0; i < h->groupCount; i++) {
@@ -129,7 +149,17 @@ namespace wxl::shader23
                     return false;
                 }
 
-                r.groupByIndex[g.groupIndex] = i;
+                if (g.groupIndex < kMaxGroupNumber) {
+                    groupSlots = std::max(groupSlots, g.groupIndex + 1);
+                }
+            }
+
+            r.groupRecord.assign(groupSlots, -1);
+
+            for (uint32_t i = 0; i < h->groupCount; i++) {
+                if (r.groups[i].groupIndex < groupSlots) {
+                    r.groupRecord[r.groups[i].groupIndex] = static_cast<int32_t>(i);
+                }
             }
 
             r.textures.assign(static_cast<size_t>(h->materialCount) * S23_LAYERS, nullptr);
@@ -188,7 +218,7 @@ namespace wxl::shader23
             slot->first = g.firstVertex;
             slot->count = g.vertexCount;
 
-            const uint8_t* block = r.file.data() + g.dataOffset;
+            const uint8_t* block = r.file + g.dataOffset;
             const size_t total = static_cast<size_t>(g.firstVertex) + g.vertexCount;
 
             for (uint32_t s = 0; s < S23_MAX_UV_SETS; s++) {
@@ -253,7 +283,7 @@ namespace wxl::shader23
 
     namespace
     {
-        // Per-vertex day/night lighting of an outdoor batch, computed on the CPU with the formula the stock fixed-function
+        // Per-vertex day/night lighting of an outdoor group, computed on the CPU with the formula the stock fixed-function
         // WMO path gets from the device: the baked vertex colour is the emissive term, the material is 0x7F7F7F for both
         // ambient and diffuse, and light 0 carries the day/night ambient and sun of "light 1" (the same values
         // CMapObjGroup::SetLighting mode 1 hands to the stock draw):
@@ -262,7 +292,11 @@ namespace wxl::shader23
         // alpha, and the vertex alpha carries the layer weights.
         // The sun direction is a world-space direction; the vertex normals are in the group's space, so it is brought
         // into that space with the current world matrix (a rotation, possibly with a uniform scale).
-        void LightBatch(const CMapObjGroup* group, uint32_t first, uint32_t last, const std::vector<CImVector>& baked, std::vector<CImVector>& lit)
+        //
+        // The result only depends on the sun direction in the group's space and on the ambient/diffuse bytes, so the whole
+        // stored range is lit once and reused until one of those changes (the direction is compared at 1/1024 steps, well
+        // under one colour level). Before, every batch re-lit its vertices every frame.
+        void LightGroup(const CMapObjGroup* group, GroupData& gd, const std::vector<CImVector>& baked)
         {
             DayNight::DNInfo* info = DayNight::GetInfo();
             const float k = 0.0039215689f;
@@ -292,14 +326,29 @@ namespace wxl::shader23
                 lz /= len;
             }
 
+            const int32_t key[9] = {
+                static_cast<int32_t>(std::lround(lx * 1024.0f)), static_cast<int32_t>(std::lround(ly * 1024.0f)), static_cast<int32_t>(std::lround(lz * 1024.0f)),
+                info->m_light1.m_ambient.r, info->m_light1.m_ambient.g, info->m_light1.m_ambient.b,
+                info->m_light1.m_diffuse.r, info->m_light1.m_diffuse.g, info->m_light1.m_diffuse.b
+            };
+
+            const size_t total = static_cast<size_t>(gd.first) + gd.count;
+
+            if (gd.litValid && gd.lit.size() >= total && std::memcmp(key, gd.litKey, sizeof(key)) == 0) {
+                return;
+            }
+
+            std::memcpy(gd.litKey, key, sizeof(key));
+            gd.litValid = true;
+
+            if (gd.lit.size() < total) {
+                gd.lit.resize(total);
+            }
+
             const float amb[3] = { info->m_light1.m_ambient.r * k, info->m_light1.m_ambient.g * k, info->m_light1.m_ambient.b * k };
             const float dif[3] = { info->m_light1.m_diffuse.r * k, info->m_light1.m_diffuse.g * k, info->m_light1.m_diffuse.b * k };
 
-            if (lit.size() <= last) {
-                lit.resize(static_cast<size_t>(last) + 1);
-            }
-
-            for (uint32_t v = first; v <= last; v++) {
+            for (uint32_t v = gd.first; v < total; v++) {
                 const C3Vector& n = group->m_normalList[v];
                 const float ndl = len > 0.0f ? std::max(0.0f, n.x * lx + n.y * ly + n.z * lz) : 0.0f;
                 const CImVector& c = baked[v];
@@ -310,10 +359,34 @@ namespace wxl::shader23
                     out[i] = std::min(1.0f, in[i] + m * (amb[i] + dif[i] * ndl));
                 }
 
-                lit[v].r = static_cast<uint8_t>(out[0] * 255.0f + 0.5f);
-                lit[v].g = static_cast<uint8_t>(out[1] * 255.0f + 0.5f);
-                lit[v].b = static_cast<uint8_t>(out[2] * 255.0f + 0.5f);
-                lit[v].a = c.a;
+                gd.lit[v].r = static_cast<uint8_t>(out[0] * 255.0f + 0.5f);
+                gd.lit[v].g = static_cast<uint8_t>(out[1] * 255.0f + 0.5f);
+                gd.lit[v].b = static_cast<uint8_t>(out[2] * 255.0f + 0.5f);
+                gd.lit[v].a = 0xFF; // the layer alpha is written per pass
+            }
+        }
+
+        void AsyncFailedCallback(CAsyncObject* object)
+        {
+            void* buffer = object->m_buffer;
+            AsyncFileReadDestroyObject(object);
+            SMemFree(buffer, __FILE__, __LINE__, 0);
+        }
+
+        // Runs on the main thread from the async file poll handler once the read finished.
+        void PostloadCallback(void* arg)
+        {
+            Root* r = static_cast<Root*>(arg);
+            AsyncFileReadDestroyObject(r->async);
+            r->async = nullptr;
+
+            if (Validate(*r)) {
+                r->ready = true;
+                wxl::Log("[Shader23] sidecar loaded: %u material(s), %u group(s)", r->hdr->materialCount, r->hdr->groupCount);
+            } else {
+                wxl::Log("[Shader23] not a usable version %u sidecar, ignored", S23_VERSION);
+                SMemFree(r->file, __FILE__, __LINE__, 0);
+                r->file = nullptr;
             }
         }
     }
@@ -335,19 +408,38 @@ namespace wxl::shader23
 
         path.replace(dot, std::string::npos, ".s23");
 
-        auto root = std::make_unique<Root>();
+        SFileImpl* file = nullptr;
 
-        if (!ReadWhole(path.c_str(), root->file)) {
+        if (!SFileOpenFile(path.c_str(), &file) || !file) {
             return; // no sidecar: an ordinary WMO
         }
 
-        if (!Validate(*root)) {
-            wxl::Log("[Shader23] %s: not a usable version %u sidecar, ignored", path.c_str(), S23_VERSION);
+        const uint32_t size = SFileGetFileSize(file, nullptr);
+
+        if (size < sizeof(S23Header) || size >= (1u << 30)) {
+            SFileCloseFile(file);
             return;
         }
 
-        wxl::Log("[Shader23] %s: %u material(s), %u group(s)", path.c_str(), root->hdr->materialCount, root->hdr->groupCount);
+        // The read goes through the async file queue like the root WMO's own (same priority, queued right behind it), and
+        // the sidecar is only used once it is validated in the postload callback on the main thread. Until then
+        // HasData() is false and the stock draw runs.
+        auto root = std::make_unique<Root>();
+        root->owner = mapObj;
+        root->fileSize = size;
+        root->file = static_cast<uint8_t*>(SMemAlloc(size, __FILE__, __LINE__, 0));
+
+        CAsyncObject* object = AsyncFileReadAllocObject();
+        object->m_file = file;
+        object->m_buffer = root->file;
+        object->m_size = size;
+        object->m_userArg = root.get();
+        object->m_userPostloadCallback = reinterpret_cast<void*>(PostloadCallback);
+        object->m_priority = 124;
+        root->async = object;
+
         s_roots[mapObj] = std::move(root);
+        AsyncFileReadObject(object, 0);
     }
 
     void Unload(CMapObj* mapObj)
@@ -358,7 +450,19 @@ namespace wxl::shader23
             return;
         }
 
-        for (CTexture*& t : it->second->textures) {
+        Root& r = *it->second;
+
+        if (r.async) {
+            // same protocol as CMapObj::Clear: when the read is in flight the cancel callback frees the buffer later
+            const int32_t freeData = AsyncFile::Cancel(r.async, AsyncFailedCallback);
+            r.async = nullptr;
+
+            if (!freeData) {
+                r.file = nullptr;
+            }
+        }
+
+        for (CTexture*& t : r.textures) {
             if (t) {
                 HandleClose(reinterpret_cast<HOBJECT>(t));
                 t = nullptr;
@@ -368,16 +472,24 @@ namespace wxl::shader23
         s_roots.erase(it);
     }
 
-    bool HasData(const CMapObj* mapObj)
+    Root* Find(const CMapObj* mapObj)
     {
-        return !s_roots.empty() && s_roots.find(mapObj) != s_roots.end();
+        if (s_roots.empty()) {
+            return nullptr;
+        }
+
+        const auto it = s_roots.find(mapObj);
+        return it != s_roots.end() && it->second->ready ? it->second.get() : nullptr;
     }
 
-    bool DrawBatch(CMapObj* mapObj, CMapObjGroup* group, const SMOBatch& batch, const SMOMaterial& material, int32_t fogMode)
+    bool HasData(const CMapObj* mapObj)
     {
-        const auto rootIt = s_roots.find(mapObj);
+        return Find(mapObj) != nullptr;
+    }
 
-        if (rootIt == s_roots.end()) {
+    bool DrawBatch(Root* root, CMapObj* mapObj, CMapObjGroup* group, const SMOBatch& batch, const SMOMaterial& material, int32_t fogMode)
+    {
+        if (!root) {
             return false;
         }
 
@@ -386,36 +498,41 @@ namespace wxl::shader23
             return false;
         }
 
-        Root& r = *rootIt->second;
-        const auto matIt = r.matByIndex.find(batch.m_texture);
+        Root& r = *root;
+        const int32_t matRecord = batch.m_texture < r.matRecord.size() ? r.matRecord[batch.m_texture] : -1;
 
-        if (matIt == r.matByIndex.end()) {
+        if (matRecord < 0) {
             return false;
         }
 
-        const uint32_t matRecord = matIt->second;
         const uint32_t mask = r.mats[matRecord].layerMask & 15u;
 
         if (!mask) {
             return false;
         }
 
-        const int32_t groupNumber = GroupNumber(mapObj, group);
-        const auto grpIt = groupNumber >= 0 ? r.groupByIndex.find(static_cast<uint32_t>(groupNumber)) : r.groupByIndex.end();
+        if (r.cacheGroup != group) {
+            const int32_t groupNumber = GroupNumber(mapObj, group);
+            r.cacheGroup = group;
+            r.cacheRecord = groupNumber >= 0 && static_cast<size_t>(groupNumber) < r.groupRecord.size() ? r.groupRecord[groupNumber] : -1;
+        }
 
-        if (grpIt == r.groupByIndex.end()) {
+        const int32_t grpRecord = r.cacheRecord;
+
+        if (grpRecord < 0) {
             return false;
         }
 
-        // the batch's vertices must all be inside the stored range, and the group's own arrays must cover them
-        const S23Group& stored = r.groups[grpIt->second];
+        // the batch's vertices must all be inside the stored range, and the group's own arrays must cover the stored range
+        // (the per-vertex colour / normal arrays are read over all of it)
+        const S23Group& stored = r.groups[grpRecord];
 
         if (!stored.vertexCount || batch.m_vertexStart < stored.firstVertex || static_cast<uint32_t>(batch.m_vertexEnd) >= stored.firstVertex + stored.vertexCount
-            || static_cast<int32_t>(batch.m_vertexEnd) >= group->m_vertexListCount) {
+            || static_cast<int32_t>(stored.firstVertex + stored.vertexCount) > group->m_vertexListCount) {
             return false;
         }
 
-        GroupData& gd = Group(r, grpIt->second);
+        GroupData& gd = Group(r, static_cast<uint32_t>(grpRecord));
 
         // every layer texture has to be ready, so a layer never shows up half-way through streaming in
         CGxTex* gxTex[S23_LAYERS] = {};
@@ -426,7 +543,7 @@ namespace wxl::shader23
                 continue;
             }
 
-            CTexture* t = LayerTexture(r, matRecord, k);
+            CTexture* t = LayerTexture(r, static_cast<uint32_t>(matRecord), k);
             gxTex[k] = t ? TextureGetGxTex(t, 0, nullptr) : nullptr;
             ready = ready && gxTex[k] != nullptr;
         }
@@ -446,10 +563,10 @@ namespace wxl::shader23
         g_theGxDevicePtr->RsSet(GxRs_AlphaRef, 0);
 
         // Outdoor groups (0x8 exterior, 0x40 exterior lit) are drawn the way the stock outdoor path draws them: lit by
-        // the day/night sun and ambient (see LightBatch), always with the exterior fog and ignoring the "unfogged"
+        // the day/night sun and ambient (see LightGroup), always with the exterior fog and ignoring the "unfogged"
         // flag. A material with the unlit flag (0x1) and every indoor group keep the baked colours only.
         const bool outdoor = (group->m_flags & 0x48) != 0;
-        const bool lit = outdoor && !(material.m_flags & 0x1) && group->m_normalList;
+        const bool lit = outdoor && !(material.m_flags & 0x1) && group->m_normalList && static_cast<int32_t>(gd.first + gd.count) <= group->m_normalListCount;
 
         if (outdoor) {
             fogMode = 2;
@@ -485,17 +602,15 @@ namespace wxl::shader23
         draw.m_minIndex = batch.m_vertexStart;
         draw.m_maxIndex = batch.m_vertexEnd;
 
-        const uint32_t vertexCount = static_cast<uint32_t>(batch.m_vertexEnd) + 1;
+        // Only the vertices this batch references are streamed (indices stay absolute: the stream is sized for
+        // vertexEnd + 1 but only [vertexStart, vertexEnd] is written).
+        const uint32_t firstVertex = batch.m_vertexStart;
+        const uint32_t rangeCount = static_cast<uint32_t>(batch.m_vertexEnd) - firstVertex + 1;
         bool firstLayer = true;
 
-        // outdoor: the lit colours of this batch's vertices, shared by all layers (only the alpha differs per layer)
-        static std::vector<CImVector> s_lit;
-        static std::vector<CImVector> s_pass;
-
+        // outdoor: the group's lit colours (rebuilt only when the light changed); only the alpha differs per layer
         if (lit) {
-            const std::vector<CImVector>& baked = LayerColors(gd, group, mask, 0); // the group's baked colours (alpha unused)
-            LightBatch(group, batch.m_vertexStart, batch.m_vertexEnd, baked, s_lit);
-            s_pass.resize(vertexCount);
+            LightGroup(group, gd, LayerColors(gd, group, mask, 0)); // the group's baked colours (alpha unused)
         }
 
         for (uint32_t k = 0; k < S23_LAYERS; k++) {
@@ -506,19 +621,21 @@ namespace wxl::shader23
             const std::vector<CImVector>* colors = &LayerColors(gd, group, mask, k);
 
             if (lit) {
-                for (uint32_t v = batch.m_vertexStart; v <= static_cast<uint32_t>(batch.m_vertexEnd); v++) {
-                    s_pass[v] = s_lit[v];
-                    s_pass[v].a = (*colors)[v].a; // the layer's blend alpha
+                // each draw streams its vertices right away, so the layer's alpha can be written over the shared array
+                std::vector<CImVector>& litColors = gd.lit;
+
+                for (uint32_t v = firstVertex; v < firstVertex + rangeCount; v++) {
+                    litColors[v].a = (*colors)[v].a;
                 }
 
-                colors = &s_pass;
+                colors = &litColors;
             }
 
             GxTexSetWrap(gxTex[k], GxTex_Wrap, GxTex_Wrap); // the layers tile
             g_theGxDevicePtr->RsSet(GxRs_Texture0, gxTex[k]);
             g_theGxDevicePtr->RsSet(GxRs_BlendingMode, static_cast<int32_t>(firstLayer ? GxBlend_Opaque : GxBlend_Alpha));
-            GxPrimVertexPtr(vertexCount, group->m_vertexList, sizeof(C3Vector), group->m_normalList, sizeof(C3Vector), colors->data(), sizeof(CImVector),
-                            gd.uv[k].data(), sizeof(C2Vector), nullptr, 0);
+            GxPrimVertexPtrRange(firstVertex, rangeCount, group->m_vertexList, sizeof(C3Vector), group->m_normalList, sizeof(C3Vector), colors->data(), sizeof(CImVector),
+                                 gd.uv[k].data(), sizeof(C2Vector), nullptr, 0);
             g_theGxDevicePtr->Draw(&draw, 1);
             firstLayer = false;
         }

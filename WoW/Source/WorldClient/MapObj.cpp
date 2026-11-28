@@ -932,6 +932,7 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
     }
 
     int32_t fogMode = 2 - (s_curGroupIsInterior != 0);
+    wxl::shader23::Root* s23 = wxl::shader23::Find(this); // WXL: one lookup per group render, not per batch
     CGxTex* defaultTex = nullptr;
 
     if (CMap::s_isStreamingMode) {
@@ -967,7 +968,7 @@ void CMapObj::UnifiedRender(CMapObjGroup* group, uint32_t index) {
         // transparency range of the batch list too (converted groups can have all of their batches there). Returns
         // false when there is no sidecar, the batch is not one of its materials, the material has a blend mode of its
         // own or a layer texture is still loading.
-        if (wxl::shader23::HasData(this) && wxl::shader23::DrawBatch(this, group, batch, material, fogMode)) {
+        if (s23 && wxl::shader23::DrawBatch(s23, this, group, batch, material, fogMode)) {
             continue;
         }
 

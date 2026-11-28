@@ -694,7 +694,21 @@ void GxPrimVertexPtr(CGxBuf* buf, EGxVertexBufferFormat format) {
 
 // VERIFY: d5a113e1 manual
 // OFFSET: 0x00682400
+// WXL: the stream is sized for `firstVertex + rangeCount` vertices but only vertices [firstVertex, firstVertex + rangeCount) are
+// written; the source pointers are the arrays' element 0. Indexed draws that only reference that range (a WMO batch with its
+// min/max index) skip copying everything below it.
+static void PrimVertexPtrRange(uint32_t firstVertex, uint32_t rangeCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride);
+
 void GxPrimVertexPtr(uint32_t vertexCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride) {
+    PrimVertexPtrRange(0, vertexCount, pos, posStride, normal, normalStride, color, colorStride, tex0, tex0Stride, tex1, tex1Stride);
+}
+
+void GxPrimVertexPtrRange(uint32_t firstVertex, uint32_t rangeCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride) {
+    PrimVertexPtrRange(firstVertex, rangeCount, pos, posStride, normal, normalStride, color, colorStride, tex0, tex0Stride, tex1, tex1Stride);
+}
+
+static void PrimVertexPtrRange(uint32_t firstVertex, uint32_t rangeCount, const C3Vector* pos, uint32_t posStride, const C3Vector* normal, uint32_t normalStride, const CImVector* color, uint32_t colorStride, const C2Vector* tex0, uint32_t tex0Stride, const C2Vector* tex1, uint32_t tex1Stride) {
+    const uint32_t vertexCount = firstVertex + rangeCount;
     EGxVertexBufferFormat format = GxVBF_PN;
 
     if (pos) {
@@ -768,7 +782,23 @@ void GxPrimVertexPtr(uint32_t vertexCount, const C3Vector* pos, uint32_t posStri
         tex1Stride = 0;
     }
 
-    for (uint32_t i = 0; i < vertexCount; i++) {
+    if (firstVertex) {
+        // skip the head of the range: advance source and destination (an absent attribute has stride 0 on both sides)
+        posDst += static_cast<size_t>(firstVertex) * vertexSize;
+        normalDst += static_cast<size_t>(firstVertex) * normalDstStride;
+        colorDst += static_cast<size_t>(firstVertex) * colorDstStride;
+        tex0Dst += static_cast<size_t>(firstVertex) * tex0DstStride;
+        tex1Dst += static_cast<size_t>(firstVertex) * tex1DstStride;
+        pos = reinterpret_cast<const C3Vector*>(reinterpret_cast<const char*>(pos) + static_cast<size_t>(firstVertex) * posStride);
+        normal = reinterpret_cast<const C3Vector*>(reinterpret_cast<const char*>(normal) + static_cast<size_t>(firstVertex) * normalStride);
+        color = reinterpret_cast<const CImVector*>(reinterpret_cast<const char*>(color) + static_cast<size_t>(firstVertex) * colorStride);
+        tex0 = reinterpret_cast<const C2Vector*>(reinterpret_cast<const char*>(tex0) + static_cast<size_t>(firstVertex) * tex0Stride);
+        tex1 = reinterpret_cast<const C2Vector*>(reinterpret_cast<const char*>(tex1) + static_cast<size_t>(firstVertex) * tex1Stride);
+    }
+
+    const bool swapRb = g_theGxDevicePtr->Caps().m_colorFormat == GxCF_rgba; // WXL: loop invariant
+
+    for (uint32_t i = 0; i < rangeCount; i++) {
         *reinterpret_cast<C3Vector*>(posDst) = *pos;
         pos = reinterpret_cast<const C3Vector*>(reinterpret_cast<const char*>(pos) + posStride);
         posDst += vertexSize;
@@ -779,7 +809,7 @@ void GxPrimVertexPtr(uint32_t vertexCount, const C3Vector* pos, uint32_t posStri
 
         CImVector c;
 
-        if (g_theGxDevicePtr->Caps().m_colorFormat == GxCF_rgba) {
+        if (swapRb) {
             c.b = color->r;
             c.g = color->g;
             c.r = color->b;
