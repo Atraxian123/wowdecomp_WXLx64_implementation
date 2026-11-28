@@ -25,24 +25,17 @@ struct SMOMaterial;
 
 namespace wxl::shader23
 {
-    struct Root;
-
-    /// Looks for "<root>.s23" beside the root WMO and queues its read on the async file queue (same priority as the root
-    /// WMO's own read). Call once the root's name is final. The sidecar is used once the read is done and validated.
+    /// Looks for "<root>.s23" beside the root WMO and loads it. Call once the root's name is final.
     void Load(CMapObj* mapObj, const char* wmoName);
 
-    /// Frees everything Load made for this root (textures, arrays) and cancels a read still in flight. Safe when nothing was loaded.
+    /// Frees everything Load made for this root (textures, arrays). Safe when nothing was loaded.
     void Unload(CMapObj* mapObj);
 
-    /// The root's sidecar when it is loaded and usable, else null (no sidecar, still reading, or rejected). One hash
-    /// lookup: callers fetch it once per group and hand it to DrawBatch for every batch.
-    Root* Find(const CMapObj* mapObj);
-
-    /// True when this root has a usable sidecar.
+    /// True when this root has a sidecar.
     bool HasData(const CMapObj* mapObj);
 
     /// Draws `batch` as a shader 23 blend when its material is in the sidecar and everything it needs is ready.
-    /// `root` comes from Find() (null returns false). Returns false (nothing drawn, no state changed) when the caller has
-    /// to draw the batch the stock way. `fogMode` is the one the stock loop uses (2 exterior fog, 1 interior fog).
-    bool DrawBatch(Root* root, CMapObj* mapObj, CMapObjGroup* group, const SMOBatch& batch, const SMOMaterial& material, int32_t fogMode);
+    /// Returns false (nothing drawn, no state changed) when the caller has to draw the batch the stock way.
+    /// `fogMode` is the one the stock loop uses (2 exterior fog, 1 interior fog).
+    bool DrawBatch(CMapObj* mapObj, CMapObjGroup* group, const SMOBatch& batch, const SMOMaterial& material, int32_t fogMode);
 }
